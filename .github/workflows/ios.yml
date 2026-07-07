@@ -1,0 +1,62 @@
+# Сборка iOS-приложения AETHER на macOS-раннере GitHub Actions.
+# Позволяет компилировать под iPhone БЕЗ собственного Mac: пушишь в GitHub →
+# раннер собирает ядро (Rust→XCFramework), генерирует проект и собирает .app.
+#
+# Artifacts: собранный AETHER.app (для симулятора) скачивается из запуска;
+# «пощупать» можно через Appetize.io. Для .ipa под устройство нужна подпись
+# (сертификат/provisioning) — добавляется отдельно секретами.
+
+name: iOS build
+
+on:
+  push:
+    paths:
+      - "ios/**"
+      - "core/**"
+      - ".github/workflows/ios.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Выбрать Xcode 26 (нужен для настоящего Liquid Glass)
+        run: |
+          sudo xcode-select -s /Applications/Xcode_26.1.1.app/Contents/Developer
+          xcodebuild -version
+
+      - name: Установить Rust + iOS-таргеты
+        run: |
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+
+      - name: Установить XcodeGen
+        run: brew install xcodegen
+
+      - name: Собрать Rust-ядро под iOS + Swift-биндинги
+        working-directory: ios
+        run: bash build_core_ios.sh
+
+      - name: Сгенерировать Xcode-проект
+        working-directory: ios
+        run: xcodegen generate
+
+      - name: Сборка под симулятор (без подписи)
+        working-directory: ios
+        run: |
+          xcodebuild \
+            -project AETHER.xcodeproj \
+            -scheme AETHER \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Выложить .app артефактом
+        uses: actions/upload-artifact@v4
+        with:
+          name: AETHER-simulator-app
+          path: ios/build/Build/Products/Debug-iphonesimulator/AETHER.app
+          if-no-files-found: warn

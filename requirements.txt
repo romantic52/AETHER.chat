@@ -1,0 +1,10 @@
+fastapi>=0.110
+uvicorn>=0.27
+websockets>=12.0  # ОБЯЗАТЕЛЬНО: без него uvicorn не обслуживает /ws → звонки/typing не работают (404 на upgrade)
+pydantic>=2.0
+requests>=2.31
+PyNaCl>=1.5
+cryptography>=42.0
+kivy>=2.3.0
+psycopg2-binary==2.9.9
+slowapi>=0.1.9

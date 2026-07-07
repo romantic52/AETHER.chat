@@ -1,0 +1,46 @@
+# XcodeGen spec — генерирует AETHER.xcodeproj на Mac.
+#   brew install xcodegen   (один раз)
+#   cd ios && xcodegen generate
+#
+# Зачем XcodeGen: .xcodeproj — это огромный машинный pbxproj, который нельзя
+# осмысленно править/мержить руками и нельзя собрать на Windows. Этот yml —
+# человекочитаемый источник правды; на Mac из него детерминированно
+# собирается проект. В git коммитим project.yml, а не сам .xcodeproj.
+
+name: AETHER
+options:
+  bundleIdPrefix: org.groktest
+  deploymentTarget:
+    iOS: "18.0"          # рантайм-минимум; Liquid Glass включается на iOS 26 через #available
+  developmentLanguage: ru
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.0"
+    DEVELOPMENT_TEAM: ""        # подставить Team ID на Mac (или собирать без подписи в симулятор)
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+
+targets:
+  AETHER:
+    type: application
+    platform: iOS
+    sources:
+      - path: AETHER
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: org.groktest.aether
+        INFOPLIST_FILE: AETHER/Resources/Info.plist
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        TARGETED_DEVICE_FAMILY: "1"   # iPhone
+        # Линкуем нативное Rust-ядро (собирается build_core_ios.sh → CoreFFI/SmCoreFFI.xcframework)
+        OTHER_LDFLAGS: ["-ObjC"]
+    dependencies:
+      - framework: CoreFFI/SmCoreFFI.xcframework
+        embed: false       # static — встраивать не нужно
+    info:
+      path: AETHER/Resources/Info.plist

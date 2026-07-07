@@ -1,0 +1,52 @@
+# Secrets
+.env
+*.env
+
+# Build artifacts
+build/
+dist/
+*.apk
+build_log.txt
+
+# Локальные БД (сервер использует PostgreSQL в продакшене)
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+__pycache__/
+*.pyc
+
+# Android
+android/.gradle/
+android/app/build/
+android/app/.cxx/
+android/local.properties
+android/.idea/
+*.iml
+
+# IDE
+.idea/
+.vscode/
+
+# Node
+**/node_modules/
+
+# Keys / signing
+*.keystore
+*.jks
+
+# Большие локальные каталоги (бэкапы/релизы/архив) — на диске остаются, в git не идут
+archive/
+Releases/
+отчет/
+
+# Скомпилированные артефакты ядра (пересобираются из core/, см. core/build_android.ps1
+# и ios/build_core_ios.sh) — не храним бинарники в репозитории
+android/app/src/main/jniLibs/**/*.so
+ios/CoreFFI/*.xcframework
+ios/AETHER/CoreFFI/Generated/
+*.app.zip
+
+# Локальные настройки редактора
+.vscode/settings.json

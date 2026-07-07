@@ -1,0 +1,21 @@
+{
+  "name": "Secure Messenger",
+  "short_name": "E2E Chat",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#0f172a",
+  "description": "Сквозное E2E шифрование на устройстве",
+  "icons": [
+    {
+      "src": "img/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "512x512"
+    },
+    {
+      "src": "img/icon.svg",
+      "type": "image/svg+xml",
+      "sizes": "192x192"
+    }
+  ]
+}
