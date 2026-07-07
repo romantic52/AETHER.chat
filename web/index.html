@@ -1,0 +1,651 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Æther</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css?v=3.7.0">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl.min.js"></script>
+    <link rel="manifest" href="manifest.json">
+    <link rel="icon" type="image/png" href="favicon.png">
+</head>
+<body>
+    <div class="tg-app">
+        <!-- Auth Screen -->
+        <div id="login-screen" class="tg-auth-wrapper">
+            <div class="tg-auth-box">
+                <div class="tg-logo">
+                    <svg viewBox="0 0 24 24" width="48" height="48">
+                        <path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/>
+                    </svg>
+                </div>
+                <h2>Æther</h2>
+                <p class="tg-subtitle">Защищённый мессенджер</p>
+                <div class="tg-auth-tabs">
+                    <button class="tg-auth-tab active" id="tab-login">Вход</button>
+                    <button class="tg-auth-tab" id="tab-register">Регистрация</button>
+                </div>
+                
+                <div class="tg-input-group">
+                    <input type="text" id="username-input" placeholder="Имя пользователя" autocomplete="off">
+                </div>
+                <div class="tg-input-group">
+                    <input type="password" id="password-input" placeholder="Пароль" autocomplete="current-password">
+                </div>
+                <div class="tg-input-group checkbox-group" style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; margin-bottom: 15px; padding-left: 4px;">
+                    <div style="display: flex; align-items: center; gap: 8px;">
+                        <input type="checkbox" id="remember-me-checkbox" style="width: 18px; height: 18px; cursor: pointer;">
+                        <label for="remember-me-checkbox" style="color: var(--text-secondary); font-size: 14px; cursor: pointer; user-select: none;">Запомнить меня</label>
+                    </div>
+                    <a href="#" onclick="document.getElementById('server-input-group').style.display = 'block'; this.style.display='none'; return false;" style="color: var(--accent-color); font-size: 13px; text-decoration: none;">Сменить сервер</a>
+                </div>
+                <div class="tg-input-group" id="server-input-group" style="display: none;">
+                    <input type="text" id="server-input" value="https://your-server.example.com" placeholder="URL сервера (https://...)">
+                </div>
+                
+                <button id="login-btn" class="tg-btn-primary">Войти</button>
+                <button id="register-btn" class="tg-btn-primary hidden">Зарегистрироваться</button>
+                
+                <p id="login-status" class="tg-status"></p>
+            </div>
+        </div>
+
+        <!-- Main App Screen -->
+        <div id="chat-screen" class="tg-main hidden">
+            
+            <!-- Side Drawer (Hamburger Menu) -->
+            <div id="side-drawer" class="tg-drawer">
+                <div class="tg-drawer-header">
+                    <div class="drawer-user-info">
+                        <div id="my-avatar" class="drawer-avatar">?</div>
+                        <div class="drawer-text">
+                            <h3 id="my-id-display">user</h3>
+                            <span>@secure</span>
+                        </div>
+                    </div>
+                    <button class="tg-btn-icon" id="logout-btn" title="Выйти">
+                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M17 7l-1.41 1.41L18.17 11H8v2h10.17l-2.58 2.58L17 17l5-5zM4 5h8V3H4c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h8v-2H4V5z"/></svg>
+                    </button>
+                </div>
+                <div class="tg-drawer-body">
+                    <div class="drawer-items">
+                        <div class="drawer-item" id="add-contact-drawer-btn"><i class="fas fa-user-plus"></i> Создать контакт</div>
+                        <div class="drawer-item" id="create-group-drawer-btn"><i class="fas fa-users"></i> Создать группу/канал</div>
+                        <div class="drawer-item" id="settings-btn"><i class="fas fa-cog"></i> Настройки</div>
+                        <div class="drawer-item" id="saved-messages-btn"><i class="fas fa-bookmark"></i> Избранное</div>
+                    </div>
+                </div>
+            </div>
+            <div id="drawer-overlay" class="tg-overlay"></div>
+
+            <!-- Settings Modal -->
+            <div id="settings-modal" class="tg-modal hidden">
+                <div class="tg-modal-content">
+                    <div class="tg-modal-header">
+                        <h2>Настройки профиля</h2>
+                        <button class="tg-btn-icon" id="close-settings-btn">&times;</button>
+                    </div>
+                    <div class="tg-modal-body">
+                        <div class="avatar-upload-container">
+                            <div id="settings-avatar-preview" class="settings-avatar">?</div>
+                            <button id="upload-avatar-btn" class="tg-btn-secondary">Изменить фото</button>
+                            <input type="file" id="avatar-input" accept="image/*" hidden>
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Отображаемое Имя</label>
+                            <input type="text" id="settings-name-input" class="tg-input" placeholder="Например: Алекс">
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Юзернейм (для поиска)</label>
+                            <div class="username-input-wrapper">
+                                <span class="at-symbol">@</span>
+                                <input type="text" id="settings-username-input" class="tg-input" placeholder="alex">
+                            </div>
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Тема оформления</label>
+                            <select id="settings-theme-select" class="tg-input" style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                                <option value="auto">Авто (Aether, по системе)</option>
+                                <option value="black">Оригинальная чёрная (OLED)</option>
+                                <option value="light">Светлая</option>
+                                <option value="dark">Тёмная (графит)</option>
+                                <option value="blue">Голубая</option>
+                                <option value="pink">Розовая</option>
+                                <option value="purple">Фиолетовая</option>
+                                <option value="green">Зелёная</option>
+                                <option value="glass">Apple Liquid Glass</option>
+                            </select>
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Свой цвет акцента</label>
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <input type="color" id="settings-accent-input" value="#3390ec" style="width:46px; height:36px; padding:0; border:1px solid var(--border-color); border-radius:8px; background:transparent; cursor:pointer;">
+                                <div id="accent-swatches" style="display:flex; gap:6px; flex:1; flex-wrap:wrap;"></div>
+                                <button id="settings-accent-reset" class="tg-btn-secondary" style="width:auto; padding:8px 12px;">Сброс</button>
+                            </div>
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Свой цвет фона</label>
+                            <div style="display:flex; align-items:center; gap:10px;">
+                                <input type="color" id="settings-bg-input" value="#050505" style="width:46px; height:36px; padding:0; border:1px solid var(--border-color); border-radius:8px; background:transparent; cursor:pointer;">
+                                <button id="settings-bg-reset" class="tg-btn-secondary" style="width:auto; padding:8px 12px;">Сброс</button>
+                            </div>
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Скорость анимаций</label>
+                            <select id="settings-animation-speed-select" class="tg-input" style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                                <option value="0.3s">Обычная (0.3s)</option>
+                                <option value="0.15s">Быстрая (0.15s)</option>
+                                <option value="0.5s">Медленная (0.5s)</option>
+                                <option value="0s">Без анимаций (0s)</option>
+                            </select>
+                        </div>
+                        <div class="tg-input-group">
+                            <label>Реакция по умолчанию (двойной клик)</label>
+                            <select id="settings-default-reaction-select" class="tg-input" style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                                <option value="❤️">❤️ Сердечко</option>
+                                <option value="👍">👍 Палец вверх</option>
+                                <option value="🔥">🔥 Огонь</option>
+                                <option value="😂">😂 Смех</option>
+                                <option value="😮">😮 Удивление</option>
+                                <option value="😢">😢 Грусть</option>
+                                <option value="🙏">🙏 Спасибо</option>
+                            </select>
+                        </div>
+                        <button id="save-settings-btn" class="tg-btn-primary">Сохранить</button>
+                        <p id="settings-status" class="tg-status"></p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Chat List -->
+            <div class="tg-chat-list-view">
+                <div class="tg-list-header">
+                    <button class="tg-btn-icon" id="burger-btn">
+                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M3 18h18v-2H3v2zm0-5h18v-2H3v2zm0-7v2h18V6H3z"/></svg>
+                    </button>
+                    <h2 class="tg-header-title">Чаты</h2>
+                    <button class="tg-btn-icon" id="search-toggle-btn">
+                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                    </button>
+                </div>
+                <div class="tg-search-bar-container hidden" id="search-bar-container">
+                    <input type="text" id="peer-input" placeholder="Поиск по ID...">
+                </div>
+                <div class="tg-dialogs-list" id="contacts-container">
+                    <!-- Заполняется динамически -->
+                </div>
+            </div>
+            
+            <!-- Active Chat Area (Slides over on mobile) -->
+            <div class="tg-chat-area-view" id="chat-area-view">
+                <div id="no-chat-selected" class="tg-empty-state">
+                    <span class="tg-empty-badge">Выберите чат</span>
+                </div>
+                
+                <div id="active-chat-window" class="tg-chat-window hidden">
+                    <!-- Minimized Call Bar -->
+                    <div id="call-minimized-bar" class="tg-mini-call-bar hidden">
+                        <div class="mini-call-info" id="mini-call-info-btn">
+                            <div class="mini-pulse-dot"></div>
+                            <span id="mini-call-label">Звонок: bob</span>
+                            <span id="mini-call-timer">00:00</span>
+                        </div>
+                        <div class="mini-call-actions">
+                            <button id="mini-mute-btn" class="mini-call-action-btn" title="Глушить микрофон"><i class="fas fa-microphone"></i></button>
+                            <button id="mini-end-btn" class="mini-call-action-btn decline" title="Завершить"><i class="fas fa-phone-slash"></i></button>
+                        </div>
+                    </div>
+                    <div class="tg-chat-header">
+                        <button class="tg-btn-icon back-btn" id="back-to-list-btn">
+                            <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+                        </button>
+                        <div class="tg-peer-avatar" id="peer-avatar">P</div>
+                        <div class="tg-peer-info">
+                            <h3 id="active-peer-display">bob</h3>
+                            <span class="tg-peer-status" id="peer-status">в сети</span>
+                        </div>
+                        <div class="tg-chat-actions">
+                            <button class="tg-btn-icon" id="chat-search-btn" title="Поиск в чате">
+                                <svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M15.5 14h-.79l-.28-.27C15.41 12.59 16 11.11 16 9.5 16 5.91 13.09 3 9.5 3S3 5.91 3 9.5 5.91 16 9.5 16c1.61 0 3.09-.59 4.23-1.57l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0C7.01 14 5 11.99 5 9.5S7.01 5 9.5 5 14 7.01 14 9.5 11.99 14 9.5 14z"/></svg>
+                            </button>
+                            <button class="tg-btn-icon hidden" id="group-manage-btn" title="Настройки">
+                                <i class="fas fa-cog"></i>
+                            </button>
+                            <button class="tg-btn-icon" id="audio-call-btn" title="Аудиозвонок">
+                                <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg>
+                            </button>
+                            <button class="tg-btn-icon" id="video-call-btn" title="Видеозвонок">
+                                <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg>
+                            </button>
+                            <button class="tg-btn-icon hidden" id="delete-chat-btn" title="Удалить" style="color: #ef4444;">
+                                <i class="fas fa-trash-alt"></i>
+                            </button>
+                        </div>
+                    </div>
+                    <div id="pinned-bar" class="tg-pinned-bar hidden">
+                        <div class="pinned-bar-accent"></div>
+                        <div class="pinned-bar-content">
+                            <div class="pinned-bar-title">Закреплённое сообщение</div>
+                            <div class="pinned-bar-text" id="pinned-bar-text">...</div>
+                        </div>
+                        <button class="tg-btn-icon" id="pinned-bar-unpin" title="Открепить" style="width:34px;height:34px;"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div id="chat-search-bar" class="tg-chat-search-bar hidden">
+                        <input type="text" id="chat-search-input" placeholder="Поиск сообщений...">
+                        <span id="chat-search-count" class="chat-search-count"></span>
+                        <button class="tg-btn-icon" id="chat-search-prev" title="Вверх" style="width:34px;height:34px;"><i class="fas fa-chevron-up"></i></button>
+                        <button class="tg-btn-icon" id="chat-search-next" title="Вниз" style="width:34px;height:34px;"><i class="fas fa-chevron-down"></i></button>
+                        <button class="tg-btn-icon" id="chat-search-close" title="Закрыть" style="width:34px;height:34px;"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="tg-messages-scroll" id="messages-container">
+                        <!-- Сообщения -->
+                    </div>
+                    <button id="scroll-bottom-btn" class="tg-scroll-bottom hidden" title="Вниз"><i class="fas fa-chevron-down"></i><span id="scroll-bottom-badge" class="scroll-bottom-badge hidden">0</span></button>
+                    <div id="reply-preview-container" class="tg-reply-preview-container hidden">
+                        <div class="reply-preview-content">
+                            <span id="reply-preview-author" class="reply-preview-author">Имя</span>
+                            <span id="reply-preview-text" class="reply-preview-text">Текст сообщения</span>
+                        </div>
+                        <button id="reply-close-btn" class="tg-btn-icon" style="width: 32px; height: 32px;" title="Отменить ответ"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div id="self-destruct-chip" class="tg-sd-chip hidden">
+                        <span><i class="fas fa-fire" style="color:#f97316;"></i> Самоуничтожение: <b id="sd-chip-label">выкл</b></span>
+                        <button class="tg-btn-icon" id="sd-chip-off" title="Отключить" style="width:28px;height:28px;"><i class="fas fa-times"></i></button>
+                    </div>
+                    <div class="tg-chat-input">
+                        <input type="file" id="file-upload" hidden>
+                        <button class="tg-btn-icon" id="attach-btn" title="Прикрепить файл"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M16.5 6v11.5c0 2.21-1.79 4-4 4s-4-1.79-4-4V5a2.5 2.5 0 0 1 5 0v10.5c0 .55-.45 1-1 1s-1-.45-1-1V6H10v9.5a2.5 2.5 0 0 0 5 0V5c0-1.38-1.12-2.5-2.5-2.5S8 3.62 8 5v12.5c0 3.04 2.46 5.5 5.5 5.5s5.5-2.46 5.5-5.5V6h-1.5z"/></svg></button>
+                        <input type="text" id="message-input" placeholder="Сообщение..." autocomplete="off">
+                        <button id="mic-btn" class="tg-btn-icon" title="Записать голосовое сообщение">
+                            <i class="fas fa-microphone"></i>
+                        </button>
+                        <button id="cam-btn" class="tg-btn-icon" title="Записать видеосообщение">
+                            <i class="fas fa-video"></i>
+                        </button>
+                        <button id="send-btn" class="tg-btn-icon tg-send-btn hidden">
+                            <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
+                        </button>
+                    </div>
+                    <div id="recording-panel" class="tg-recording-panel hidden">
+                        <div class="recording-indicator">
+                            <span class="recording-dot"></span>
+                            <span id="recording-type">Запись аудио</span>
+                            <span id="recording-timer">00:00</span>
+                        </div>
+                        <div id="recording-preview-container" class="recording-preview-container hidden" style="position: relative;">
+                            <video id="recording-video-preview" autoplay muted playsinline></video>
+                            <button id="recording-flip-btn" class="tg-btn-icon" style="position:absolute; bottom:10px; right:10px; background:rgba(0,0,0,0.5); border-radius:50%; color:white; width: 40px; height: 40px;" title="Переключить камеру">
+                                <i class="fas fa-sync-alt"></i>
+                            </button>
+                        </div>
+                        <div class="recording-actions">
+                            <button id="recording-cancel-btn" class="tg-btn-icon danger-icon" title="Отмена">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                            <button id="recording-stop-send-btn" class="tg-btn-icon success-icon" title="Отправить">
+                                <i class="fas fa-paper-plane"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Create Group/Channel Modal -->
+    <div id="create-group-modal" class="tg-modal hidden">
+        <div class="tg-modal-content">
+            <div class="tg-modal-header">
+                <h2>Создать группу / канал</h2>
+                <button class="tg-btn-icon" id="close-create-group-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body">
+                <div class="tg-input-group">
+                    <label>Название</label>
+                    <input type="text" id="group-name-input" class="tg-input" placeholder="Название группы">
+                </div>
+                <div class="tg-input-group">
+                    <label>ID (уникальный)</label>
+                    <input type="text" id="group-id-input" class="tg-input" placeholder="my_super_group">
+                </div>
+                <div class="tg-input-group">
+                    <label>Описание</label>
+                    <input type="text" id="group-desc-input" class="tg-input" placeholder="Описание">
+                </div>
+                <div class="tg-input-group" style="display: flex; align-items: center; gap: 10px;">
+                    <input type="checkbox" id="group-is-channel-checkbox" style="width: 20px; height: 20px;">
+                    <label for="group-is-channel-checkbox" style="margin: 0; cursor: pointer;">Это Канал (только админ пишет)</label>
+                </div>
+                <div class="tg-input-group" id="group-link-group-container" style="display: none; margin-top: 10px;">
+                    <label>Привязать группу для комментариев (ID)</label>
+                    <input type="text" id="group-linked-id-input" class="tg-input" placeholder="ID группы для комментов">
+                </div>
+                <button id="submit-create-group-btn" class="tg-btn-primary" style="margin-top: 15px;">Создать</button>
+                <p id="create-group-status" class="tg-status"></p>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Group Members Modal -->
+    <!-- Group / Channel Settings Modal -->
+    <div id="group-settings-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 400px; padding: 0;">
+            <div class="tg-modal-header" style="border-bottom: none; padding: 20px;">
+                <h2 id="group-settings-title">Настройки</h2>
+                <button class="tg-btn-icon" id="close-group-settings-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body" style="padding: 0 20px 20px;">
+                <div style="display: flex; flex-direction: column; align-items: center; margin-bottom: 20px;">
+                    <div id="group-settings-avatar" class="tg-contact-avatar" style="width: 80px; height: 80px; font-size: 32px; background: var(--accent-color); color: white; display: flex; align-items: center; justify-content: center; border-radius: 50%;"></div>
+                    <h3 id="group-settings-name" style="margin-top: 15px; font-size: 20px;">Название</h3>
+                    <p id="group-settings-desc" style="color: var(--text-secondary); text-align: center; margin-top: 5px; font-size: 14px; word-break: break-word;"></p>
+                </div>
+                
+                <div id="group-admin-controls" class="hidden" style="margin-bottom: 20px;">
+                    <h4 style="margin-bottom: 10px; font-size: 15px; font-weight: 500;">Добавить участника</h4>
+                    <div class="tg-input-group" style="display:flex; gap:10px;">
+                        <input type="text" id="add-member-input" class="tg-input" placeholder="ID пользователя">
+                        <button id="add-member-btn" class="tg-btn-primary" style="width: auto;">Добавить</button>
+                    </div>
+                    <p id="add-member-status" class="tg-status" style="margin-top: 5px;"></p>
+                </div>
+                
+                <h4 id="group-members-header" style="margin-bottom: 10px; font-size: 15px; font-weight: 500;">Участники</h4>
+                <div id="group-members-list" style="max-height: 200px; overflow-y: auto; margin-bottom: 20px; border: 1px solid var(--border-color); border-radius: 8px; padding: 5px;">
+                    <!-- Members will be listed here -->
+                </div>
+                
+                <div style="display: flex; gap: 10px;">
+                    <button id="group-settings-leave-btn" class="tg-btn-primary" style="background: #ef4444; flex: 1;">Покинуть</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Context Menu for Messages -->
+    <div id="msg-context-menu" class="tg-context-menu hidden">
+        <div class="tg-context-item" id="ctx-edit">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75L3 17.25zM20.71 7.04c.39-.39.39-1.02 0-1.41l-2.34-2.34c-.39-.39-1.02-.39-1.41 0l-1.83 1.83 3.75 3.75 1.83-1.83z"/></svg>
+            Редактировать
+        </div>
+        <div class="tg-context-item" id="ctx-forward">
+            <i class="fas fa-share" style="font-size: 16px; margin-right: 8px; width: 18px; text-align: center;"></i>
+            Переслать
+        </div>
+        <div class="tg-context-item" id="ctx-pin">
+            <i class="fas fa-thumbtack" style="font-size: 16px; margin-right: 8px; width: 18px; text-align: center;"></i>
+            <span id="ctx-pin-label">Закрепить</span>
+        </div>
+        <div class="tg-context-item" id="ctx-copy">
+            <i class="fas fa-copy" style="font-size: 16px; margin-right: 8px; width: 18px; text-align: center;"></i>
+            Копировать
+        </div>
+        <div class="tg-context-item danger" id="ctx-delete">
+            <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+            Удалить
+        </div>
+        <div class="tg-context-divider" style="height: 1px; background: rgba(255,255,255,0.1); margin: 4px 0;"></div>
+        <div class="tg-context-reactions" id="ctx-reactions" style="display: flex; gap: 8px; padding: 6px 12px; justify-content: center;">
+            <div class="ctx-reaction-btn" data-emoji="❤️" style="font-size: 20px; cursor: pointer; transition: transform 0.2s;">❤️</div>
+            <div class="ctx-reaction-btn" data-emoji="👍" style="font-size: 20px; cursor: pointer; transition: transform 0.2s;">👍</div>
+            <div class="ctx-reaction-btn" data-emoji="🔥" style="font-size: 20px; cursor: pointer; transition: transform 0.2s;">🔥</div>
+            <div class="ctx-reaction-btn" data-emoji="😂" style="font-size: 20px; cursor: pointer; transition: transform 0.2s;">😂</div>
+            <div class="ctx-reaction-btn" data-emoji="😢" style="font-size: 20px; cursor: pointer; transition: transform 0.2s;">😢</div>
+        </div>
+    </div>
+    
+    <!-- Deletion Confirmation Modal -->
+    <div id="delete-confirm-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 320px;">
+            <div class="tg-modal-header" style="border-bottom: none; padding-bottom: 8px;">
+                <h2 style="font-size: 17px;">Удалить сообщение?</h2>
+                <button class="tg-btn-icon" id="close-delete-modal-btn" style="font-size: 24px; line-height: 1;">&times;</button>
+            </div>
+            <div class="tg-modal-body" style="padding-top: 8px; display: flex; flex-direction: column; gap: 10px;">
+                <p style="color: var(--text-secondary); margin: 0 0 10px 0; font-size: 14px; line-height: 1.4;">Вы действительно хотите удалить это сообщение?</p>
+                <button id="delete-for-me-btn" class="tg-btn-primary" style="padding: 10px; font-size: 14px;">Удалить только у меня</button>
+                <button id="delete-for-everyone-btn" class="tg-btn-primary" style="padding: 10px; font-size: 14px; background: #ef4444;">Удалить у меня и собеседника</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Delete Chat / Group Modal -->
+    <div id="delete-chat-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 320px; background: var(--bg-primary); border: 1px solid var(--border-color);">
+            <div class="tg-modal-header" style="border-bottom: none; padding-bottom: 8px;">
+                <h2 style="font-size: 17px;" id="delete-chat-title">Удалить чат?</h2>
+                <button class="tg-btn-icon" id="close-delete-chat-modal-btn" style="font-size: 24px; line-height: 1;">&times;</button>
+            </div>
+            <div class="tg-modal-body" style="padding-top: 8px; display: flex; flex-direction: column; gap: 10px;">
+                <p id="delete-chat-desc" style="color: var(--text-secondary); margin: 0 0 10px 0; font-size: 14px; line-height: 1.4;">Вы действительно хотите удалить эту переписку?</p>
+                <button id="confirm-delete-chat-btn" class="tg-btn-primary" style="padding: 10px; font-size: 14px; background: #ef4444;">Удалить</button>
+                <button id="cancel-delete-chat-btn" class="tg-btn-secondary" style="padding: 10px; font-size: 14px;">Отмена</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Profile Details / Contact Modal -->
+    <div id="profile-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="background: var(--bg-primary); border: 1px solid var(--border-color);">
+            <div class="tg-modal-header">
+                <h2>Профиль пользователя</h2>
+                <button class="tg-btn-icon" id="close-profile-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body">
+                <div class="profile-avatar-container" style="display: flex; flex-direction: column; align-items: center; margin-bottom: 20px;">
+                    <div id="profile-avatar-display" class="settings-avatar" style="width: 80px; height: 80px; font-size: 32px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #2481cc; color: #fff;">?</div>
+                </div>
+                <div class="tg-input-group">
+                    <label>ID Пользователя</label>
+                    <div style="font-weight: 500; font-size: 16px; margin-bottom: 8px;" id="profile-id-label">bob</div>
+                </div>
+                <div class="tg-input-group">
+                    <label>Юзернейм</label>
+                    <div style="font-size: 15px; color: var(--text-secondary); margin-bottom: 8px;" id="profile-username-label">@bob</div>
+                </div>
+                <div class="tg-input-group">
+                    <label>Отображаемое Имя (публичное)</label>
+                    <div style="font-size: 15px; margin-bottom: 8px;" id="profile-displayname-label">Bob Key</div>
+                </div>
+                <hr style="border: 0; border-top: 1px solid var(--border-color); margin: 15px 0;">
+                <div class="tg-input-group">
+                    <label>Записать контакт как (ваше название)</label>
+                    <input type="text" id="contact-custom-name-input" class="tg-input" placeholder="Введите имя контакта..." style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                </div>
+                <div style="display: flex; gap: 10px; margin-top: 15px;">
+                    <button id="save-contact-name-btn" class="tg-btn-primary" style="flex: 1;">Сохранить контакт</button>
+                    <button id="delete-contact-name-btn" class="tg-btn-secondary" style="color: #ef4444; border-color: rgba(239, 68, 68, 0.2);">Сбросить</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Add Contact Modal -->
+    <div id="add-contact-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="background: var(--bg-primary); border: 1px solid var(--border-color);">
+            <div class="tg-modal-header">
+                <h2>Создать контакт</h2>
+                <button class="tg-btn-icon" id="close-add-contact-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body">
+                <div class="tg-input-group">
+                    <label>ID пользователя (латиницей, без @)</label>
+                    <input type="text" id="add-contact-id-input" class="tg-input" placeholder="Например: bob" style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                </div>
+                <div class="tg-input-group">
+                    <label>Имя контакта</label>
+                    <input type="text" id="add-contact-name-input" class="tg-input" placeholder="Например: Мама / Боб" style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                </div>
+                <button id="save-new-contact-btn" class="tg-btn-primary" style="width: 100%; margin-top: 10px;">Добавить контакт</button>
+                <p id="add-contact-status" class="tg-status" style="margin-top: 10px;"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Forward Message Modal -->
+    <div id="forward-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 320px; background: var(--bg-primary); border: 1px solid var(--border-color);">
+            <div class="tg-modal-header">
+                <h2>Переслать сообщение</h2>
+                <button class="tg-btn-icon" id="close-forward-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body" style="padding: 10px 20px;">
+                <div id="forward-contacts-list" style="max-height: 250px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px;">
+                    <!-- Наполняется динамически -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Attachment Drawer/Sheet -->
+    <div id="attachment-drawer" class="tg-attachment-drawer hidden">
+        <div class="attachment-drawer-overlay"></div>
+        <div class="attachment-drawer-content">
+            <div class="attachment-drawer-header" style="display: flex; flex-direction: column; align-items: center;">
+                <div class="attachment-drag-handle"></div>
+            </div>
+            <div class="attachment-drawer-body">
+
+                
+                <div class="attachment-grid">
+                    <div class="grid-item" id="attach-gallery-btn">
+                        <div class="grid-icon gallery"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/></svg></div>
+                        <span>Галерея</span>
+                    </div>
+                    <div class="grid-item" id="attach-file-btn">
+                        <div class="grid-icon file"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zm2 16H8v-2h8v2zm0-4H8v-2h8v2zm-3-5V3.5L18.5 9H13z"/></svg></div>
+                        <span>Файл</span>
+                    </div>
+                    <div class="grid-item" id="attach-location-btn">
+                        <div class="grid-icon location"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5c-1.38 0-2.5-1.12-2.5-2.5s1.12-2.5 2.5-2.5 2.5 1.12 2.5 2.5-1.12 2.5-2.5 2.5z"/></svg></div>
+                        <span>Гео</span>
+                    </div>
+                    <div class="grid-item" id="attach-contact-btn">
+                        <div class="grid-icon contact"><svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M12 12c2.21 0 4-1.79 4-4s-1.79-4-4-4-4 1.79-4 4 1.79 4 4 4zm0 2c-2.67 0-8 1.34-8 4v2h16v-2c0-2.66-5.33-4-8-4z"/></svg></div>
+                        <span>Контакт</span>
+                    </div>
+                    <div class="grid-item" id="attach-poll-btn">
+                        <div class="grid-icon" style="background:#8b5cf6;"><i class="fas fa-poll" style="color:#fff;font-size:20px;"></i></div>
+                        <span>Опрос</span>
+                    </div>
+                    <div class="grid-item" id="attach-timer-btn">
+                        <div class="grid-icon" style="background:#f97316;"><i class="fas fa-clock" style="color:#fff;font-size:20px;"></i></div>
+                        <span>Таймер</span>
+                    </div>
+                    <div class="grid-item" id="attach-emoji-btn">
+                        <div class="grid-icon" style="background:#eab308;"><i class="fas fa-face-smile" style="color:#fff;font-size:20px;"></i></div>
+                        <span>Эмодзи</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Emoji Picker Modal -->
+    <div id="emoji-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 360px;">
+            <div class="tg-modal-header">
+                <h2>Эмодзи</h2>
+                <button class="tg-btn-icon" id="close-emoji-modal-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body">
+                <div id="emoji-grid" class="emoji-grid"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Poll Modal -->
+    <div id="create-poll-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 380px;">
+            <div class="tg-modal-header">
+                <h2>Новый опрос</h2>
+                <button class="tg-btn-icon" id="close-poll-modal-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body">
+                <div class="tg-input-group">
+                    <label>Вопрос</label>
+                    <input type="text" id="poll-question-input" class="tg-input" placeholder="Ваш вопрос" maxlength="200" style="background: var(--bg-secondary); color: var(--text-primary); border: 1px solid var(--border-color);">
+                </div>
+                <label style="font-size:13px;color:var(--text-secondary);">Варианты ответа</label>
+                <div id="poll-options-list" style="display:flex;flex-direction:column;gap:8px;margin:8px 0;"></div>
+                <button id="poll-add-option-btn" class="tg-btn-secondary" style="width:100%;">+ Добавить вариант</button>
+                <div class="tg-input-group" style="display:flex;align-items:center;gap:10px;margin-top:14px;">
+                    <input type="checkbox" id="poll-multiple-cb" style="width:18px;height:18px;">
+                    <label for="poll-multiple-cb" style="margin:0;cursor:pointer;font-size:14px;">Несколько ответов</label>
+                </div>
+                <button id="submit-poll-btn" class="tg-btn-primary" style="margin-top:10px;">Отправить опрос</button>
+                <p id="poll-status" class="tg-status"></p>
+            </div>
+        </div>
+    </div>
+
+    <!-- Self-destruct timer Modal -->
+    <div id="self-destruct-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 320px;">
+            <div class="tg-modal-header">
+                <h2>Таймер самоуничтожения</h2>
+                <button class="tg-btn-icon" id="close-sd-modal-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body" style="display:flex;flex-direction:column;gap:8px;">
+                <p style="color:var(--text-secondary);font-size:13px;margin-bottom:6px;">Следующие сообщения в этом чате исчезнут через выбранное время после просмотра.</p>
+                <button class="tg-btn-secondary sd-opt" data-ttl="0">Выключено</button>
+                <button class="tg-btn-secondary sd-opt" data-ttl="5">5 секунд</button>
+                <button class="tg-btn-secondary sd-opt" data-ttl="15">15 секунд</button>
+                <button class="tg-btn-secondary sd-opt" data-ttl="60">1 минута</button>
+                <button class="tg-btn-secondary sd-opt" data-ttl="3600">1 час</button>
+                <button class="tg-btn-secondary sd-opt" data-ttl="86400">1 день</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- WebRTC Call Screen -->
+    <div id="call-screen" class="tg-call-screen hidden">
+        <div class="call-video-container">
+            <video id="remote-video" autoplay playsinline></video>
+            <video id="local-video" autoplay playsinline muted></video>
+        </div>
+        <div class="call-overlay">
+            <!-- Top bar for minimize -->
+            <div class="call-top-bar" style="position: absolute; top: 20px; left: 20px; width: calc(100% - 40px); display: flex; justify-content: flex-start; pointer-events: auto; z-index: 100;">
+                <button id="call-minimize-btn" class="tg-btn-icon" style="color: #fff; background: rgba(0,0,0,0.4); border-radius: 50%;" title="Свернуть"><i class="fas fa-chevron-down"></i></button>
+            </div>
+            <div id="call-avatar-container" class="call-avatar-container">
+                <div id="call-avatar" class="call-avatar-pulsing">?</div>
+            </div>
+            <h2 id="call-peer-name">bob</h2>
+            <p id="call-status">Установка соединения...</p>
+            
+            <!-- Incoming call controls -->
+            <div id="call-incoming-controls" class="call-controls hidden">
+                <button id="call-accept-btn" class="call-btn accept"><svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M6.62 10.79c1.44 2.83 3.76 5.14 6.59 6.59l2.2-2.2c.27-.27.67-.36 1.02-.24 1.12.37 2.33.57 3.57.57.55 0 1 .45 1 1V20c0 .55-.45 1-1 1-9.39 0-17-7.61-17-17 0-.55.45-1 1-1h3.5c.55 0 1 .45 1 1 0 1.25.2 2.45.57 3.57.11.35.03.74-.25 1.02l-2.2 2.2z"/></svg></button>
+                <button id="call-decline-btn" class="call-btn decline"><svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></button>
+            </div>
+            
+            <!-- Active call controls -->
+            <div id="call-active-controls" class="call-controls hidden">
+                <button id="call-mute-btn" class="call-btn secondary"><svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg></button>
+                <button id="call-speaker-btn" class="call-btn secondary" title="Громкая связь" style="display: flex; align-items: center; justify-content: center; font-size: 20px; color: #fff;"><i class="fas fa-volume-down"></i></button>
+                <button id="call-end-btn" class="call-btn decline"><svg viewBox="0 0 24 24" width="32" height="32"><path fill="currentColor" d="M12 9c-1.6 0-3.15.25-4.6.72v3.1c0 .39-.23.74-.56.9-.98.49-1.87 1.12-2.66 1.85-.18.18-.43.28-.7.28-.28 0-.53-.11-.71-.29L.29 13.08c-.18-.17-.29-.42-.29-.7 0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z"/></svg></button>
+                <button id="call-flip-camera-btn" class="call-btn secondary" title="Переключить камеру" style="display: flex; align-items: center; justify-content: center; font-size: 20px; color: #fff;"><i class="fas fa-sync-alt"></i></button>
+                <button id="call-video-btn" class="call-btn secondary"><svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M17 10.5V7c0-.55-.45-1-1-1H4c-.55 0-1 .45-1 1v10c0 .55.45 1 1 1h12c.55 0 1-.45 1-1v-3.5l4 4v-11l-4 4z"/></svg></button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- In-app toast notification -->
+    <div class="in-app-toast" id="in-app-toast">
+        <div class="in-app-toast-avatar" id="toast-avatar"></div>
+        <div class="in-app-toast-content">
+            <div class="in-app-toast-name" id="toast-name"></div>
+            <div class="in-app-toast-text" id="toast-text"></div>
+        </div>
+    </div>
+    
+    <script src="app.js?v=3.4.0"></script>
+</body>
+</html>

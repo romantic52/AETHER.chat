@@ -1,0 +1,2 @@
+Сюда build_core_ios.sh кладёт SmCoreFFI.xcframework (статическое Rust-ядро).
+Бинарный артефакт — не коммитится, собирается на Mac/CI.

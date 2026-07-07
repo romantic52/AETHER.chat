@@ -1,0 +1,1199 @@
+"""
+Relay-сервер: хранит только публичные ключи и зашифрованные сообщения.
+Никогда не принимает plaintext.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import psycopg2
+import psycopg2.extras
+import uuid
+import hashlib
+import secrets
+from contextlib import contextmanager
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Optional
+
+from fastapi import FastAPI, HTTPException, Depends, Header, Request, WebSocket, WebSocketDisconnect, UploadFile, File
+from fastapi.responses import FileResponse
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
+import asyncio
+
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+from fastapi.staticfiles import StaticFiles
+
+WEB_DIR = Path(__file__).resolve().parent.parent / "web"
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: dict[str, set[WebSocket]] = {}
+
+    async def connect(self, websocket: WebSocket, user_id: str):
+        await websocket.accept()
+        if user_id not in self.active_connections:
+            self.active_connections[user_id] = set()
+        self.active_connections[user_id].add(websocket)
+
+    def disconnect(self, websocket: WebSocket, user_id: str):
+        if user_id in self.active_connections:
+            self.active_connections[user_id].discard(websocket)
+            if not self.active_connections[user_id]:
+                del self.active_connections[user_id]
+
+    async def send_personal_message(self, message: dict, user_id: str):
+        if user_id in self.active_connections:
+            for connection in self.active_connections[user_id]:
+                try:
+                    await connection.send_json(message)
+                except Exception:
+                    pass
+
+manager = ConnectionManager()
+
+# --- Rate Limiter (#4) ---
+# (#P4.12) За реверс-прокси (Caddy/nip.io) все запросы приходят с локального IP,
+# поэтому лимиты считались бы на один общий ключ. Берём реальный IP из
+# X-Forwarded-For, но ТОЛЬКО если непосредственный клиент — доверенный прокси
+# (иначе заголовок можно подделать).
+TRUSTED_PROXIES = {"127.0.0.1", "::1"}
+
+
+def _real_client_ip(request: Request) -> str:
+    direct_ip = get_remote_address(request)
+    if direct_ip in TRUSTED_PROXIES:
+        xff = request.headers.get("x-forwarded-for")
+        if xff:
+            # Первый адрес в цепочке — исходный клиент
+            return xff.split(",")[0].strip()
+    return direct_ip
+
+
+limiter = Limiter(key_func=_real_client_ip)
+
+app = FastAPI(title="Secure Messenger Relay", version="0.2.0")
+app.state.limiter = limiter
+
+
+# Кастомный обработчик 429: отдаём detail (клиент читает именно это поле),
+# Retry-After и логируем ключ лимитера для диагностики.
+def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    from fastapi.responses import JSONResponse
+    try:
+        key = _real_client_ip(request)
+    except Exception:
+        key = "?"
+    logging.getLogger("secure_messenger").warning(
+        "429 rate-limit: path=%s key=%s limit=%s", request.url.path, key, exc.detail
+    )
+    return JSONResponse(
+        status_code=429,
+        content={"detail": "Слишком много попыток. Подождите минуту и попробуйте снова."},
+        headers={"Retry-After": "60"},
+    )
+
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
+
+# --- CORS (#P4.11): только домены сервера вместо wildcard ---
+# (#A4) Домены настраиваются через env (CSV), хардкод IP — лишь дефолт для dev.
+ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.environ.get(
+        "ALLOWED_ORIGINS", "https://your-server.example.com,https://YOUR_SERVER_IP"
+    ).split(",")
+    if o.strip()
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+SESSION_LIFETIME_DAYS = 30
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _session_expires() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=SESSION_LIFETIME_DAYS)).isoformat()
+import logging
+
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger("secure_messenger")
+
+# --- DB credentials from environment (#5) ---
+@contextmanager
+def db_conn():
+    conn = psycopg2.connect(
+        dbname=os.environ.get("DB_NAME", "secure_messenger"),
+        user=os.environ.get("DB_USER", "sm_user"),
+        password=os.environ.get("DB_PASS", "sm_pass"),
+        host=os.environ.get("DB_HOST", "127.0.0.1"),
+    )
+    cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+    try:
+        yield cur
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+        conn.close()
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    iterations = 100000
+    hash_bytes = hashlib.pbkdf2_hmac(
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
+    )
+    return f"pbkdf2_sha256${iterations}${salt}${hash_bytes.hex()}"
+
+
+def verify_password(password: str, hashed: str) -> bool:
+    try:
+        parts = hashed.split("$")
+        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
+            return False
+        iterations = int(parts[1])
+        salt = parts[2]
+        expected_hex = parts[3]
+        hash_bytes = hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
+        )
+        return secrets.compare_digest(hash_bytes.hex(), expected_hex)
+    except Exception:
+        return False
+
+
+# --- Session management (#3): check expiry ---
+def get_current_user(authorization: str = Header(None)) -> str:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(401, "Missing or invalid authorization header")
+    token = authorization.split(" ")[1]
+    with db_conn() as cur:
+        cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(401, "Session expired or invalid")
+    # Check session expiry
+    if row["expires_at"]:
+        try:
+            expires = datetime.fromisoformat(row["expires_at"])
+            if datetime.now(timezone.utc) > expires:
+                # Clean up expired session
+                with db_conn() as cur:
+                    cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+                raise HTTPException(401, "Session expired")
+        except (ValueError, TypeError):
+            pass
+    return row["user_id"].lower()
+
+
+def init_db() -> None:
+    with db_conn() as cur:
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id TEXT PRIMARY KEY,
+                public_key_b64 TEXT NOT NULL,
+                password_hash TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS sessions (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                expires_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS messages (
+                id TEXT PRIMARY KEY,
+                sender_id TEXT NOT NULL,
+                recipient_id TEXT NOT NULL,
+                envelope_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                delivered INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS groups (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT,
+                owner_id TEXT NOT NULL,
+                is_channel INTEGER NOT NULL DEFAULT 0,
+                linked_group_id TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS group_members (
+                group_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                encrypted_key_b64 TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'member',
+                PRIMARY KEY (group_id, user_id)
+            );
+            -- (#A4) Удалены таблицы user_chat_settings (клиент хранит локально)
+            -- и items/user_items (магазин — мёртвый код). Существующие БД
+            -- сохраняют старые таблицы — они просто не используются.
+            -- (#A1) Подтверждения доставки: сообщение считается доставленным
+            -- пользователю ТОЛЬКО после его явного ACK (клиент сохранил в БД).
+            -- Работает и для личных, и для групповых сообщений (у группы много получателей).
+            CREATE TABLE IF NOT EXISTS message_receipts (
+                message_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                acked_at TEXT NOT NULL,
+                PRIMARY KEY (message_id, user_id)
+            );
+            """
+        )
+        
+        # Migrations — must use SAVEPOINTs in PostgreSQL
+        # because a failed statement aborts the whole transaction.
+        
+        # 1) Rename legacy column if it exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='messages' AND column_name='ciphertext'
+            )
+        """)
+        if cur.fetchone()[0]:
+            cur.execute("ALTER TABLE messages RENAME COLUMN ciphertext TO envelope_json")
+        
+        # 2) Ensure delivered column exists
+        cur.execute("""
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='messages' AND column_name='delivered'
+            )
+        """)
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE messages ADD COLUMN delivered INTEGER NOT NULL DEFAULT 0")
+
+    
+    with db_conn() as cur:
+        # Check password_hash
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='password_hash'
+            )
+            """
+        )
+        has_password_hash = cur.fetchone()[0]
+        if not has_password_hash:
+            cur.execute("ALTER TABLE users ADD COLUMN password_hash TEXT")
+            
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='encrypted_private_key_b64'
+            )
+            """
+        )
+        has_encrypted_key = cur.fetchone()[0]
+        if not has_encrypted_key:
+            cur.execute("ALTER TABLE users ADD COLUMN encrypted_private_key_b64 TEXT")
+            
+        # Check username
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='username'
+            )
+            """
+        )
+        has_username = cur.fetchone()[0]
+        if not has_username:
+            cur.execute("ALTER TABLE users ADD COLUMN username TEXT")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)")
+            cur.execute("ALTER TABLE users ADD COLUMN display_name TEXT")
+            cur.execute("ALTER TABLE users ADD COLUMN avatar_data TEXT")
+
+        # Check last_active
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='last_active'
+            )
+            """
+        )
+        has_last_active = cur.fetchone()[0]
+        if not has_last_active:
+            cur.execute("ALTER TABLE users ADD COLUMN last_active TEXT")
+
+        # Check avatar_file_id
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='avatar_file_id'
+            )
+            """
+        )
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN avatar_file_id TEXT")
+            
+        # Check bio
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='users' AND column_name='bio'
+            )
+            """
+        )
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN bio TEXT")
+
+        # (#3) Check expires_at on sessions
+        cur.execute(
+            """
+            SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns 
+                WHERE table_name='sessions' AND column_name='expires_at'
+            )
+            """
+        )
+        has_expires_at = cur.fetchone()[0]
+        if not has_expires_at:
+            cur.execute("ALTER TABLE sessions ADD COLUMN expires_at TEXT")
+
+        # (#3) Clean up expired sessions on startup
+        cur.execute("DELETE FROM sessions WHERE expires_at IS NOT NULL AND expires_at < %s", (_utc_now(),))
+
+        # (#A6) linked_group_id мог отсутствовать в БД, созданной в период,
+        # когда колонка была удалена как мёртвый код
+        cur.execute(
+            """SELECT EXISTS (
+                SELECT 1 FROM information_schema.columns
+                WHERE table_name='groups' AND column_name='linked_group_id'
+            )"""
+        )
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE groups ADD COLUMN linked_group_id TEXT")
+
+        # (#A1) Миграция: старые личные сообщения с delivered=1 считаем подтверждёнными,
+        # иначе после перехода на ACK они приедут получателям повторно.
+        cur.execute(
+            """INSERT INTO message_receipts (message_id, user_id, acked_at)
+               SELECT m.id, LOWER(m.recipient_id), %s FROM messages m
+               WHERE m.delivered = 1
+               ON CONFLICT (message_id, user_id) DO NOTHING""",
+            (_utc_now(),),
+        )
+
+
+class RegisterRequest(BaseModel):
+    user_id: str = Field(min_length=2, max_length=64)
+    public_key_b64: str = Field(min_length=16)
+    encrypted_private_key_b64: Optional[str] = None
+    password: str = Field(min_length=8)
+
+
+class LoginRequest(BaseModel):
+    user_id: str = Field(min_length=2, max_length=64)
+    password: str = Field(min_length=8)
+
+
+class SendMessageRequest(BaseModel):
+    sender_id: str
+    recipient_id: str
+    envelope: dict
+    # (#A2) Идемпотентность: клиент генерирует UUID сам (паттерн random_id
+    # Telegram). Повторная отправка после обрыва сети не создаёт дубликат.
+    client_id: Optional[str] = None
+
+class UpdateKeyRequest(BaseModel):
+    public_key_b64: str = Field(min_length=16)
+
+class UpdateProfileRequest(BaseModel):
+    username: Optional[str] = None
+    display_name: Optional[str] = None
+    avatar_file_id: Optional[str] = None
+    bio: Optional[str] = None
+
+class CreateGroupRequest(BaseModel):
+    id: str = Field(min_length=2, max_length=64)
+    name: str
+    description: str = ""
+    is_channel: bool = False
+    encrypted_key_b64: str
+    # (#A6) Группа обсуждений канала (телеграм-паттерн «комментарии»):
+    # создаётся клиентом ДО канала и подвязывается при создании
+    linked_group_id: Optional[str] = None
+
+class AddGroupMemberRequest(BaseModel):
+    user_id: str
+    encrypted_key_b64: str
+    role: str = "member"
+
+# (#12) Edit group request
+class UpdateGroupRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+
+@app.on_event("startup")
+def startup() -> None:
+    init_db()
+
+
+# --- (#4) Rate-limited registration ---
+# 5/min было слишком жёстко: неудачные попытки (занятое имя и т.п.) тоже считаются.
+@app.post("/users/register")
+@limiter.limit("15/minute;60/hour")
+def register_user(body: RegisterRequest, request: Request) -> dict:
+    hashed = hash_password(body.password)
+    with db_conn() as cur:
+        # Check if user already exists
+        cur.execute("SELECT 1 FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.user_id,))
+        exist = cur.fetchone()
+        if exist:
+            raise HTTPException(400, "Username already taken")
+        cur.execute(
+            "INSERT INTO users (user_id, public_key_b64, encrypted_private_key_b64, password_hash, created_at) VALUES (%s, %s, %s, %s, %s)",
+            (body.user_id.lower(), body.public_key_b64, body.encrypted_private_key_b64, hashed, _utc_now()),
+        )
+    return {"ok": True, "user_id": body.user_id.lower()}
+
+
+# --- (#4) Rate-limited login, (#3) session with expiry ---
+@app.post("/users/login")
+@limiter.limit("15/minute;100/hour")
+def login_user(body: LoginRequest, request: Request) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT password_hash, public_key_b64, encrypted_private_key_b64, user_id FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.user_id,))
+        row = cur.fetchone()
+    if not row or not row["password_hash"]:
+        raise HTTPException(401, "Invalid username or password")
+    if not verify_password(body.password, row["password_hash"]):
+        raise HTTPException(401, "Invalid username or password")
+    
+    # Generate session token with expiry
+    token = secrets.token_hex(32)
+    with db_conn() as cur:
+        cur.execute(
+            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s, %s, %s, %s)",
+            (token, row["user_id"].lower(), _utc_now(), _session_expires())
+        )
+    
+    return {
+        "ok": True,
+        "token": token,
+        "user_id": row["user_id"].lower(),
+        "public_key_b64": row["public_key_b64"],
+        "encrypted_private_key_b64": row["encrypted_private_key_b64"]
+    }
+
+
+# (#A4) Полный выход: токен отзывается на сервере, а не только забывается клиентом
+@app.post("/logout")
+def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
+    token = authorization.split(" ")[1]
+    with db_conn() as cur:
+        cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+    return {"ok": True}
+
+
+# (#A4) Только с авторизацией: иначе перечисление пользователей без токена
+@app.get("/users/{user_id}/public-key")
+def get_public_key(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT public_key_b64 FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(404, "User not found")
+    return {"user_id": user_id.lower(), "public_key_b64": row["public_key_b64"]}
+
+
+@app.put("/users/me/public-key")
+def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("UPDATE users SET public_key_b64 = %s WHERE LOWER(user_id) = LOWER(%s)", (body.public_key_b64, current_user))
+    return {"ok": True, "user_id": current_user}
+
+
+@app.put("/users/me/profile")
+def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Check if username is already taken by someone else
+        if body.username:
+            cur.execute("SELECT user_id FROM users WHERE LOWER(username) = LOWER(%s) AND LOWER(user_id) != LOWER(%s)", (body.username, current_user))
+            exist = cur.fetchone()
+            if exist:
+                raise HTTPException(400, "Username already taken")
+        
+        cur.execute(
+            "UPDATE users SET username = COALESCE(%s, username), display_name = COALESCE(%s, display_name), avatar_file_id = COALESCE(%s, avatar_file_id), bio = COALESCE(%s, bio) WHERE LOWER(user_id) = LOWER(%s)",
+            (body.username, body.display_name, body.avatar_file_id, body.bio, current_user)
+        )
+    return {"ok": True}
+
+
+# (#A4) Только с авторизацией: профиль (имя, био, last_active) — не публичные данные
+@app.get("/users/{user_id}/profile")
+def get_user_profile(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT user_id, public_key_b64, username, display_name, avatar_file_id, bio, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "User not found")
+    res_dict = dict(row)
+    res_dict["user_id"] = res_dict["user_id"].lower()
+    return res_dict
+
+
+@app.post("/users/me/heartbeat")
+def heartbeat(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            "UPDATE users SET last_active = %s WHERE LOWER(user_id) = LOWER(%s)",
+            (_utc_now(), current_user)
+        )
+    return {"ok": True}
+
+
+# --- (#10) Search now requires auth ---
+@app.get("/users/search")
+def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
+    if not q or len(q) < 2:
+        return {"users": []}
+
+    # (#A6) Телеграм-семантика: "@xxx" ищет ТОЛЬКО по username,
+    # обычный запрос — по имени/username/id. Точные совпадения первыми,
+    # затем совпадения по началу, затем по подстроке.
+    handle_only = q.startswith('@')
+    if handle_only:
+        q = q[1:]
+        if len(q) < 2:
+            return {"users": []}
+
+    exact = q.lower()
+    prefix_term = f"{q}%"
+    search_term = f"%{q}%"
+    with db_conn() as cur:
+        if handle_only:
+            cur.execute(
+                """SELECT user_id, username, display_name, avatar_file_id FROM users
+                   WHERE LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                   ORDER BY (LOWER(COALESCE(username, '')) = %s) DESC,
+                            (LOWER(COALESCE(username, '')) LIKE LOWER(%s)) DESC,
+                            username ASC
+                   LIMIT 20""",
+                (search_term, exact, prefix_term)
+            )
+        else:
+            cur.execute(
+                """SELECT user_id, username, display_name, avatar_file_id FROM users
+                   WHERE LOWER(user_id) LIKE LOWER(%s)
+                      OR LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                      OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)
+                   ORDER BY (LOWER(COALESCE(username, '')) = %s OR LOWER(user_id) = %s) DESC,
+                            (LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                             OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)) DESC,
+                            user_id ASC
+                   LIMIT 20""",
+                (search_term, search_term, search_term, exact, exact, prefix_term, prefix_term)
+            )
+        rows = cur.fetchall()
+        
+        # Группы/каналы: по имени и id (поиск по @handle — только пользователи)
+        if handle_only:
+            group_rows = []
+        else:
+            cur.execute(
+                "SELECT id, name, description, is_channel FROM groups WHERE LOWER(name) LIKE LOWER(%s) OR LOWER(id) LIKE LOWER(%s) LIMIT 20",
+                (search_term, search_term)
+            )
+            group_rows = cur.fetchall()
+        
+    users = []
+    for r in rows:
+        rd = dict(r)
+        rd["user_id"] = rd["user_id"].lower()
+        users.append(rd)
+        
+    groups = []
+    for r in group_rows:
+        groups.append({
+            "id": r["id"].lower(),
+            "name": r["name"],
+            "description": r["description"],
+            "is_channel": bool(r["is_channel"])
+        })
+        
+    return {"users": users, "groups": groups}
+
+
+@app.post("/messages")
+async def send_message(body: SendMessageRequest, current_user: str = Depends(get_current_user)) -> dict:
+    logger.info(f"send_message: sender={body.sender_id}, recipient={body.recipient_id}, current_user={current_user}")
+    logger.debug(f"send_message envelope keys: {list(body.envelope.keys())}")
+    
+    if body.sender_id.lower() != current_user.lower():
+        logger.warning(f"send_message: sender mismatch {body.sender_id} vs {current_user}")
+        raise HTTPException(403, "Cannot send messages as another user")
+
+    required = {"nonce_b64", "ciphertext_b64"}
+    if not required.issubset(body.envelope.keys()):
+        logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
+        raise HTTPException(400, f"Invalid envelope: missing keys. Got: {list(body.envelope.keys())}")
+    if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
+        logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
+        raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
+    if "plaintext" in body.envelope or "text" in body.envelope:
+        raise HTTPException(400, "Plaintext not allowed on server")
+
+    # (#A2) Идемпотентность: если клиент прислал свой UUID — используем его.
+    # Повторный POST с тем же client_id не создаёт дубликат (random_id-паттерн).
+    if body.client_id:
+        try:
+            msg_id = str(uuid.UUID(body.client_id))
+        except (ValueError, AttributeError):
+            raise HTTPException(400, "client_id must be a valid UUID")
+    else:
+        msg_id = str(uuid.uuid4())
+    is_group = False
+    try:
+        with db_conn() as cur:
+            # Check if recipient is a user or a group
+            cur.execute("SELECT 1 FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.recipient_id,))
+            is_user = cur.fetchone()
+            
+            is_group = False
+            if not is_user:
+                cur.execute("SELECT 1 FROM groups WHERE LOWER(id) = LOWER(%s)", (body.recipient_id,))
+                is_group = bool(cur.fetchone())
+                
+            if not is_user and not is_group:
+                raise HTTPException(404, "Recipient not registered")
+                
+            # If it's a group, ensure sender is a member
+            if is_group:
+                cur.execute("SELECT role FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (body.recipient_id, current_user))
+                member = cur.fetchone()
+                if not member:
+                    raise HTTPException(403, "Not a member of this group")
+                
+                # If it's a channel, ensure sender is an admin
+                cur.execute("SELECT is_channel FROM groups WHERE LOWER(id) = LOWER(%s)", (body.recipient_id,))
+                is_channel = cur.fetchone()["is_channel"]
+                if is_channel and member["role"] != "admin":
+                    raise HTTPException(403, "Only admins can post to a channel")
+                    
+            # (#A2) ON CONFLICT: повтор с тем же client_id — не ошибка, а дубликат.
+            cur.execute(
+                """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (id) DO NOTHING""",
+                (
+                    msg_id,
+                    body.sender_id.lower(),
+                    body.recipient_id.lower(),
+                    json.dumps(body.envelope),
+                    _utc_now(),
+                ),
+            )
+            if cur.rowcount == 0:
+                # id уже существует: либо честный ретрай отправителя (ok),
+                # либо попытка занять чужой UUID (409).
+                cur.execute("SELECT sender_id FROM messages WHERE id = %s", (msg_id,))
+                existing = cur.fetchone()
+                if not existing or existing["sender_id"].lower() != current_user.lower():
+                    raise HTTPException(409, "Message id already in use")
+                logger.info(f"send_message: duplicate retry for {msg_id}, treated as success")
+                return {"ok": True, "message_id": msg_id, "duplicate": True}
+            logger.info(f"send_message: inserted message {msg_id}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"send_message DB error: {type(e).__name__}: {e}", exc_info=True)
+        raise HTTPException(500, f"Database error: {type(e).__name__}: {str(e)}")
+
+    # Trigger push notification via WebSocket
+    try:
+        push_event = {
+            "type": "new_message",
+            "message_id": msg_id,
+            "sender_id": body.sender_id.lower(),
+            "recipient_id": body.recipient_id.lower()
+        }
+        
+        if is_group:
+            with db_conn() as cur:
+                cur.execute("SELECT user_id FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) != LOWER(%s)", (body.recipient_id, current_user))
+                members = cur.fetchall()
+            for member in members:
+                asyncio.create_task(manager.send_personal_message(push_event, member["user_id"].lower()))
+        else:
+            asyncio.create_task(manager.send_personal_message(push_event, body.recipient_id.lower()))
+    except Exception as e:
+        logger.warning(f"send_message: push notification failed (non-fatal): {e}")
+
+    return {"ok": True, "message_id": msg_id}
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket, token: str):
+    # Validate token
+    with db_conn() as cur:
+        cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,))
+        row = cur.fetchone()
+    
+    if not row:
+        await websocket.close(code=1008)
+        return
+
+    # (#A1) Сессия с истёкшим сроком не должна держать WebSocket
+    if row["expires_at"]:
+        try:
+            if datetime.now(timezone.utc) > datetime.fromisoformat(row["expires_at"]):
+                await websocket.close(code=1008)
+                return
+        except (ValueError, TypeError):
+            pass
+
+    user_id = row["user_id"].lower()
+    await manager.connect(websocket, user_id)
+    try:
+        while True:
+            # Keep alive and signaling
+            data = await websocket.receive_text()
+            if data == "ping":
+                await websocket.send_text("pong")
+                continue
+                
+            try:
+                import json
+                msg = json.loads(data)
+                # Ephemeral signaling relayed verbatim to a recipient.
+                # Никакого plaintext тут нет: typing/presence не содержат текста сообщений,
+                # а WebRTC — это только SDP/ICE для установки p2p-соединения.
+                if msg.get("type") in [
+                    "webrtc_offer", "webrtc_answer", "webrtc_ice",
+                    "webrtc_hangup", "webrtc_busy",
+                    "typing", "stop_typing", "presence",
+                ]:
+                    recipient_id = msg.get("recipient_id")
+                    if recipient_id:
+                        # Append sender_id to the message so the recipient knows who is calling
+                        msg["sender_id"] = user_id
+                        asyncio.create_task(manager.send_personal_message(msg, recipient_id.lower()))
+            except Exception:
+                pass
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, user_id)
+
+
+class AckMessagesRequest(BaseModel):
+    message_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+@app.post("/messages/ack")
+def ack_messages(body: AckMessagesRequest, current_user: str = Depends(get_current_user)) -> dict:
+    """(#A1) Клиент подтверждает: сообщения сохранены локально.
+    Только после этого они исчезают из inbox. Это исключает потерю
+    сообщений при краше клиента между fetch и записью в локальную БД."""
+    now = _utc_now()
+    with db_conn() as cur:
+        cur.executemany(
+            """INSERT INTO message_receipts (message_id, user_id, acked_at)
+               VALUES (%s, %s, %s) ON CONFLICT (message_id, user_id) DO NOTHING""",
+            [(mid, current_user.lower(), now) for mid in body.message_ids],
+        )
+    return {"ok": True, "acked": len(body.message_ids)}
+
+
+@app.get("/messages/inbox/{user_id}")
+def inbox(user_id: str, since: str = None, current_user: str = Depends(get_current_user)) -> dict:
+    if user_id.lower() != current_user.lower():
+        raise HTTPException(403, "Cannot read another user's inbox")
+
+    with db_conn() as cur:
+        if since:
+            cur.execute(
+                """SELECT m.id, m.sender_id, m.recipient_id, m.envelope_json, m.created_at
+                   FROM messages m
+                   WHERE (LOWER(m.recipient_id) = LOWER(%s) OR LOWER(m.recipient_id) IN (
+                       SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
+                   )) AND m.created_at > %s
+                   ORDER BY m.created_at ASC""",
+                (user_id, user_id, since),
+            )
+            rows = cur.fetchall()
+        else:
+            # (#A1) Неподтверждённые сообщения: личные + групповые/канальные.
+            # Ничего не помечаем — клиент подтверждает приём через POST /messages/ack.
+            cur.execute(
+                """SELECT m.id, m.sender_id, m.recipient_id, m.envelope_json, m.created_at
+                   FROM messages m
+                   WHERE (
+                       LOWER(m.recipient_id) = LOWER(%s)
+                       OR (
+                           LOWER(m.recipient_id) IN (
+                               SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
+                           )
+                           AND LOWER(m.sender_id) != LOWER(%s)
+                       )
+                   )
+                   AND NOT EXISTS (
+                       SELECT 1 FROM message_receipts r
+                       WHERE r.message_id = m.id AND LOWER(r.user_id) = LOWER(%s)
+                   )
+                   ORDER BY m.created_at ASC
+                   LIMIT 200""",
+                (user_id, user_id, user_id, user_id),
+            )
+            rows = cur.fetchall()
+    messages = [
+        {
+            "id": r["id"],
+            "sender_id": r["sender_id"].lower(),
+            "recipient_id": r["recipient_id"].lower(),
+            "envelope": json.loads(r["envelope_json"]),
+            "created_at": r["created_at"],
+        }
+        for r in rows
+    ]
+    return {"messages": messages}
+
+
+# --- (#9) /users with limit, no avatar_data ---
+@app.get("/users")
+def get_users(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT user_id, username, display_name, last_active, created_at, public_key_b64 FROM users ORDER BY user_id ASC LIMIT 200"
+        )
+        rows = cur.fetchall()
+    return {
+        "users": [
+            {
+                "user_id": r["user_id"].lower(),
+                "username": r["username"],
+                "display_name": r["display_name"],
+                "last_active": r["last_active"],
+                "created_at": r["created_at"],
+                "public_key_b64": r["public_key_b64"]
+            }
+            for r in rows
+        ]
+    }
+
+# (#A4) API user_chat_settings удалён: клиент хранит пин/мьют/архив локально (Room).
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "e2e": "server_never_sees_plaintext"}
+
+@app.post("/groups")
+def create_group(body: CreateGroupRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Check if ID exists (as user or group)
+        cur.execute("SELECT 1 FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.id,))
+        if cur.fetchone():
+            raise HTTPException(400, "ID already taken by a user")
+        cur.execute("SELECT 1 FROM groups WHERE LOWER(id) = LOWER(%s)", (body.id,))
+        if cur.fetchone():
+            raise HTTPException(400, "Group ID already taken")
+            
+        # (#A6) Подвязка группы обсуждений: только своя группа (не канал)
+        linked = None
+        if body.linked_group_id and body.is_channel:
+            cur.execute(
+                "SELECT owner_id, is_channel FROM groups WHERE LOWER(id) = LOWER(%s)",
+                (body.linked_group_id,)
+            )
+            lg = cur.fetchone()
+            if not lg:
+                raise HTTPException(404, "Linked group not found")
+            if lg["owner_id"].lower() != current_user.lower():
+                raise HTTPException(403, "Linked group must be owned by you")
+            if lg["is_channel"]:
+                raise HTTPException(400, "Linked group cannot be a channel")
+            linked = body.linked_group_id.lower()
+
+        cur.execute(
+            """INSERT INTO groups (id, name, description, owner_id, is_channel, linked_group_id, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (body.id.lower(), body.name, body.description, current_user, 1 if body.is_channel else 0, linked, _utc_now())
+        )
+        cur.execute(
+            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role)
+               VALUES (%s, %s, %s, %s)""",
+            (body.id.lower(), current_user, body.encrypted_key_b64, 'admin')
+        )
+    return {"ok": True, "group_id": body.id.lower()}
+
+@app.post("/groups/{group_id}/members")
+def add_group_member(group_id: str, body: AddGroupMemberRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Verify permissions
+        cur.execute("SELECT role FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, current_user))
+        admin = cur.fetchone()
+        if not admin or admin["role"] != "admin":
+            raise HTTPException(403, "Only admins can add members")
+            
+        # Check if member exists
+        cur.execute("SELECT 1 FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, body.user_id))
+        if cur.fetchone():
+            raise HTTPException(400, "User is already a member")
+            
+        cur.execute(
+            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role)
+               VALUES (%s, %s, %s, %s)""",
+            (group_id.lower(), body.user_id.lower(), body.encrypted_key_b64, body.role)
+        )
+    return {"ok": True}
+
+
+# --- (#11) Remove member from group ---
+@app.delete("/groups/{group_id}/members/{user_id}")
+def remove_group_member(group_id: str, user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Verify admin permissions
+        cur.execute("SELECT role FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, current_user))
+        admin = cur.fetchone()
+        if not admin or admin["role"] != "admin":
+            raise HTTPException(403, "Only admins can remove members")
+        
+        # Cannot remove the owner
+        cur.execute("SELECT owner_id FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+        group = cur.fetchone()
+        if group and group["owner_id"].lower() == user_id.lower():
+            raise HTTPException(400, "Cannot remove the group owner")
+        
+        cur.execute(
+            "DELETE FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)",
+            (group_id, user_id)
+        )
+    return {"ok": True}
+
+
+# --- (#12) Edit group ---
+@app.put("/groups/{group_id}")
+def update_group(group_id: str, body: UpdateGroupRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Verify admin permissions
+        cur.execute("SELECT role FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, current_user))
+        admin = cur.fetchone()
+        if not admin or admin["role"] != "admin":
+            raise HTTPException(403, "Only admins can edit group")
+        
+        updates = []
+        values = []
+        if body.name is not None:
+            updates.append("name = %s")
+            values.append(body.name)
+        if body.description is not None:
+            updates.append("description = %s")
+            values.append(body.description)
+        
+        if not updates:
+            return {"ok": True}
+        
+        values.append(group_id)
+        cur.execute(
+            f"UPDATE groups SET {', '.join(updates)} WHERE LOWER(id) = LOWER(%s)",
+            values
+        )
+    return {"ok": True}
+
+
+# --- (#20) Leave group ---
+@app.post("/groups/{group_id}/leave")
+def leave_group(group_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Check membership
+        cur.execute("SELECT 1 FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, current_user))
+        if not cur.fetchone():
+            raise HTTPException(400, "Not a member of this group")
+        
+        # Owner cannot leave
+        cur.execute("SELECT owner_id FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+        group = cur.fetchone()
+        if group and group["owner_id"].lower() == current_user.lower():
+            raise HTTPException(400, "Owner cannot leave the group. Transfer ownership or delete the group.")
+        
+        cur.execute(
+            "DELETE FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)",
+            (group_id, current_user)
+        )
+    return {"ok": True}
+
+
+@app.get("/groups/me")
+def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role
+               FROM groups g
+               JOIN group_members gm ON LOWER(g.id) = LOWER(gm.group_id)
+               WHERE LOWER(gm.user_id) = LOWER(%s)""",
+            (current_user,)
+        )
+        rows = cur.fetchall()
+        groups = []
+        for r in rows:
+            groups.append({
+                "id": r["id"],
+                "name": r["name"],
+                "description": r["description"],
+                "owner_id": r["owner_id"],
+                "is_channel": bool(r["is_channel"]),
+                "linked_group_id": r["linked_group_id"],
+                "created_at": r["created_at"],
+                "encrypted_key_b64": r["encrypted_key_b64"],
+                "role": r["role"]
+            })
+    return {"groups": groups}
+
+@app.get("/groups/{group_id}/members")
+def get_group_members(group_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        # Check membership
+        cur.execute("SELECT 1 FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, current_user))
+        if not cur.fetchone():
+            raise HTTPException(403, "Not a member of this group")
+            
+        cur.execute(
+            """SELECT u.user_id, u.username, u.display_name, u.avatar_file_id, gm.role
+               FROM group_members gm
+               JOIN users u ON LOWER(gm.user_id) = LOWER(u.user_id)
+               WHERE LOWER(gm.group_id) = LOWER(%s)""",
+            (group_id,)
+        )
+        rows = cur.fetchall()
+        members = []
+        for r in rows:
+            members.append({
+                "user_id": r["user_id"],
+                "username": r["username"],
+                "display_name": r["display_name"],
+                "avatar_file_id": r["avatar_file_id"],
+                "role": r["role"]
+            })
+    return {"members": members, "count": len(members)}
+
+
+@app.delete("/groups/{group_id}")
+def delete_group(group_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT owner_id FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "Group not found")
+        if row["owner_id"].lower() != current_user.lower():
+            raise HTTPException(403, "Only the owner can delete the group")
+            
+        cur.execute("DELETE FROM messages WHERE LOWER(recipient_id) = LOWER(%s)", (group_id,))
+        cur.execute("DELETE FROM group_members WHERE LOWER(group_id) = LOWER(%s)", (group_id,))
+        cur.execute("DELETE FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+    return {"ok": True}
+
+@app.delete("/messages/history/{peer_id}")
+def delete_history(peer_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            """DELETE FROM messages 
+               WHERE (LOWER(sender_id) = LOWER(%s) AND LOWER(recipient_id) = LOWER(%s))
+                  OR (LOWER(sender_id) = LOWER(%s) AND LOWER(recipient_id) = LOWER(%s))""",
+            (current_user, peer_id, peer_id, current_user)
+        )
+    return {"ok": True}
+
+
+# Mount the web client static files at the root
+UPLOAD_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOAD_DIR.mkdir(exist_ok=True)
+
+# ПУБЛИЧНЫЙ неймспейс аватарок: файлы здесь отдаются БЕЗ авторизации и не
+# шифруются (аватар виден в поиске/профиле любому пользователю). Не класть
+# сюда ничего, кроме аватарок. Приватные медиа — только через /upload+/download.
+AVATAR_DIR = UPLOAD_DIR / "avatars"
+AVATAR_DIR.mkdir(parents=True, exist_ok=True)
+
+# (#P1.6) Лимиты размера загрузки
+MAX_UPLOAD_BYTES = 50 * 1024 * 1024   # 50 МБ — зашифрованные медиа
+MAX_AVATAR_BYTES = 5 * 1024 * 1024    # 5 МБ — аватарки
+
+import re as _re
+_FILE_ID_RE = _re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+
+
+async def _save_upload(file: UploadFile, dest_dir: Path, max_bytes: int) -> str:
+    """Стримит файл на диск, обрывая запись при превышении лимита."""
+    file_id = str(uuid.uuid4())
+    file_path = dest_dir / file_id
+    total = 0
+    try:
+        with open(file_path, "wb") as f:
+            while chunk := await file.read(1024 * 1024):
+                total += len(chunk)
+                if total > max_bytes:
+                    raise HTTPException(413, f"File too large (max {max_bytes // (1024 * 1024)} MB)")
+                f.write(chunk)
+    except Exception:
+        file_path.unlink(missing_ok=True)
+        raise
+    return file_id
+
+
+@app.post("/upload")
+@limiter.limit("20/minute")
+async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)) -> dict:
+    file_id = await _save_upload(file, UPLOAD_DIR, MAX_UPLOAD_BYTES)
+    return {"ok": True, "file_id": file_id}
+
+
+# (#P1.4) Скачивание зашифрованных медиа — только с авторизацией
+@app.get("/download/{file_id}")
+@limiter.limit("100/minute")
+def download_file(request: Request, file_id: str, current_user: str = Depends(get_current_user)) -> FileResponse:
+    if not _FILE_ID_RE.match(file_id):
+        raise HTTPException(404, "File not found")
+    file_path = UPLOAD_DIR / file_id
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(file_path)
+
+
+# (#P1.5) Аватарки: загрузка с авторизацией, отдача публичная (см. AVATAR_DIR)
+@app.post("/avatars")
+@limiter.limit("10/minute")
+async def upload_avatar(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)) -> dict:
+    file_id = await _save_upload(file, AVATAR_DIR, MAX_AVATAR_BYTES)
+    return {"ok": True, "file_id": file_id}
+
+
+@app.get("/avatars/{file_id}")
+@limiter.limit("200/minute")
+def download_avatar(request: Request, file_id: str) -> FileResponse:
+    if not _FILE_ID_RE.match(file_id):
+        raise HTTPException(404, "File not found")
+    file_path = AVATAR_DIR / file_id
+    if not file_path.exists() or not file_path.is_file():
+        raise HTTPException(404, "File not found")
+    return FileResponse(file_path)
+
+# (#A4) Удалены неиспользуемые API: магазин (items/buy/my-items) и
+# /groups/{id}/link (заглушка «комментариев») — клиент их никогда не звал.
+
+app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
