@@ -162,6 +162,8 @@ function toWire(p) {
         }
         case 'edit':
             return { type: 'edit', target: p.target_id, text: p.content != null ? p.content : '' };
+        case 'delete':
+            return { type: 'delete', target: p.target_id || p.target || '' };
         case 'reaction':
             return { type: 'reaction', target: p.target_id, emoji: p.emoji != null ? p.emoji : '' };
         case 'read_receipt':
@@ -211,6 +213,8 @@ function fromWire(o) {
         }
         case 'edit':
             return { type: 'edit', target_id: o.target, content: o.text != null ? o.text : '' };
+        case 'delete':
+            return { type: 'delete', target_id: o.target || o.target_id || '' };
         case 'reaction':
             return { type: 'reaction', target_id: o.target, emoji: o.emoji != null ? o.emoji : '' };
         case 'media': {

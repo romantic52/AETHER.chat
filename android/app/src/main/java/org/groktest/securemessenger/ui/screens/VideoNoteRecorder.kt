@@ -21,6 +21,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material3.Icon
 import androidx.compose.material3.RangeSlider
@@ -78,6 +79,8 @@ fun VideoNoteRecorder(
     var trimStart by remember { mutableStateOf(0f) }
     var trimEnd by remember { mutableStateOf(1f) }
     var sending by remember { mutableStateOf(false) }
+    val videoSegments = remember { mutableStateListOf<File>() }
+    var elapsedBeforeSwitchMs by remember { mutableStateOf(0L) }
 
     fun unbindCamera() {
         try { provider?.unbindAll() } catch (e: Exception) {}
@@ -94,11 +97,27 @@ fun VideoNoteRecorder(
                     if (event is VideoRecordEvent.Finalize) {
                         val ok = !event.hasError() && outputFile.exists() && outputFile.length() > 0
                         when (pendingAction) {
+                            "switch" -> {
+                                if (ok) {
+                                    videoSegments.add(outputFile)
+                                    elapsedBeforeSwitchMs += VideoUtils.durationMs(outputFile).takeIf { it > 0 } ?: (seconds * 1000L)
+                                } else {
+                                    try { outputFile.delete() } catch (e: Exception) {}
+                                }
+                                recording = null
+                                outputFile = File(context.cacheDir, "note_rec_${System.currentTimeMillis()}.mp4")
+                                useFrontCamera = !useFrontCamera
+                            }
                             "preview" -> {
                                 unbindCamera() // камера/микрофон выключаются — запись больше НЕ идёт
                                 if (ok) {
-                                    previewFile = outputFile
-                                    durMs = VideoUtils.durationMs(outputFile).takeIf { it > 0 } ?: (seconds * 1000L)
+                                    val parts = (videoSegments + outputFile).filter { it.exists() && it.length() > 0 }
+                                    val finalFile = if (parts.size > 1) {
+                                        val combined = File(context.cacheDir, "note_join_${System.currentTimeMillis()}.mp4")
+                                        if (VideoUtils.concat(parts, combined)) combined else outputFile
+                                    } else outputFile
+                                    previewFile = finalFile
+                                    durMs = VideoUtils.durationMs(finalFile).takeIf { it > 0 } ?: (seconds * 1000L)
                                     trimStart = 0f; trimEnd = 1f
                                     phase = "preview"
                                 } else onResult(null)
@@ -123,12 +142,13 @@ fun VideoNoteRecorder(
             val p = ProcessCameraProvider.getInstance(context).get()
             provider = p
             hasFront = try { p.hasCamera(CameraSelector.DEFAULT_FRONT_CAMERA) } catch (e: Exception) { false }
+            previewView.scaleX = if (useFrontCamera) -1f else 1f
             val preview = Preview.Builder().build().also { it.setSurfaceProvider(previewView.surfaceProvider) }
             val recorder = Recorder.Builder()
                 .setQualitySelector(
                     QualitySelector.fromOrderedList(
-                        listOf(Quality.SD, Quality.HD, Quality.LOWEST, Quality.HIGHEST),
-                        FallbackStrategy.higherQualityOrLowerThan(Quality.SD)
+                        listOf(Quality.LOWEST, Quality.SD, Quality.HD, Quality.HIGHEST),
+                        FallbackStrategy.higherQualityOrLowerThan(Quality.LOWEST)
                     )
                 )
                 .build()
@@ -162,18 +182,18 @@ fun VideoNoteRecorder(
     }
 
     // Таймер и автостоп на 60 секундах
-    LaunchedEffect(isRecording) {
+    LaunchedEffect(isRecording, elapsedBeforeSwitchMs) {
         if (isRecording) {
-            seconds = 0
+            val startedAt = System.currentTimeMillis()
             while (isRecording) {
-                delay(1000)
-                seconds++
+                seconds = ((elapsedBeforeSwitchMs + (System.currentTimeMillis() - startedAt)) / 1000L).toInt()
                 if (seconds >= MAX_NOTE_SECONDS) {
                     pendingAction = "preview"
                     isRecording = false
                     try { recording?.stop() } catch (e: Exception) {}
                     break
                 }
+                delay(250)
             }
         }
     }
@@ -200,17 +220,33 @@ fun VideoNoteRecorder(
         } else {
             unbindCamera()
             previewFile?.let { try { it.delete() } catch (e: Exception) {} }
+            videoSegments.forEach { try { it.delete() } catch (e: Exception) {} }
+            videoSegments.clear()
             onResult(null)
         }
     }
 
     fun retake() {
         previewFile?.let { try { it.delete() } catch (e: Exception) {} }
+        videoSegments.forEach { try { it.delete() } catch (e: Exception) {} }
+        videoSegments.clear()
         previewFile = null
         outputFile = File(context.cacheDir, "note_rec_${System.currentTimeMillis()}.mp4")
         seconds = 0
+        elapsedBeforeSwitchMs = 0L
         trimStart = 0f; trimEnd = 1f
         phase = "rec" // перезапустит LaunchedEffect → биндинг + автозапись
+    }
+
+    fun switchCamera() {
+        if (phase != "rec") return
+        if (isRecording) {
+            pendingAction = "switch"
+            isRecording = false
+            try { recording?.stop() } catch (e: Exception) {}
+        } else {
+            useFrontCamera = !useFrontCamera
+        }
     }
 
     fun sendTrimmed() {
@@ -220,8 +256,12 @@ fun VideoNoteRecorder(
             val sMs = (trimStart * durMs).toLong()
             val eMs = (trimEnd * durMs).toLong().coerceAtMost(durMs)
             val outF = withContext(Dispatchers.IO) {
-                val o = File(context.cacheDir, "note_trim_${System.currentTimeMillis()}.mp4")
-                if (VideoUtils.trim(src, o, sMs, eMs)) o else src
+                if (sMs <= 0L && (eMs <= 0L || eMs >= durMs - 250L)) {
+                    src
+                } else {
+                    val o = File(context.cacheDir, "note_trim_${System.currentTimeMillis()}.mp4")
+                    if (VideoUtils.trim(src, o, sMs, eMs)) o else src
+                }
             }
             onResult(outF)
         }
@@ -271,6 +311,24 @@ fun VideoNoteRecorder(
                 Icon(Icons.Filled.FiberManualRecord, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(String.format("0:%02d", seconds), color = Color.White, fontSize = 16.sp)
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .statusBarsPadding()
+                    .padding(top = 18.dp, end = 18.dp)
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(Color.White.copy(alpha = 0.16f))
+                    .clickable { switchCamera() },
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Filled.Cameraswitch,
+                    contentDescription = "Переключить камеру",
+                    tint = Color.White,
+                    modifier = Modifier.size(26.dp)
+                )
             }
         }
 
