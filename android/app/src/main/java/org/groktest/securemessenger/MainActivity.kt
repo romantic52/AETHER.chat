@@ -307,7 +307,9 @@ class MainActivity : FragmentActivity() {
                             onNavigateToNotificationsSettings = { navController.navigate("notifications_settings") },
                             onNavigateToPrivacySettings = { navController.navigate("privacy_settings") },
                             onNavigateToAboutApp = { navController.navigate("about_app") },
-                            onNavigateToSecret = { navController.navigate("secret_settings") }
+                            onNavigateToSecret = { navController.navigate("secret_settings") },
+                            onStartAudioCall = { peerId -> activeCall = Triple(peerId, false, false) },
+                            onStartVideoCall = { peerId -> activeCall = Triple(peerId, true, false) }
                         )
                     }
 
@@ -361,8 +363,11 @@ class MainActivity : FragmentActivity() {
                     }
 
                     composable("settings") {
+                        val apiSafe = api ?: return@composable
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             org.groktest.securemessenger.ui.screens.SettingsScreen(
+                                api = apiSafe,
+                                myId = myId,
                                 onBack = { navController.popBackStack() },
                                 onNavigateToProfile = { navController.navigate("profile_settings") },
                                 onNavigateToNotifications = { navController.navigate("notifications_settings") },
@@ -517,8 +522,12 @@ class MainActivity : FragmentActivity() {
                                 onDownloadMedia = { jsonText ->
                                     repoSafe.downloadMedia(jsonText)
                                 },
-                                onDeleteMessage = { mid ->
-                                    coroutineScope.launch(Dispatchers.IO) { store.deleteByMsgId(mid) }
+                                onDeleteMessage = { mid, deleteEverywhere ->
+                                    if (deleteEverywhere) {
+                                        repoSafe.deleteForEveryone(peerId, mid)
+                                    } else {
+                                        repoSafe.deleteForMe(mid)
+                                    }
                                 },
                                 myId = myId,
                                 onReact = { targetMsgId, emoji ->

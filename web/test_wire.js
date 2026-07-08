@@ -37,22 +37,28 @@ eq(toWire({ type: 'edit', target_id: 'm2', content: 'новый' }),
 eq(toWire({ type: 'reaction', target_id: 'm3', emoji: '👍' }),
    { type: 'reaction', target: 'm3', emoji: '👍' }, 'reaction → wire');
 
-// 5. read_receipt → канонический read
+// 5. delete → канон
+eq(toWire({ type: 'delete', target_id: 'm5' }),
+   { type: 'delete', target: 'm5' }, 'delete → wire');
+
+// 6. read_receipt → канонический read
 eq(toWire({ type: 'read_receipt', target_id: 'm4' }),
    { type: 'read' }, 'read_receipt → read');
 
-// 6. веб-родной тип проходит насквозь
+// 7. веб-родной тип проходит насквозь
 eq(toWire({ type: 'image', content: 'data:...' }),
    { type: 'image', content: 'data:...' }, 'image passthrough');
 
-// 7. Приём канонического Android-text
+// 8. Приём канонического Android-text
 eq(fromWire({ type: 'text', text: 'hi from android', reply_to_id: 'x', reply_to_text: 'orig' }),
    { type: 'text', content: 'hi from android', reply_to: { msg_id: 'x', text: 'orig', author: '' } },
    'android text → web');
 
-// 8. Приём канонического edit/reaction
+// 9. Приём канонического edit/delete/reaction
 eq(fromWire({ type: 'edit', target: 'y', text: 'upd' }),
    { type: 'edit', target_id: 'y', content: 'upd' }, 'android edit → web');
+eq(fromWire({ type: 'delete', target: 'd' }),
+   { type: 'delete', target_id: 'd' }, 'android delete → web');
 eq(fromWire({ type: 'reaction', target: 'z', emoji: '❤️' }),
    { type: 'reaction', target_id: 'z', emoji: '❤️' }, 'android reaction → web');
 

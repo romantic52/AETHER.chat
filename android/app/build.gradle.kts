@@ -15,6 +15,18 @@ android {
         versionName = "0.1.0"
     }
 
+    signingConfigs {
+        getByName("debug") {
+            val localDebugKeystore = rootProject.file("debug.keystore")
+            if (localDebugKeystore.exists()) {
+                storeFile = localDebugKeystore
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
+    }
+
     buildTypes {
         release {
             // (#A5) R8 + shrink: релиз в разы плавнее и меньше debug-сборки.

@@ -1,15 +1,18 @@
 package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.VolumeOff
@@ -27,7 +30,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.groktest.securemessenger.data.ChatListEntry
-import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherIsland
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
@@ -45,18 +50,16 @@ import kotlinx.coroutines.launch
 @Composable
 fun ChatListScreen(
     myId: String,
-    chatListFlow: kotlinx.coroutines.flow.Flow<List<ChatListEntry>>,
+    chats: List<ChatListEntry>,
     onChatSelected: (String) -> Unit,
     onLogout: () -> Unit,
     onNewChat: () -> Unit,
     onProfileClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onSearchClick: () -> Unit,
+    onCallsClick: () -> Unit = {},
     onAction: (String, String) -> Unit = { _, _ -> } // peerId, action ("mute", "archive", "pin", "delete")
 ) {
-    val chats by chatListFlow.collectAsState(initial = emptyList())
-    var currentTab by remember { mutableIntStateOf(0) }
-
     Scaffold(
         topBar = {
             Column(
@@ -64,6 +67,14 @@ fun ChatListScreen(
                 ) {
                     TopAppBar(
                         title = { Text("Aether", fontSize = 24.sp, fontWeight = FontWeight.Bold) },
+                        actions = {
+                            IconButton(onClick = onNewChat) {
+                                Icon(Icons.Default.Person, contentDescription = "Контакты", tint = MaterialTheme.colorScheme.primary)
+                            }
+                            IconButton(onClick = onCallsClick) {
+                                Icon(Icons.Default.Phone, contentDescription = "Звонки", tint = MaterialTheme.colorScheme.primary)
+                            }
+                        },
                         colors = TopAppBarDefaults.topAppBarColors(
                             containerColor = Color.Transparent,
                             titleContentColor = MaterialTheme.colorScheme.onBackground
@@ -72,10 +83,14 @@ fun ChatListScreen(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp)
+                            .padding(horizontal = AetherStyle.ScreenHorizontal)
                             .padding(bottom = 12.dp)
-                            .height(50.dp)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha=0.5f), CircleShape)
+                            .height(54.dp)
+                            .aetherIsland(
+                                shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                                fillAlpha = AetherStyle.SearchFillAlpha,
+                                strokeAlpha = 0.38f
+                            )
                             .clickable(onClick = onSearchClick),
                         contentAlignment = Alignment.CenterStart
                     ) {
@@ -93,8 +108,11 @@ fun ChatListScreen(
         floatingActionButton = {
             FloatingActionButton(
                 onClick = onNewChat,
-                containerColor = MaterialTheme.colorScheme.primary,
-                contentColor = MaterialTheme.colorScheme.onPrimary,
+                modifier = Modifier
+                    .padding(bottom = AetherStyle.DockHeight + AetherStyle.DockBottom + 18.dp)
+                    .border(AetherStyle.Stroke, MaterialTheme.colorScheme.primary.copy(alpha = 0.62f), CircleShape),
+                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = AetherStyle.DockFillAlpha),
+                contentColor = MaterialTheme.colorScheme.primary,
                 shape = CircleShape
             ) {
                 Icon(Icons.Default.Add, contentDescription = "Новый чат")
@@ -110,8 +128,7 @@ fun ChatListScreen(
                     Box(
                         modifier = Modifier
                             .size(96.dp)
-                            .clip(CircleShape)
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            .aetherCircle(fillAlpha = 0.5f, strokeAlpha = 0.24f),
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -182,12 +199,7 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
                 Box(
                     modifier = Modifier
                         .fillMaxHeight()
-                        .width(60.dp)
-                        .background(color)
-                        .clickable { 
-                            onAction(action)
-                            coroutineScope.launch { animate(offsetX, 0f, animationSpec = tween(150)) { v, _ -> offsetX = v } }
-                        },
+                        .width(60.dp),
                     contentAlignment = Alignment.Center
                 ) {
                     val icon = when(action) {
@@ -197,7 +209,20 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
                         "delete" -> Icons.Filled.Delete
                         else -> Icons.Filled.Delete
                     }
-                    Icon(icon, contentDescription = action, tint = Color.White)
+                    Box(
+                        modifier = Modifier
+                            .size(46.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.88f))
+                            .border(AetherStyle.Stroke, color.copy(alpha = 0.85f), CircleShape)
+                            .clickable {
+                                onAction(action)
+                                coroutineScope.launch { animate(offsetX, 0f, animationSpec = tween(150)) { v, _ -> offsetX = v } }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(icon, contentDescription = action, tint = color)
+                    }
                 }
             }
         }

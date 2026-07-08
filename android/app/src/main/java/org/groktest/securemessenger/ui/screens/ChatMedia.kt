@@ -3,6 +3,8 @@ package org.groktest.securemessenger.ui.screens
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.layout.*
 import androidx.compose.ui.geometry.CornerRadius
@@ -181,8 +183,9 @@ fun FileMessageBubble(
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
-            .widthIn(min = 200.dp, max = 280.dp)
-            .padding(vertical = 2.dp)
+            .widthIn(min = 210.dp, max = 280.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(tint.copy(alpha = 0.10f))
             .clickable(enabled = !loading) {
                 loading = true
                 scope.launch {
@@ -210,9 +213,10 @@ fun FileMessageBubble(
                     }
                 }
             }
+            .padding(horizontal = 10.dp, vertical = 8.dp)
     ) {
         Box(
-            modifier = Modifier.size(44.dp).clip(CircleShape).background(tint.copy(alpha = 0.15f)),
+            modifier = Modifier.size(42.dp).clip(CircleShape).background(tint.copy(alpha = 0.16f)),
             contentAlignment = Alignment.Center
         ) {
             if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), color = tint, strokeWidth = 2.dp)
@@ -379,10 +383,12 @@ private fun TrimWaveform(
  * предпросмотр. Тап — играет СО ЗВУКОМ и увеличивается; ещё тап — пауза/продолжить.
  * Вокруг — кольцо прогресса воспроизведения.
  */
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun VideoNoteMessage(
     jsonText: String,
-    onDownloadMedia: suspend (String) -> ByteArray?
+    onDownloadMedia: suspend (String) -> ByteArray?,
+    onLongClick: (() -> Unit)? = null
 ) {
     val context = LocalContext.current
     var filePath by remember { mutableStateOf<String?>(null) }
@@ -444,9 +450,12 @@ fun VideoNoteMessage(
             .size(size)
             .clip(CircleShape)
             .background(Color.Black)
-            .clickable {
-                if (!active) { active = true; playing = true } else { playing = !playing }
-            }
+            .combinedClickable(
+                onClick = {
+                    if (!active) { active = true; playing = true } else { playing = !playing }
+                },
+                onLongClick = onLongClick
+            )
             // Перемотка: тянешь по кругу (за кольцо) — угол → позиция (только в active).
             .pointerInput(active) {
                 if (!active) return@pointerInput
