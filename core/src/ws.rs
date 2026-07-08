@@ -71,7 +71,11 @@ impl WsClient {
         };
         Arc::new(Self {
             ws_base,
-            inner: Mutex::new(WsInner { tx: None, stop: None, handle: None }),
+            inner: Mutex::new(WsInner {
+                tx: None,
+                stop: None,
+                handle: None,
+            }),
         })
     }
 
@@ -163,7 +167,12 @@ fn pump(url: String, rx: Receiver<String>, listener: Box<dyn WsListener>, stop: 
 }
 
 /// Один сеанс активного соединения: цикл чтения/записи до обрыва или stop.
-fn run_session(socket: &mut Sock, rx: &Receiver<String>, listener: &Box<dyn WsListener>, stop: &Arc<AtomicBool>) {
+fn run_session(
+    socket: &mut Sock,
+    rx: &Receiver<String>,
+    listener: &Box<dyn WsListener>,
+    stop: &Arc<AtomicBool>,
+) {
     let mut last_ping = Instant::now();
     loop {
         if stop.load(Ordering::SeqCst) {
@@ -207,7 +216,15 @@ fn dispatch(listener: &Box<dyn WsListener>, text: &str) {
     };
     let t = v["type"].as_str().unwrap_or("");
     if t == "new_message" {
-        listener.on_new_message(v["sender_id"].as_str().unwrap_or("").to_string());
+        let sender_id = v["sender_id"].as_str().unwrap_or("");
+        let recipient_id = v["recipient_id"].as_str().unwrap_or("");
+        let chat_id = if recipient_id.starts_with("group_") || recipient_id.starts_with("channel_")
+        {
+            recipient_id
+        } else {
+            sender_id
+        };
+        listener.on_new_message(chat_id.to_string());
     } else if t == "typing" {
         listener.on_typing(v["sender_id"].as_str().unwrap_or("").to_string());
     } else if t.starts_with("webrtc_") {

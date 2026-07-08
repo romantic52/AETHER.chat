@@ -1,8 +1,6 @@
 package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.foundation.background
-import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
 import androidx.compose.material.icons.filled.Done
@@ -55,10 +53,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.data.MessageEntity
 import org.groktest.securemessenger.AetherService
-import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.components.liquidGlass
-import org.groktest.securemessenger.ui.glass.glassSurface
-import org.groktest.securemessenger.ui.glass.glassSource
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
@@ -81,6 +75,10 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.runtime.key
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -96,7 +94,7 @@ fun ChatScreen(
     // Отправка как документ (файл) — без сжатия, с именем/размером
     onSendFiles: suspend (List<android.net.Uri>, String?) -> Exception? = { _, _ -> null },
     onSendRecording: suspend (ByteArray, String, String, Long) -> Exception? = { _, _, _, _ -> null },
-    onDeleteMessage: (String) -> Unit = {},
+    onDeleteMessage: suspend (String, Boolean) -> Exception? = { _, _ -> null },
     onReact: (String, String) -> Unit = { _, _ -> },
     // (#A2) Повторная отправка сообщения со статусом «ошибка» (-1)
     onRetryMessage: (String) -> Unit = {},
@@ -129,7 +127,6 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
-    val isLiquidGlass = org.groktest.securemessenger.ui.theme.LocalThemeSettings.current.isLiquidGlass()
 
     var replyingTo by remember { mutableStateOf<MessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
@@ -253,6 +250,7 @@ fun ChatScreen(
     var showAttachSheet by remember { mutableStateOf(false) }
     val selectedMedia = remember { mutableStateListOf<android.net.Uri>() }
     var attachCaption by remember { mutableStateOf("") }
+    var attachAsDocument by remember { mutableStateOf(false) }
     var recentMedia by remember { mutableStateOf<List<Pair<android.net.Uri, Boolean>>>(emptyList()) }
     val gridImageLoader = remember {
         coil.ImageLoader.Builder(context)
@@ -502,7 +500,11 @@ fun ChatScreen(
         }
     }
 
-    GlassBackground {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+    ) {
         Scaffold(
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             topBar = {
@@ -511,8 +513,10 @@ fun ChatScreen(
                 val isGroupChat = peerId.startsWith("group_", ignoreCase = true)
                 val isPersonalChat = !isChannelChat && !isGroupChat
                 Surface(
-                    color = if (isLiquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
-                    modifier = if (isLiquidGlass) Modifier.glassSurface(androidx.compose.ui.graphics.RectangleShape) else Modifier
+                    color = Color.Transparent,
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                    modifier = Modifier.fillMaxWidth()
                 ) {
                     Row(
                         modifier = Modifier
@@ -594,8 +598,12 @@ fun ChatScreen(
             },
             bottomBar = {
                 Surface(
-                    color = if (isLiquidGlass) Color.Transparent else MaterialTheme.colorScheme.surface,
-                    modifier = if (isLiquidGlass) Modifier.glassSurface(androidx.compose.ui.graphics.RectangleShape) else Modifier
+                    color = Color.Transparent,
+                    shadowElevation = 0.dp,
+                    tonalElevation = 0.dp,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .imePadding()
                 ) {
                   // (#A6) Канал для не-админа — read-only: плашка вместо поля ввода
                   val canPost by produceState(initialValue = true, peerId) {
@@ -683,29 +691,38 @@ fun ChatScreen(
                                 modifier = Modifier.weight(1f).padding(end = 8.dp).height(56.dp)
                             )
                         } else {
-                        IconButton(
-                            onClick = {
-                                val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
-                                    arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
-                                else
-                                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-                                val granted = perms.any {
-                                    androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                }
-                                showAttachSheet = true
-                                if (granted) {
-                                    // Сетка уже прогрета при входе в чат — тихо обновляем
-                                    coroutineScope.launch(Dispatchers.IO) {
-                                        val fresh = queryRecentMedia(context)
-                                        if (fresh != recentMedia) recentMedia = fresh
+                        val attachEnabled = !isSending && !isRecordingVoice
+                        Box(
+                            modifier = Modifier
+                                .size(AetherStyle.ControlSize)
+                                .aetherCircle(fillAlpha = 1f, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                                .clickable(enabled = attachEnabled) {
+                                    val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
+                                        arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
+                                    else
+                                        arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
+                                    val granted = perms.any {
+                                        androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                     }
-                                } else {
-                                    mediaPermsLauncher.launch(perms)
-                                }
-                            },
-                            enabled = !isSending && !isRecordingVoice
+                                    showAttachSheet = true
+                                    if (granted) {
+                                        // Сетка уже прогрета при входе в чат — тихо обновляем
+                                        coroutineScope.launch(Dispatchers.IO) {
+                                            val fresh = queryRecentMedia(context)
+                                            if (fresh != recentMedia) recentMedia = fresh
+                                        }
+                                    } else {
+                                        mediaPermsLauncher.launch(perms)
+                                    }
+                                },
+                            contentAlignment = Alignment.Center
                         ) {
-                            Icon(Icons.Default.Add, contentDescription = "Вложение", tint = MaterialTheme.colorScheme.primary)
+                            Icon(
+                                Icons.Default.Add,
+                                contentDescription = "Вложение",
+                                tint = if (attachEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                modifier = Modifier.size(26.dp)
+                            )
                         }
 
                         if (isRecordingVoice) {
@@ -751,22 +768,17 @@ fun ChatScreen(
                                 },
                                 modifier = Modifier
                                     .weight(1f)
-                                    .padding(end = 8.dp),
+                                    .padding(horizontal = 8.dp)
+                                    .border(
+                                        AetherStyle.Stroke,
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.46f),
+                                        RoundedCornerShape(AetherStyle.PillRadius)
+                                    ),
                                 placeholder = { Text("Написать сообщение...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                                 maxLines = 4,
                                 enabled = !isSending,
-                                shape = RoundedCornerShape(24.dp),
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    disabledContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    disabledIndicatorColor = Color.Transparent,
-                                    focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                                    unfocusedTextColor = MaterialTheme.colorScheme.onBackground,
-                                    disabledTextColor = MaterialTheme.colorScheme.onBackground
-                                )
+                                shape = RoundedCornerShape(AetherStyle.PillRadius),
+                                colors = aetherTextFieldColors(containerAlpha = 1f)
                             )
                         }
                         } // else (нет превью)
@@ -778,19 +790,32 @@ fun ChatScreen(
                             label = "sendBg"
                         )
                         // Лёгкая пульсация кнопки во время незалоченной записи (живее, как в TG).
-                        val micPulse by rememberInfiniteTransition(label = "micPulse").animateFloat(
-                            initialValue = 1f, targetValue = 1.12f,
-                            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
-                                tween(700), androidx.compose.animation.core.RepeatMode.Reverse
-                            ), label = "micPulseV"
-                        )
-                        val btnScale = if (isRecordingVoice && !recordLocked) micPulse else 1f
+                        val btnScale = if (isRecordingVoice && !recordLocked) {
+                            val micPulse by rememberInfiniteTransition(label = "micPulse").animateFloat(
+                                initialValue = 1f,
+                                targetValue = 1.12f,
+                                animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                                    tween(700),
+                                    androidx.compose.animation.core.RepeatMode.Reverse
+                                ),
+                                label = "micPulseV"
+                            )
+                            micPulse
+                        } else {
+                            1f
+                        }
                         Box(
                             modifier = Modifier
-                                .size(50.dp)
+                                .size(AetherStyle.ControlSize)
                                 .graphicsLayer { scaleX = btnScale; scaleY = btnScale }
                                 .clip(CircleShape)
-                                .background(sendBg),
+                                .background(sendBg)
+                                .border(
+                                    AetherStyle.Stroke,
+                                    if (sendActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.ControlStrokeAlpha),
+                                    CircleShape
+                                ),
                             contentAlignment = Alignment.Center
                         ) {
                             if (isSending) {
@@ -936,23 +961,9 @@ fun ChatScreen(
                 value = try { withContext(Dispatchers.IO) { checkNotE2e() } } catch (e: Exception) { false }
             }
             // Телеграм-обои: тонкий узор из точек в тон темы (субтильно, под Aether).
-            val patternColor = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.04f)
             Column(modifier = Modifier
                 .fillMaxSize()
-                .padding(padding)
-                .drawBehind {
-                    val step = 56.dp.toPx()
-                    val r = 2.2.dp.toPx()
-                    var y = 0f; var row = 0
-                    while (y < size.height) {
-                        var x = if (row % 2 == 0) 0f else step / 2f
-                        while (x < size.width) {
-                            drawCircle(patternColor, r, Offset(x, y))
-                            x += step
-                        }
-                        y += step; row++
-                    }
-                }
+                .padding(top = padding.calculateTopPadding())
             ) {
                 if (notE2e) {
                     Surface(
@@ -971,10 +982,8 @@ fun ChatScreen(
             CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize().then(
-                        if (isLiquidGlass) Modifier.glassSource() else Modifier
-                    ),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 12.dp)
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
                 ) {
                     itemsIndexed(messages, key = { _, m -> m.msgId }) { index, msg ->
                         // Группировка как в Telegram: разделители дат, тесная группа
@@ -998,7 +1007,19 @@ fun ChatScreen(
                                 showTail = showTail,
                                 isChannelPost = peerId.startsWith("channel_", ignoreCase = true),
                                 onDownloadMedia = onDownloadMedia,
-                                onDeleteMessage = onDeleteMessage,
+                                onDeleteMessage = { mid, deleteEverywhere ->
+                                    coroutineScope.launch {
+                                        val err = withContext(Dispatchers.IO) {
+                                            onDeleteMessage(mid, deleteEverywhere)
+                                        }
+                                        if (err != null) {
+                                            snackbarHostState.showSnackbar(
+                                                "Ошибка удаления: ${err.message}",
+                                                duration = SnackbarDuration.Long
+                                            )
+                                        }
+                                    }
+                                },
                                 myId = myId,
                                 onReact = onReact,
                                 onRetry = onRetryMessage,
@@ -1168,11 +1189,25 @@ fun ChatScreen(
                     showAttachSheet = false
                     selectedMedia.clear()
                     attachCaption = ""
+                    attachAsDocument = false
                 },
                 sheetState = attachSheetState,
-                containerColor = MaterialTheme.colorScheme.surface
+                containerColor = Color.Transparent,
+                scrimColor = Color.Transparent,
+                dragHandle = null
             ) {
-                Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .navigationBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                        .aetherIsland(
+                            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                            fillAlpha = AetherStyle.DockFillAlpha,
+                            strokeAlpha = 0.46f
+                        )
+                        .padding(horizontal = 12.dp, vertical = 12.dp)
+                ) {
                     if (recentMedia.isEmpty()) {
                         Box(
                             modifier = Modifier.fillMaxWidth().height(100.dp),
@@ -1292,6 +1327,25 @@ fun ChatScreen(
 
                     if (selectedMedia.isNotEmpty()) {
                         Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 8.dp),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            FilterChip(
+                                selected = !attachAsDocument,
+                                onClick = { attachAsDocument = false },
+                                label = { Text("Медиа") },
+                                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                            )
+                            FilterChip(
+                                selected = attachAsDocument,
+                                onClick = { attachAsDocument = true },
+                                label = { Text("Файл") },
+                                leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                            )
+                        }
+                        Row(
                             verticalAlignment = Alignment.Bottom,
                             modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp)
                         ) {
@@ -1317,12 +1371,16 @@ fun ChatScreen(
                                     .clickable {
                                         val uris = selectedMedia.toList()
                                         val cap = attachCaption.trim().ifBlank { null }
+                                        val sendAsDocument = attachAsDocument
                                         showAttachSheet = false
                                         selectedMedia.clear()
                                         attachCaption = ""
+                                        attachAsDocument = false
                                         isSending = true
                                         coroutineScope.launch {
-                                            val error = withContext(Dispatchers.IO) { onSendMedia(uris, cap) }
+                                            val error = withContext(Dispatchers.IO) {
+                                                if (sendAsDocument) onSendFiles(uris, cap) else onSendMedia(uris, cap)
+                                            }
                                             isSending = false
                                             if (error != null) {
                                                 snackbarHostState.showSnackbar("Ошибка отправки медиа: ${error.message}", duration = SnackbarDuration.Long)
@@ -1359,7 +1417,7 @@ fun MessageBubble(
     showTail: Boolean = true,
     isChannelPost: Boolean = false,
     onDownloadMedia: suspend (String) -> ByteArray? = { null },
-    onDeleteMessage: (String) -> Unit = {},
+    onDeleteMessage: (String, Boolean) -> Unit = { _, _ -> },
     myId: String = "",
     onReact: (String, String) -> Unit = { _, _ -> },
     onRetry: (String) -> Unit = {},
@@ -1384,36 +1442,54 @@ fun MessageBubble(
     // Стекло на пузырях ломает рендер (видео-кружки = SurfaceView + RenderEffect → чёрный/глитч),
     // плюс блюр сплошной ленты делает текст нечитаемым. Стекло применяем только к
     // барам/панелям (см. isLiquidGlass в шапке/нижней панели), пузыри — сплошные.
-    val isLiquid = false
-    val bubbleColor = if (isLiquid) Color.Transparent
-        else if (alignEnd) MaterialTheme.colorScheme.tertiary
-        else MaterialTheme.colorScheme.surfaceVariant
-    val textColor = if (isLiquid) MaterialTheme.colorScheme.onBackground
-        else if (alignEnd) MaterialTheme.colorScheme.onTertiary
-        else MaterialTheme.colorScheme.onBackground
-
-    val isMedia = msg.text.startsWith("{\"type\":\"media\"")
+    val mediaJson = remember(msg.text) { parseMediaPayloadForDisplay(msg.text) }
+    val isMedia = mediaJson != null
     var mediaBytes by remember { mutableStateOf<ByteArray?>(null) }
     var isDownloading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
 
     // (#A5) remember: JSON парсится один раз, а не при каждой рекомпозиции пузыря
-    val mediaJson = remember(msg.text) {
-        if (isMedia) try { org.json.JSONObject(msg.text) } catch (e: Exception) { null } else null
+    val kind = mediaJson?.let { mediaKindForDisplay(it) } ?: ""
+    val mediaText = mediaJson?.toString() ?: msg.text
+    val isDetachedMedia = kind == "image" || kind == "file" || kind == "video_note"
+    val bubbleColor by animateColorAsState(
+        targetValue = if (isDetachedMedia) {
+            Color.Transparent
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (alignEnd) 0.82f else 0.72f)
+        },
+        animationSpec = tween(220),
+        label = "messageBubbleColor"
+    )
+    val bubbleBorderColor by animateColorAsState(
+        targetValue = if (alignEnd) {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.68f)
+        } else {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
+        },
+        animationSpec = tween(220),
+        label = "messageBubbleBorder"
+    )
+    val textColor = when {
+        isDetachedMedia -> MaterialTheme.colorScheme.onSurface
+        else -> MaterialTheme.colorScheme.onSurface
     }
-    val kind = mediaJson?.optString("kind", "") ?: ""
 
-    if (kind == "video_note") {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = if (alignEnd) Arrangement.End else Arrangement.Start
-        ) {
-            VideoNoteMessage(jsonText = msg.text, onDownloadMedia = onDownloadMedia)
+    LaunchedEffect(msg.msgId, mediaText, kind) {
+        if (kind == "image" && mediaBytes == null && !isDownloading && errorMessage == null) {
+            isDownloading = true
+            val bytes = withContext(Dispatchers.IO) { onDownloadMedia(mediaText) }
+            if (bytes != null) {
+                mediaBytes = bytes
+            } else {
+                errorMessage = "Не удалось открыть изображение"
+            }
+            isDownloading = false
         }
-        return
     }
 
     // Свайп вправо → ответ (как в Telegram). Жест ТОЛЬКО на самом пузыре,
@@ -1445,24 +1521,21 @@ fun MessageBubble(
         ) {
         // «Хвост» (срезанный угол) только у последнего сообщения в группе —
         // сгруппированные сообщения одного автора скруглены одинаково.
-        val r = 18.dp
+        val r = 22.dp
         val bubbleShape = if (!showTail) RoundedCornerShape(r) else RoundedCornerShape(
             topStart = r,
             topEnd = r,
-            bottomStart = if (alignEnd) r else 4.dp,
-            bottomEnd = if (alignEnd) 4.dp else r
+            bottomStart = if (alignEnd) r else 8.dp,
+            bottomEnd = if (alignEnd) 8.dp else r
         )
         Surface(
             color = bubbleColor,
             shape = bubbleShape,
             modifier = Modifier
-                .widthIn(max = 280.dp)
+                .widthIn(max = if (kind == "video_note") 308.dp else if (isDetachedMedia) 320.dp else 310.dp)
                 .then(
-                    if (isLiquid) Modifier.glassSurface(
-                        shape = bubbleShape,
-                        fallbackTint = if (isOut) MaterialTheme.colorScheme.primary else Color.White,
-                        fallbackAlpha = if (isOut) 0.30f else 0.10f
-                    ) else Modifier
+                    if (isDetachedMedia) Modifier
+                    else Modifier.border(1.dp, bubbleBorderColor, bubbleShape)
                 )
                 .combinedClickable(
                     onClick = {},
@@ -1478,7 +1551,12 @@ fun MessageBubble(
                     }
                 )
         ) {
-            Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 10.dp)) {
+            Column(
+                modifier = Modifier.padding(
+                    horizontal = if (isDetachedMedia) 0.dp else 14.dp,
+                    vertical = if (isDetachedMedia) 0.dp else 10.dp
+                )
+            ) {
                 if (msg.forwardedFrom != null) {
                     Text(
                         "↪ Переслано от ${msg.forwardedFrom}",
@@ -1512,16 +1590,22 @@ fun MessageBubble(
                     val json = mediaJson
                     val mimeType = json?.optString("mime_type", "") ?: ""
 
-                    if (kind == "voice") {
+                    if (kind == "video_note") {
+                        VideoNoteMessage(
+                            jsonText = mediaText,
+                            onDownloadMedia = onDownloadMedia,
+                            onLongClick = { menuOpen = true }
+                        )
+                    } else if (kind == "voice") {
                         VoiceMessagePlayer(
-                            jsonText = msg.text,
+                            jsonText = mediaText,
                             durationMs = json?.optLong("duration", 0L) ?: 0L,
                             tint = textColor,
                             onDownloadMedia = onDownloadMedia
                         )
                     } else if (kind == "file") {
                         FileMessageBubble(
-                            jsonText = msg.text,
+                            jsonText = mediaText,
                             fileName = json?.optString("file_name", "") ?: "",
                             fileSize = json?.optLong("file_size", 0L) ?: 0L,
                             tint = textColor,
@@ -1534,9 +1618,9 @@ fun MessageBubble(
                                 model = mediaBytes,
                                 contentDescription = "Вложение",
                                 modifier = Modifier
-                                    .heightIn(max = 280.dp)
+                                    .heightIn(min = 120.dp, max = 360.dp)
                                     .fillMaxWidth()
-                                    .clip(RoundedCornerShape(8.dp))
+                                    .clip(RoundedCornerShape(AetherStyle.MediaRadius))
                                     // (#A5) Тап — полноэкранный просмотр с зумом
                                     .clickable { showFullscreen = true },
                                 contentScale = androidx.compose.ui.layout.ContentScale.Crop
@@ -1551,14 +1635,29 @@ fun MessageBubble(
                             Text("Файл загружен", color = textColor, fontSize = 14.sp)
                         }
                     } else {
-                        if (isDownloading) {
+                        if (kind == "image") {
+                            if (isDownloading) {
+                                Box(
+                                    modifier = Modifier
+                                        .height(180.dp)
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(AetherStyle.MediaRadius))
+                                        .background(textColor.copy(alpha = 0.08f)),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = textColor)
+                                }
+                            } else if (errorMessage != null) {
+                                Text(errorMessage!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
+                            }
+                        } else if (isDownloading) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onBackground)
                         } else {
                             Button(
                                 onClick = {
                                     isDownloading = true
                                     coroutineScope.launch {
-                                        val bytes = withContext(Dispatchers.IO) { onDownloadMedia(msg.text) }
+                                        val bytes = withContext(Dispatchers.IO) { onDownloadMedia(mediaText) }
                                         if (bytes != null) {
                                             mediaBytes = bytes
                                         } else {
@@ -1606,12 +1705,12 @@ fun MessageBubble(
                     } catch (e: Exception) { emptyMap<String, String>() }
                 }
                 if (reactionsMap.isNotEmpty()) {
-                    val counts = reactionsMap.values.groupingBy { it }.eachCount()
+                    val counts = reactionsMap.values.toSet()
                     val chipBg = if (msg.isOut) Color.White.copy(alpha = 0.18f)
                         else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                     Spacer(Modifier.height(4.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        counts.forEach { (emoji, cnt) ->
+                        counts.forEach { emoji ->
                             key(emoji) {
                                 // Pop-появление реакции (пружинка), как в Telegram
                                 val scale = remember { Animatable(0.5f) }
@@ -1631,7 +1730,7 @@ fun MessageBubble(
                                         }
                                         .padding(horizontal = 8.dp, vertical = 3.dp)
                                 ) {
-                                    Text("$emoji $cnt", fontSize = 13.sp, color = textColor)
+                                    Text(emoji, fontSize = 13.sp, color = textColor)
                                 }
                             }
                         }
@@ -1747,8 +1846,40 @@ fun MessageBubble(
             DropdownMenuItem(
                 text = { Text("Удалить") },
                 onClick = {
-                    onDeleteMessage(msg.msgId)
+                    showDeleteDialog = true
                     menuOpen = false
+                }
+            )
+        }
+        if (showDeleteDialog) {
+            AlertDialog(
+                onDismissRequest = { showDeleteDialog = false },
+                title = { Text("Удалить сообщение?") },
+                text = { Text("Можно убрать его только у себя или отправить удаление всем участникам чата.") },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            showDeleteDialog = false
+                            onDeleteMessage(msg.msgId, true)
+                        }
+                    ) {
+                        Text("У всех", color = MaterialTheme.colorScheme.error)
+                    }
+                },
+                dismissButton = {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(
+                            onClick = {
+                                showDeleteDialog = false
+                                onDeleteMessage(msg.msgId, false)
+                            }
+                        ) {
+                            Text("Только у себя")
+                        }
+                        TextButton(onClick = { showDeleteDialog = false }) {
+                            Text("Отмена")
+                        }
+                    }
                 }
             )
         }
@@ -1872,6 +2003,74 @@ fun FullscreenImageViewer(imageBytes: ByteArray, onClose: () -> Unit) {
 }
 
 // ---- Хелперы чата (как в Telegram) ----
+
+private fun parseMediaPayloadForDisplay(raw: String): org.json.JSONObject? {
+    val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return null }
+    val type = obj.optString("type")
+    if (type == "media") return normalizeMediaPayloadForDisplay(obj, fallbackKind = null)
+    if (type !in setOf("image", "video", "voice", "video_msg", "file")) return null
+
+    val media = obj.optJSONObject("media")
+    val out = org.json.JSONObject().put("type", "media")
+    putFirstForDisplay(out, "file_id", obj, media, "file_id", "fileId", "id")
+        ?: obj.optString("content").takeIf { it.isNotBlank() && !it.startsWith("data:") }?.let { out.put("file_id", it) }
+    putFirstForDisplay(out, "sym_key", obj, media, "sym_key", "symKey", "key", "key_b64")
+    putFirstForDisplay(out, "nonce", obj, media, "nonce", "nonce_b64", "iv")
+    putFirstForDisplay(out, "mime_type", obj, media, "mime_type", "mimeType", "mime")
+    putFirstForDisplay(out, "file_name", obj, media, "file_name", "fileName", "filename", "name")
+    putFirstForDisplay(out, "caption", obj, media, "caption")
+        ?: obj.optString("text").takeIf { it.isNotBlank() }?.let { out.put("caption", it) }
+    if (obj.has("file_size")) out.put("file_size", obj.optLong("file_size"))
+    if (obj.has("fileSize")) out.put("file_size", obj.optLong("fileSize"))
+    if (media?.has("file_size") == true) out.put("file_size", media.optLong("file_size"))
+    if (media?.has("fileSize") == true) out.put("file_size", media.optLong("fileSize"))
+    return normalizeMediaPayloadForDisplay(out, fallbackKind = when (type) {
+        "image" -> "image"
+        "video" -> "video"
+        "voice" -> "voice"
+        "video_msg" -> "video_msg"
+        else -> "file"
+    })
+}
+
+private fun normalizeMediaPayloadForDisplay(obj: org.json.JSONObject, fallbackKind: String?): org.json.JSONObject {
+    if (!obj.has("kind") || obj.optString("kind").isBlank()) {
+        obj.put("kind", fallbackKind ?: mediaKindForDisplay(obj))
+    }
+    return obj
+}
+
+private fun mediaKindForDisplay(obj: org.json.JSONObject): String {
+    val kind = obj.optString("kind", "")
+    if (kind.isNotBlank()) return kind
+    val mime = firstStringForDisplay(obj, "mime_type", "mimeType", "mime") ?: ""
+    return when {
+        mime.startsWith("image/") -> "image"
+        mime.startsWith("video/") -> "video"
+        mime.startsWith("audio/") -> "voice"
+        else -> "file"
+    }
+}
+
+private fun putFirstForDisplay(
+    out: org.json.JSONObject,
+    target: String,
+    primary: org.json.JSONObject,
+    nested: org.json.JSONObject?,
+    vararg keys: String
+): String? {
+    val value = firstStringForDisplay(primary, *keys) ?: nested?.let { firstStringForDisplay(it, *keys) }
+    if (!value.isNullOrBlank()) out.put(target, value)
+    return value
+}
+
+private fun firstStringForDisplay(obj: org.json.JSONObject, vararg keys: String): String? {
+    for (key in keys) {
+        val value = obj.optString(key, "")
+        if (value.isNotBlank()) return value
+    }
+    return null
+}
 
 private fun formatMsgTime(ts: Long): String =
     java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(ts))

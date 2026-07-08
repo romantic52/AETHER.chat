@@ -75,6 +75,10 @@ class CoreStore(context: Context, encKeyB64: String) {
         store.getMessageByMsgId(msgId)?.toEntity()
     }
 
+    suspend fun getMessagesForPeerOnce(peerId: String): List<MessageEntity> = withContext(Dispatchers.IO) {
+        store.getMessagesForPeer(peerId).map { it.toEntity() }
+    }
+
     suspend fun deleteByMsgId(msgId: String) = withContext(Dispatchers.IO) {
         store.deleteMessageByMsgId(msgId)
     }

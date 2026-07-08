@@ -47,6 +47,8 @@ class MessageRepository(
     private val inboxMutex = Mutex()
     // CONFLATED: множественные сигналы «есть что отправить» схлопываются в один
     private val outboxSignal = Channel<Unit>(Channel.CONFLATED)
+    private val receiptSignal = Channel<Unit>(Channel.CONFLATED)
+    private val pendingDeliveredReceipts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
 
     // ------------------------------------------------------------------
     // (#A3) Групповые ключи: общий симметричный ключ, завёрнутый box'ом
@@ -206,6 +208,7 @@ class MessageRepository(
             }
         }
         scope.launch { outboxLoop() }
+        scope.launch { receiptLoop() }
     }
 
     /** Полная остановка (logout). Повторное использование объекта невозможно. */
@@ -264,12 +267,10 @@ class MessageRepository(
                     // ACK не дошёл — дедупликация по msgId отбросит повторы
                 }
             }
-            // Квитанции «доставлено» отправителям (одна на отправителя за синк).
-            for (sender in deliveredTo) {
-                try {
-                    val wire = JSONObject().put("type", "delivered")
-                    api.sendMessage(myId, sender, encryptWireFor(sender, wire.toString()))
-                } catch (e: Exception) { /* доставится позже при следующем синке */ }
+            // Delivery receipts are retried separately so sender statuses do not get stuck after a transient network miss.
+            if (deliveredTo.isNotEmpty()) {
+                pendingDeliveredReceipts.addAll(deliveredTo)
+                receiptSignal.trySend(Unit)
             }
         } catch (e: Exception) {
         } finally {
@@ -334,7 +335,7 @@ class MessageRepository(
         } else {
             crypto.decrypt(env, keys)
         }
-        val obj = try { JSONObject(plain) } catch (e: Exception) { null }
+        val obj = try { JSONObject(plain) } catch (e: Exception) { null }?.let { normalizeIncomingPayload(it) }
         val ptype = obj?.optString("type") ?: ""
 
         // Контрол: реакция. Применяем только к сообщениям ТОГО ЖЕ чата —
@@ -380,6 +381,18 @@ class MessageRepository(
         // Неизвестный типизированный контрол (delete/pin/poll_vote/read_receipt/sync_sent/
         // webrtc/опросы/инлайн-медиа веба и т.п.) — игнорируем, чтобы не засорять чат сырым
         // JSON. Реализованные типы (reaction/read/delivered/edit/text/media) обработаны выше.
+        if (obj != null && ptype == "delete") {
+            val targets = listOf(
+                obj.optString("target"),
+                obj.optString("target_id"),
+                obj.optString("message_id")
+            ).filter { it.isNotBlank() }.distinct()
+            if (!deleteExistingMessage(targets, msgPeerId)) {
+                deleteMessageByFingerprint(obj, msgPeerId)
+            }
+            return null
+        }
+
         if (obj != null && ptype.isNotBlank() && ptype != "text" && ptype != "media") {
             return null
         }
@@ -547,6 +560,29 @@ class MessageRepository(
         return n >= 20
     }
 
+    private suspend fun receiptLoop() {
+        var backoffMs = 2_000L
+        while (true) {
+            var failed = false
+            for (sender in pendingDeliveredReceipts.toList()) {
+                try {
+                    val wire = JSONObject().put("type", "delivered")
+                    api.sendMessage(myId, sender, encryptWireFor(sender, wire.toString()))
+                    pendingDeliveredReceipts.remove(sender)
+                } catch (e: Exception) {
+                    failed = true
+                }
+            }
+            if (failed && pendingDeliveredReceipts.isNotEmpty()) {
+                delay(backoffMs)
+                backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
+            } else {
+                backoffMs = 2_000L
+                withTimeoutOrNull(15_000L) { receiptSignal.receive() }
+            }
+        }
+    }
+
     // ------------------------------------------------------------------
     // Медиа (синхронно, как раньше; стриминг — этап 4)
     // ------------------------------------------------------------------
@@ -601,17 +637,20 @@ class MessageRepository(
 
                     val fileId = api.uploadFile(tmp)
 
+                    val mimeType = resolver.getType(uri) ?: "application/octet-stream"
                     val jsonObj = JSONObject()
                         .put("type", "media")
                         .put("file_id", fileId)
                         .put("sym_key", symKey.keyB64)
-                        .put("mime_type", resolver.getType(uri) ?: "application/octet-stream")
+                        .put("mime_type", mimeType)
                         .put("nonce", nonceB64)
                     if (asFile) {
                         // Документ: отображается строкой с именем/размером, без сжатия.
                         jsonObj.put("kind", "file")
                         jsonObj.put("file_name", queryDisplayName(uri))
                         jsonObj.put("file_size", queryFileSize(uri))
+                    } else {
+                        jsonObj.put("kind", mediaKindFor(mimeType))
                     }
                     if (caption != null && uri == uris.first()) jsonObj.put("caption", caption)
                     jsonText = jsonObj.toString()
@@ -684,14 +723,102 @@ class MessageRepository(
     suspend fun downloadMedia(jsonText: String): ByteArray? {
         return try {
             val obj = JSONObject(jsonText)
-            val fileId = obj.getString("file_id")
-            val symKeyB64 = obj.getString("sym_key")
-            val nonce = obj.getString("nonce")
+            val media = obj.optJSONObject("media")
+            val fileId = firstString(obj, "file_id", "fileId", "id") ?: media?.let { firstString(it, "file_id", "fileId", "id") } ?: return null
+            val symKeyB64 = firstString(obj, "sym_key", "symKey", "key", "key_b64") ?: media?.let { firstString(it, "sym_key", "symKey", "key", "key_b64") } ?: return null
+            val nonce = firstString(obj, "nonce", "nonce_b64", "iv") ?: media?.let { firstString(it, "nonce", "nonce_b64", "iv") } ?: return null
             // (#A4) Дешифруем сырые байты напрямую — без base64-прохода,
             // который удваивал потребление памяти на больших файлах
             val encryptedBytes = api.downloadFile(fileId)
             crypto.decryptBytes(encryptedBytes, nonce, E2ECrypto.SymmetricKey(symKeyB64))
         } catch (e: Exception) { null }
+    }
+
+    private fun mediaKindFor(mimeType: String): String = when {
+        mimeType.startsWith("image/") -> "image"
+        mimeType.startsWith("video/") -> "video"
+        mimeType.startsWith("audio/") -> "voice"
+        else -> "file"
+    }
+
+    private fun normalizeIncomingPayload(obj: JSONObject): JSONObject {
+        val type = obj.optString("type")
+        if (type == "media") return normalizeMediaPayload(obj, fallbackKind = null)
+        if (type !in setOf("image", "video", "voice", "video_msg", "file")) return obj
+
+        val media = obj.optJSONObject("media")
+        val out = JSONObject().put("type", "media")
+        putFirst(out, "file_id", obj, media, "file_id", "fileId", "id")
+            ?: obj.optString("content").takeIf { it.isNotBlank() && !it.startsWith("data:") }?.let { out.put("file_id", it) }
+        putFirst(out, "sym_key", obj, media, "sym_key", "symKey", "key", "key_b64")
+        putFirst(out, "nonce", obj, media, "nonce", "nonce_b64", "iv")
+        putFirst(out, "mime_type", obj, media, "mime_type", "mimeType", "mime")
+        putFirst(out, "file_name", obj, media, "file_name", "fileName", "filename", "name")
+        putFirst(out, "caption", obj, media, "caption")
+            ?: obj.optString("text").takeIf { it.isNotBlank() }?.let { out.put("caption", it) }
+        if (obj.has("file_size")) out.put("file_size", obj.optLong("file_size"))
+        if (obj.has("fileSize")) out.put("file_size", obj.optLong("fileSize"))
+        if (media?.has("file_size") == true) out.put("file_size", media.optLong("file_size"))
+        if (media?.has("fileSize") == true) out.put("file_size", media.optLong("fileSize"))
+        return normalizeMediaPayload(out, fallbackKind = when (type) {
+            "image" -> "image"
+            "video" -> "video"
+            "voice" -> "voice"
+            "video_msg" -> "video_msg"
+            else -> "file"
+        })
+    }
+
+    private fun normalizeMediaPayload(obj: JSONObject, fallbackKind: String?): JSONObject {
+        if (!obj.has("kind") || obj.optString("kind").isBlank()) {
+            val mime = firstString(obj, "mime_type", "mimeType", "mime") ?: ""
+            obj.put("kind", fallbackKind ?: mediaKindFor(mime))
+        }
+        return obj
+    }
+
+    private fun putFirst(
+        out: JSONObject,
+        target: String,
+        primary: JSONObject,
+        nested: JSONObject?,
+        vararg keys: String
+    ): String? {
+        val value = firstString(primary, *keys) ?: nested?.let { firstString(it, *keys) }
+        if (!value.isNullOrBlank()) out.put(target, value)
+        return value
+    }
+
+    private fun firstString(obj: JSONObject, vararg keys: String): String? {
+        for (key in keys) {
+            val value = obj.optString(key, "")
+            if (value.isNotBlank()) return value
+        }
+        return null
+    }
+
+    private suspend fun deleteExistingMessage(targets: List<String>, peerId: String): Boolean {
+        for (target in targets) {
+            val original = store.getMessageByMsgId(target)
+            if (original != null && original.peerId.equals(peerId, ignoreCase = true)) {
+                store.deleteByMsgId(target)
+                return true
+            }
+        }
+        return false
+    }
+
+    private suspend fun deleteMessageByFingerprint(obj: JSONObject, peerId: String): Boolean {
+        val targetText = obj.optString("target_text", "")
+        if (targetText.isBlank()) return false
+        val targetTs = obj.optLong("target_ts", 0L)
+        val messages = store.getMessagesForPeerOnce(peerId)
+        val match = messages.firstOrNull { candidate ->
+            candidate.text == targetText &&
+                (targetTs <= 0L || kotlin.math.abs(candidate.timestamp - targetTs) <= 10 * 60_000L)
+        } ?: return false
+        store.deleteByMsgId(match.msgId)
+        return true
     }
 
     // ------------------------------------------------------------------
@@ -744,6 +871,32 @@ class MessageRepository(
     }
 
     /** Конверт для отложенной отправки (ScheduledMessageWorker). */
+    suspend fun deleteForMe(msgId: String): Exception? {
+        return try {
+            store.deleteByMsgId(msgId)
+            null
+        } catch (e: Exception) { e }
+    }
+
+    suspend fun deleteForEveryone(peerId: String, msgId: String): Exception? {
+        return try {
+            val original = store.getMessageByMsgId(msgId)
+            val wire = JSONObject()
+                .put("type", "delete")
+                .put("target", msgId)
+                .put("target_id", msgId)
+            if (original != null) {
+                wire
+                    .put("target_text", original.text)
+                    .put("target_ts", original.timestamp)
+                    .put("target_is_out", original.isOut)
+            }
+            api.sendMessage(myId, peerId, encryptWireFor(peerId, wire.toString()))
+            store.deleteByMsgId(msgId)
+            null
+        } catch (e: Exception) { e }
+    }
+
     suspend fun encryptForPeer(peerId: String, wireJson: String): Map<String, String> =
         encryptWireFor(peerId, wireJson)
 
