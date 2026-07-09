@@ -1,111 +1,97 @@
 import SwiftUI
 
-/// Слой Liquid Glass для AETHER.
-///
-/// На iOS 26+ используется НАСТОЯЩИЙ системный Liquid Glass (`glassEffect`,
-/// `GlassEffectContainer`, `buttonStyle(.glass)`) — тот самый материал, что в
-/// iOS 26. На более старых системах прозрачно деградирует до `.ultraThinMaterial`,
-/// чтобы приложение оставалось рабочим и визуально близким.
-///
-/// Требует сборки Xcode 26+ (iOS 26 SDK), иначе символы `glassEffect` недоступны.
-
-// MARK: - Базовый стеклянный фон под произвольную форму
-
-struct LiquidGlassBackground<S: Shape>: ViewModifier {
-    var shape: S
-    var tinted: Bool = false
+// Форма стеклянной панели с прогрессивной деградацией:
+//  • iOS 26+ — родной .glassEffect; interactive-деформация выключена по умолчанию.
+//  • iOS 17–18 — стабильный .ultraThinMaterial без непрерывных анимаций.
+//  • стекло выключено — сплошной surface-цвет темы (без блюра).
+struct LiquidGlass<S: Shape>: ViewModifier {
+    let shape: S
     var interactive: Bool = false
+    var tintOverride: Color? = nil
+    @EnvironmentObject var appearance: AppearanceSettings
+    @Environment(\.palette) private var palette
 
     func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(glass, in: shape)
+        if !appearance.glassEnabled {
+            content.background(palette.surface, in: shape)
         } else {
-            content
-                .background(.ultraThinMaterial, in: shape)
-                .overlay(shape.stroke(Brand.border, lineWidth: 0.5))
+            #if compiler(>=6.0)
+            if #available(iOS 26.0, *) {
+                let base: Glass = appearance.glassStyle == .clear ? .clear : .regular
+                let tintColor = tintOverride ?? (appearance.glassTint > 0 ? palette.accent.opacity(appearance.glassTint) : nil)
+                let tinted = tintColor != nil ? base.tint(tintColor!) : base
+                content
+                    .glassEffect(
+                        interactive && appearance.glassInteractive ? tinted.interactive() : tinted,
+                        in: shape
+                    )
+                    .clipShape(shape)
+                    .overlay(shape.stroke(Color.white.opacity(0.14), lineWidth: 0.6))
+            } else {
+                fallback(content)
+            }
+            #else
+            fallback(content)
+            #endif
         }
     }
 
-    @available(iOS 26.0, *)
-    private var glass: Glass {
-        var g: Glass = .regular
-        if tinted { g = g.tint(Brand.glassTint.opacity(0.25)) }
-        if interactive { g = g.interactive() }
-        return g
+    private func fallback(_ content: Content) -> some View {
+        content
+            .background(
+                appearance.glassStyle == .clear
+                    ? AnyShapeStyle(.thinMaterial)
+                    : AnyShapeStyle(.ultraThinMaterial),
+                in: shape
+            )
+            .overlay(shape.fill((tintOverride ?? palette.accent.opacity(appearance.glassTint))))
+            .overlay(shape.stroke(Color.white.opacity(0.08), lineWidth: 0.5))
+            .clipShape(shape)
     }
 }
 
 extension View {
-    /// Стеклянная подложка под любую форму (по умолчанию — капсула).
-    func liquidGlass<S: Shape>(
-        in shape: S = Capsule(),
-        tinted: Bool = false,
-        interactive: Bool = false
-    ) -> some View {
-        modifier(LiquidGlassBackground(shape: shape, tinted: tinted, interactive: interactive))
+    /// Наложить жидкое стекло в заданной форме.
+    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false) -> some View {
+        modifier(LiquidGlass(shape: shape, interactive: interactive))
     }
-
-    /// Стеклянная карточка со скруглением.
-    func glassCard(cornerRadius: CGFloat = 22) -> some View {
-        modifier(LiquidGlassBackground(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)))
+    func liquidGlass(cornerRadius: CGFloat = 20, interactive: Bool = false) -> some View {
+        modifier(LiquidGlass(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), interactive: interactive))
     }
 }
 
-// MARK: - Контейнер стекла (объединяет соседние стеклянные элементы)
-
-/// На iOS 26 группирует стеклянные вью, чтобы они «перетекали» друг в друга
-/// (морфинг капель). На старых системах — обычный layout-проход.
+// Группировка НЕСКОЛЬКИХ стеклянных элементов, которые визуально накладываются или
+// анимированно двигаются друг относительно друга (например, бар + едущий по нему
+// индикатор). Без общего GlassEffectContainer каждый .glassEffect() на iOS 26 рендерится
+// в свой независимый проход — при анимации это может давать «призрачное» задвоение
+// кадра. С контейнером система корректно склеивает (сливает) оба стекла в одну сцену.
 struct GlassGroup<Content: View>: View {
     var spacing: CGFloat = 12
-    @ViewBuilder var content: () -> Content
+    @ViewBuilder var content: Content
 
     var body: some View {
+        #if compiler(>=6.0)
         if #available(iOS 26.0, *) {
-            GlassEffectContainer(spacing: spacing) { content() }
-        } else {
-            content()
-        }
-    }
-}
-
-// MARK: - Стеклянная кнопка
-
-struct GlassButtonStyle: ButtonStyle {
-    var prominent: Bool = false
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.system(size: 16, weight: .semibold))
-            .foregroundStyle(prominent ? Color.black : Brand.textPrimary)
-            .padding(.vertical, 14)
-            .padding(.horizontal, 24)
-            .frame(maxWidth: .infinity)
-            .modifier(GlassButtonSurface(prominent: prominent))
-            .opacity(configuration.isPressed ? 0.7 : 1)
-            .scaleEffect(configuration.isPressed ? 0.98 : 1)
-            .animation(.spring(duration: 0.25), value: configuration.isPressed)
-    }
-}
-
-private struct GlassButtonSurface: ViewModifier {
-    var prominent: Bool
-    func body(content: Content) -> some View {
-        if #available(iOS 26.0, *) {
-            content.glassEffect(
-                prominent ? Glass.regular.tint(.white).interactive()
-                          : Glass.regular.interactive(),
-                in: Capsule()
-            )
+            GlassEffectContainer(spacing: spacing) { content }
         } else {
             content
-                .background(prominent ? AnyShapeStyle(Color.white) : AnyShapeStyle(.ultraThinMaterial),
-                            in: Capsule())
-                .overlay(Capsule().stroke(Brand.border, lineWidth: 0.5))
         }
+        #else
+        content
+        #endif
     }
 }
 
-extension ButtonStyle where Self == GlassButtonStyle {
-    static var glass: GlassButtonStyle { GlassButtonStyle(prominent: false) }
-    static var glassProminent: GlassButtonStyle { GlassButtonStyle(prominent: true) }
+// Короткий тактильный отклик без пружины и «желейного» отскока.
+struct SquishButtonStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed ? 0.985 : 1.0)
+            .opacity(configuration.isPressed ? 0.88 : 1.0)
+            .animation(.easeOut(duration: 0.1), value: configuration.isPressed)
+    }
+}
+
+extension ButtonStyle where Self == SquishButtonStyle {
+    static var squish: SquishButtonStyle { SquishButtonStyle() }
 }

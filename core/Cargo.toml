@@ -1,33 +1,32 @@
 [package]
-name = "securemessenger-core"
+name = "sm_core"
 version = "0.1.0"
 edition = "2021"
-description = "Общее защищённое ядро (крипта + протокол) для Android/Desktop/Web. Модель TDLib."
 
 [lib]
 name = "sm_core"
-# lib — для cargo test/desktop; cdylib — .so для Android (JNI через UniFFI);
-# staticlib — .a для iOS (статическая линковка в XCFramework, см. ios/build_core_ios.sh).
-crate-type = ["lib", "cdylib", "staticlib"]
+crate-type = ["staticlib", "cdylib", "lib"]
 
 [[bin]]
-# генератор Kotlin-биндингов: cargo run --bin uniffi-bindgen -- generate ...
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
 
 [dependencies]
-crypto_box = { version = "0.9", features = ["std"] }   # NaCl crypto_box (X25519 + XSalsa20-Poly1305)
-aes-gcm = "0.10"                                        # AES-256-GCM (группы, медиа, бэкап ключа)
-pbkdf2 = "0.12"                                         # PBKDF2-HMAC-SHA256 (бэкап ключа)
+uniffi = { version = "0.29", features = ["cli"] }
+crypto_box = { version = "0.9", features = ["std"] }
+aes-gcm = "0.10"
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+hmac = "0.12"
 sha2 = "0.10"
-base64 = "0.22"
 rand_core = { version = "0.6", features = ["getrandom"] }
-serde_json = "1"                                        # сборка/разбор wire-JSON (протокол)
-ureq = { version = "2", features = ["json"] }           # блокирующий HTTP-клиент (rustls TLS)
-tungstenite = { version = "0.21", features = ["rustls-tls-webpki-roots"] }  # WebSocket-клиент (rustls TLS)
-rusqlite = { version = "0.31", features = ["bundled"] }  # локальное хранилище (SQLite, компилится из исходников)
-uniffi = { version = "0.28", features = ["cli"] }       # биндинги Kotlin/Swift из Rust
-
-[dev-dependencies]
-# для примера cross-проверки (crossvec): собрать base64 AES-ключа
 base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"] }  # шифрованный SQLite (SQLCipher), OpenSSL вшит — кросс-компиляция iOS/Android без системных зависимостей
+ureq = { version = "2.10", features = ["json"] }
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+thiserror = "1"
+
+[profile.release]
+opt-level = "s"
+lto = true

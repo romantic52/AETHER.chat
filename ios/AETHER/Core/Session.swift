@@ -1,111 +1,136 @@
 import Foundation
-import Observation
+import SwiftUI
 
-/// Глобальное состояние приложения: текущий экран-флоу, авторизованный
-/// пользователь и его ключи. Логика логина/регистрации повторяет Android:
-///   register → generateKeyPair → encryptPrivateKey(pwd) → api.register → login
-///   login    → api.login → decryptPrivateKey(pwd) → ключи в памяти/Keychain
-@Observable
+// Глобальное состояние сессии: авторизация, идентичность, доступ к ядру.
+// Живёт на main actor; сетевые вызовы делегируются актору CoreClient.
 @MainActor
-final class Session {
+final class Session: ObservableObject {
     enum Phase: Equatable {
-        case welcome          // стартовый экран
-        case auth             // вход / регистрация
-        case authenticating
-        case ready            // вошли — основной интерфейс
+        case loading      // проверяем Keychain
+        case onboarding   // не авторизован
+        case ready        // работаем
     }
 
-    var phase: Phase = .welcome
-    var server: String = AetherServer.default
-    var errorMessage: String?
+    @Published var phase: Phase = .loading
+    @Published var myId: String = ""
+    @Published var myUsername: String = ""
+    @Published var myDisplayName: String = ""
+    @Published var myAvatarFileId: String = ""
 
-    private(set) var userId: String = ""
-    private(set) var keyPair: KeyPair?
-
-    private var core: CoreClient?
-
-    /// Попытка авто-входа по сохранённой сессии (токен в Keychain).
-    func bootstrap() {
-        guard let saved = Keychain.loadSession() else { return }
-        server = saved.server
-        userId = saved.userId
-        Task { await resumeSession(saved) }
+    var myAvatarURL: URL? {
+        guard !myAvatarFileId.isEmpty else { return nil }
+        // GET /avatars/{file_id} — публичный, без шифрования (см. WIRE_PROTOCOL.md).
+        // Строим URL напрямую (без await core.avatarURL) — это чистая конкатенация
+        // строк, а не сеть, а Session живёт на MainActor.
+        return URL(string: "\(CoreClient.baseURL)/avatars/\(myAvatarFileId)")
     }
 
-    func beginAuth() { phase = .auth; errorMessage = nil }
+    /// Токен текущей сессии в памяти (Keychain может быть недоступен на неподписанной сборке).
+    private(set) var authToken: String = ""
 
-    func register(userId: String, password: String) {
-        run {
-            let core = CoreClient(baseURL: self.server)
-            let kp = core.generateKeyPair()
-            let encPriv = try core.encryptPriv(kp.privateB64, password: password)
-            try await core.register(userId: userId, publicKeyB64: kp.publicB64,
-                                    encryptedPrivateKeyB64: encPriv, password: password)
-            let result = try await core.login(userId: userId, password: password)
-            try await self.finish(core: core, login: result, password: password, fallbackKeys: kp)
+    let core = CoreClient()
+
+    private var heartbeatTask: Task<Void, Never>?
+    private var applicationActive = true
+
+    // MARK: - Восстановление сессии при старте
+
+    func bootstrap() async {
+        guard let token = Keychain.string(for: Keychain.kToken),
+              let userId = Keychain.string(for: Keychain.kUserId),
+              let pub = Keychain.string(for: Keychain.kPublicKey),
+              let priv = Keychain.string(for: Keychain.kPrivateKey),
+              !token.isEmpty, !userId.isEmpty else {
+            phase = .onboarding
+            return
+        }
+        await core.restoreSession(token: token, userId: userId, publicKey: pub, privateKey: priv)
+        authToken = token
+        myId = userId
+        phase = .ready
+        startHeartbeat()
+        Task { await loadMyProfile() }
+    }
+
+    // MARK: - Аутентификация
+
+    func register(userId: String, password: String) async throws {
+        let (session, priv) = try await core.register(userId: userId, password: password)
+        persist(session: session, privateKey: priv)
+        myId = session.userId
+        phase = .ready
+        startHeartbeat()
+    }
+
+    func login(userId: String, password: String) async throws {
+        let (session, priv) = try await core.login(userId: userId, password: password)
+        persist(session: session, privateKey: priv)
+        myId = session.userId
+        phase = .ready
+        startHeartbeat()
+        Task { await loadMyProfile() }
+    }
+
+    func logout() async {
+        heartbeatTask?.cancel()
+        await core.logout()
+        for k in [Keychain.kToken, Keychain.kUserId, Keychain.kPublicKey, Keychain.kPrivateKey] {
+            Keychain.remove(k)
+        }
+        authToken = ""
+        myId = ""; myUsername = ""; myDisplayName = ""; myAvatarFileId = ""
+        phase = .onboarding
+    }
+
+    func setApplicationActive(_ active: Bool) {
+        applicationActive = active
+        if active { startHeartbeat() }
+        else { heartbeatTask?.cancel(); heartbeatTask = nil }
+    }
+
+    private func persist(session: AuthSession, privateKey: String) {
+        authToken = session.token
+        Keychain.set(session.token, for: Keychain.kToken)
+        Keychain.set(session.userId, for: Keychain.kUserId)
+        Keychain.set(session.publicKeyB64, for: Keychain.kPublicKey)
+        Keychain.set(privateKey, for: Keychain.kPrivateKey)
+    }
+
+    // MARK: - Профиль
+
+    func loadMyProfile() async {
+        guard !myId.isEmpty else { return }
+        if let p = try? await core.getProfile(myId) {
+            myUsername = p.username ?? ""
+            myDisplayName = p.displayName ?? ""
+            myAvatarFileId = p.avatarFileId ?? ""
         }
     }
 
-    func login(userId: String, password: String) {
-        run {
-            let core = CoreClient(baseURL: self.server)
-            let result = try await core.login(userId: userId, password: password)
-            try await self.finish(core: core, login: result, password: password, fallbackKeys: nil)
+    /// Загружает фото на сервер и привязывает его к своему профилю. `nil` data — удалить
+    /// (сброс на инициалы).
+    func setMyAvatar(data: Data?, mime: String) async throws {
+        let fileId: String
+        if let data {
+            fileId = try await core.uploadAvatar(data: data, mime: mime)
+        } else {
+            fileId = ""
         }
+        try await core.updateProfile(username: nil, displayName: nil, avatarFileId: fileId, bio: nil)
+        myAvatarFileId = fileId
     }
 
-    func logout() {
-        Keychain.clearSession()
-        keyPair = nil
-        userId = ""
-        core = nil
-        phase = .welcome
-    }
+    // MARK: - Heartbeat (presence)
 
-    // MARK: - private
-
-    private func finish(core: CoreClient, login: LoginResult, password: String, fallbackKeys: KeyPair?) async throws {
-        let priv = try core.decryptPriv(login.encryptedPrivateKeyB64, password: password)
-        let kp = KeyPair(privateB64: priv, publicB64: login.publicKeyB64)
-        await core.setToken(login.token)
-        self.core = core
-        self.userId = login.userId
-        self.keyPair = kp
-        Keychain.saveSession(.init(server: server, userId: login.userId, token: login.token))
-        self.phase = .ready
-    }
-
-    private func resumeSession(_ saved: Keychain.SavedSession) async {
-        let core = CoreClient(baseURL: saved.server)
-        await core.setToken(saved.token)
-        do {
-            try await core.heartbeat()
-            self.core = core
-            self.phase = .ready
-        } catch {
-            // токен протух — останемся на welcome, попросим войти заново
-            Keychain.clearSession()
-        }
-    }
-
-    private func run(_ work: @escaping () async throws -> Void) {
-        phase = .authenticating
-        errorMessage = nil
-        Task {
-            do { try await work() }
-            catch {
-                self.errorMessage = Self.describe(error)
-                self.phase = .auth
+    private func startHeartbeat() {
+        guard applicationActive, phase == .ready else { return }
+        heartbeatTask?.cancel()
+        heartbeatTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                await self.core.heartbeat()
+                try? await Task.sleep(nanoseconds: 30 * 1_000_000_000)
             }
         }
-    }
-
-    private static func describe(_ error: Error) -> String {
-        // ApiError из ядра реализует Display в Rust ("HTTP 401: …", "сеть: …").
-        // Не матчим конкретные кейсы — их имена зависят от генерации UniFFI;
-        // строкового представления достаточно для понятного сообщения.
-        let raw = String(describing: error)
-        if raw.contains("401") { return "Неверный логин или пароль" }
-        return raw
     }
 }
