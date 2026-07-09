@@ -9,11 +9,15 @@ struct MessageBubble: View {
     }()
     let message: ChatMessage
     let isGroup: Bool
+    /// Канал: посты всегда слева (стиль входящих), независимо от автора.
+    var channelStyle: Bool = false
     let showTail: Bool
     let showSender: Bool
     let myId: String
     let readTick: Color
 
+    /// Тап по цитате ответа — прыжок к оригинальному сообщению.
+    var onQuoteTap: (() -> Void)? = nil
     var onReply: () -> Void
     var onQuickReact: () -> Void
     var onPicker: () -> Void
@@ -24,7 +28,7 @@ struct MessageBubble: View {
     @Environment(\.palette) private var palette
     @State private var dragX: CGFloat = 0
 
-    private var outgoing: Bool { message.outgoing }
+    private var outgoing: Bool { channelStyle ? false : message.outgoing }
     private var payload: Wire.Payload? { message.payload }
 
     var body: some View {
@@ -40,9 +44,17 @@ struct MessageBubble: View {
                         .padding(.leading, 12)
                 }
                 bubbleBody
-                if !message.reactions.isEmpty { reactionChips }
+                if !message.reactions.isEmpty {
+                    reactionChips
+                        .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
             }
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: message.reactions)
             .offset(x: dragX)
+            .animation(.interactiveSpring(response: 0.14, dampingFraction: 0.86), value: dragX)
+            // Быстрая реакция — двойной тап по пузырю (одиночные тапы внутри
+            // медиа сохраняются: SwiftUI ждёт короткое окно двойного тапа).
+            .onTapGesture(count: 2) { onQuickReact() }
             .gesture(replySwipe)
             .contextMenu { contextMenu }
             if !outgoing { Spacer(minLength: 50) }
@@ -56,13 +68,26 @@ struct MessageBubble: View {
     @ViewBuilder private var bubbleBody: some View {
         if let p = payload, p.type == "media" {
             if p.mediaKind == .videoNote {
-                // Кружок — без прямоугольного пузыря.
-                MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
-                    .overlay(alignment: .bottomTrailing) { statusRow.padding(4) }
+                // Кружок — без прямоугольного пузыря; цитата ответа — чипом сверху.
+                VStack(alignment: outgoing ? .trailing : .leading, spacing: 6) {
+                    if let rid = p.replyToId, !rid.isEmpty {
+                        replyQuote(p.replyToText ?? "")
+                            .padding(.horizontal, 10).padding(.vertical, 4)
+                            .background(palette.bubbleIn, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    }
+                    MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
+                }
+                .overlay(alignment: .bottomTrailing) { statusRow.padding(4) }
             } else {
-                MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
-                    .modifier(BubbleContainer(outgoing: outgoing, showTail: showTail, palette: palette))
-                    .overlay(alignment: .bottomTrailing) { statusRow.padding(6) }
+                VStack(alignment: .leading, spacing: 0) {
+                    if let rid = p.replyToId, !rid.isEmpty {
+                        replyQuote(p.replyToText ?? "")
+                            .padding(.horizontal, 8).padding(.top, 8)
+                    }
+                    MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
+                }
+                .modifier(BubbleContainer(outgoing: outgoing, showTail: showTail, palette: palette))
+                .overlay(alignment: .bottomTrailing) { statusRow.padding(6) }
             }
         } else {
             textBubble
@@ -102,15 +127,28 @@ struct MessageBubble: View {
     }
 
     private func replyQuote(_ text: String) -> some View {
-        HStack(spacing: 6) {
-            Rectangle().fill(outgoing ? Color.white.opacity(0.7) : palette.accent)
-                .frame(width: 3).clipShape(Capsule())
-            Text(text.isEmpty ? "Сообщение" : text)
-                .font(.system(size: 13))
-                .foregroundStyle(bubbleSecondary)
-                .lineLimit(2)
+        // Крупная цитата с подложкой (как в Telegram); тап — прыжок к оригиналу.
+        HStack(spacing: 8) {
+            Capsule().fill(outgoing ? Color.white.opacity(0.85) : palette.accent)
+                .frame(width: 3)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Ответ")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(outgoing ? .white.opacity(0.9) : palette.accent)
+                Text(text.isEmpty ? "Сообщение" : text)
+                    .font(.system(size: 14))
+                    .foregroundStyle(bubbleSecondary)
+                    .lineLimit(2)
+            }
+            Spacer(minLength: 0)
         }
-        .padding(.vertical, 2)
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(
+            (outgoing ? Color.white.opacity(0.12) : palette.accent.opacity(0.10)),
+            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture { onQuoteTap?() }
     }
 
     private var reactionChips: some View {
@@ -166,20 +204,25 @@ struct MessageBubble: View {
         Self.timeFormatter.string(from: message.date)
     }
 
-    // Свайп вправо по пузырю → ответ. Левые 5% экрана отданы системному
-    // свайпу-назад — жест ответа там не стартует.
-    private static let backEdgeZone = UIScreen.main.bounds.width * 0.05
-
+    // Свайп ВЛЕВО по пузырю → ответ (как в Telegram). Правый край жесту
+    // не мешает, а левый остаётся системному свайпу-назад.
     private var replySwipe: some Gesture {
         DragGesture(minimumDistance: 20, coordinateSpace: .global)
             .onChanged { v in
-                guard v.startLocation.x > Self.backEdgeZone else { return }
-                if v.translation.width > 0 { dragX = min(v.translation.width, 70) }
+                // Компенсация порога распознавания (20pt): к первому событию палец
+                // уже уехал — без вычета пузырь «телепортировался» на эти 20pt.
+                let shifted = v.translation.width + 20
+                guard shifted < 0 else {
+                    if dragX != 0 { dragX = 0 }
+                    return
+                }
+                // Резинка: после -58 движение с сопротивлением, жёсткий предел -80.
+                let x = max(shifted, -110)
+                dragX = x < -58 ? -58 + (x + 58) * 0.3 : x
             }
             .onEnded { v in
-                guard v.startLocation.x > Self.backEdgeZone else { return }
-                if v.translation.width > 55 { onReply() }
-                withAnimation(.easeOut(duration: 0.16)) { dragX = 0 }
+                if v.translation.width + 20 < -55 { onReply() }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.75)) { dragX = 0 }
             }
     }
 

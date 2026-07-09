@@ -20,6 +20,8 @@ struct ChatView: View {
     @State private var replyTo: ChatMessage?
     @State private var editing: ChatMessage?
     @State private var pickerFor: ChatMessage?
+    /// Подсвеченное сообщение (после прыжка по цитате), гаснет плавно за 3с.
+    @State private var highlightedId: String?
     @FocusState private var inputFocused: Bool
 
     // Вложения.
@@ -32,8 +34,23 @@ struct ChatView: View {
 
     // Голос / кружки.
     @StateObject private var recorder = VoiceRecorder()
+    @StateObject private var circleCam = CircleCamera()
     @State private var circleMode = false
-    @State private var showCircleRecorder = false
+    // Сегменты кружка: переключение камеры обрывает MovieFileOutput, поэтому
+    // свитч = закрыть сегмент → переключить → писать следующий; отправка склеивает.
+    @State private var circleSegments: [URL] = []
+    @State private var circleRecordedBefore: TimeInterval = 0
+    @State private var circleSwitching = false
+    @State private var circleWantPreview = false
+    @State private var circlePreviewURL: URL?
+    @State private var circlePreviewDuration: TimeInterval = 0
+    private var circleTotalElapsed: TimeInterval {
+        circleRecordedBefore + (circleCam.isRecording ? circleCam.elapsed : 0)
+    }
+    /// Кружок пишется прямо в чате (без отдельного экрана): активная запись камерой.
+    private var circleActive: Bool {
+        circleMode && (recordPhase == .recording || recordPhase == .locked || recordPhase == .preview)
+    }
 
     private enum RecordPhase { case idle, arming, recording, locked, preview }
     @State private var recordPhase: RecordPhase = .idle
@@ -77,9 +94,17 @@ struct ChatView: View {
             }
             return ""
         }
+        if isSaved { return "личное облако" }
         if messaging.typingPeers.contains(peerId) { return "печатает…" }
         return messaging.presenceText(peerId)
     }
+
+    private var isChannel: Bool {
+        messaging.groups.info(peerId)?.isChannel ?? false
+    }
+
+    /// Избранное — личный канал: id равен id аккаунта, без typing/онлайна.
+    private var isSaved: Bool { peerId == session.myId.lowercased() }
 
     /// Канал: писать могут только владелец/админы; остальные — read-only.
     private var isReadOnlyChannel: Bool {
@@ -96,10 +121,84 @@ struct ChatView: View {
         ZStack {
             wallpaper
             messageList
+                // Затемняется ТОЛЬКО лента: композер (safeAreaInset ниже) и шапка
+                // остаются яркими и кликабельными.
+                .overlay {
+                    if circleActive {
+                        Color.black.opacity(0.45)
+                            .ignoresSafeArea(edges: .top)
+                            .transition(.opacity)
+                            .allowsHitTesting(false)
+                    }
+                }
                 .safeAreaInset(edge: .bottom) {
                     inputBarContainer
                 }
+
+            // Кружок поверх переписки (как в Telegram) — без отдельного экрана.
+            if circleActive {
+                VStack {
+                    Spacer().frame(height: 70)
+                    ZStack {
+                        // Градиент-ореол «на звук»: мягкое свечение вокруг кружка,
+                        // дышит амплитудой во время записи.
+                        TimelineView(.animation) { timeline in
+                            let t = timeline.date.timeIntervalSinceReferenceDate
+                            let level = 0.55 + 0.45 * abs(sin(t * 2.4)) * abs(sin(t * 0.9 + 1.3))
+                            RadialGradient(
+                                colors: [palette.accent.opacity(0.55 * level), palette.accent.opacity(0.18 * level), .clear],
+                                center: .center, startRadius: 130, endRadius: 210 + 26 * level
+                            )
+                            .frame(width: 430, height: 430)
+                        }
+                        .allowsHitTesting(false)
+
+                        if let preview = circlePreviewURL, recordPhase == .preview {
+                            LoopingCirclePlayer(url: preview, size: 280, muted: false)
+                                .id(preview)
+                        } else if circleCam.available {
+                            CameraPreview(session: circleCam.session)
+                                .frame(width: 280, height: 280)
+                                .clipShape(Circle())
+                                .onTapGesture(count: 2) { flipCircleCamera() }
+                        } else {
+                            Circle().fill(palette.surfaceElevated)
+                                .frame(width: 280, height: 280)
+                                .overlay(ProgressView().tint(palette.accent))
+                        }
+
+                        // Белая дуга прогресса 60с вокруг кружка, пульсирует при записи.
+                        TimelineView(.animation) { timeline in
+                            let t = timeline.date.timeIntervalSinceReferenceDate
+                            let pulse: CGFloat = 1 + 0.5 * abs(sin(t * 3.0))
+                            Circle()
+                                .trim(from: 0, to: max(0.015, CGFloat(min(1, circleTotalElapsed / 60))))
+                                .stroke(.white.opacity(0.95),
+                                        style: StrokeStyle(lineWidth: 3.5 * pulse, lineCap: .round))
+                                .frame(width: 292, height: 292)
+                                .rotationEffect(.degrees(-90))
+                        }
+                        .allowsHitTesting(false)
+
+                        // Переворот камеры (и двойной тап по кружку) — не в превью.
+                        if recordPhase != .preview {
+                        Button { flipCircleCamera() } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera.fill")
+                                .font(.system(size: 15, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .frame(width: 40, height: 40)
+                                .background(.ultraThinMaterial, in: Circle())
+                        }
+                        .buttonStyle(.squish)
+                        .offset(x: 100, y: 118)   // правый нижний край кружка
+                        }
+                    }
+                    Spacer()
+                }
+                .transition(.scale(scale: 0.8).combined(with: .opacity))
+            }
         }
+        .animation(AetherUI.sendAnimation, value: circleActive)
         .toolbar(.hidden, for: .navigationBar)
         .swipeBackEnabled()
         .safeAreaInset(edge: .top) { chatTopBar }
@@ -154,11 +253,19 @@ struct ChatView: View {
             #endif
         }
         .onAppear { chrome.tabBarHidden = true }
+        .onChange(of: circleCam.elapsed) { _, t in
+            if circleRecordedBefore + t >= 60, circleCam.isRecording, !circleSwitching { finishCircle(preview: true) }
+        }
         .onDisappear {
             chrome.tabBarHidden = false
             vm.onDisappear()
             armTask?.cancel()
-            if recordPhase != .idle { recorder.cancel(); recordPhase = .idle }
+            if recordPhase != .idle {
+                recorder.cancel()
+                if circleCam.isRecording { circleCam.cancelRecording() }
+                circleCam.stop()
+                recordPhase = .idle
+            }
         }
         .onReceive(messaging.inboxTick.$tick.dropFirst()) { _ in
             vm.requestReload()
@@ -191,11 +298,6 @@ struct ChatView: View {
         .onChange(of: photoItems) { _, items in Task { await handlePhotos(items) } }
         .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
             handleFiles(result)
-        }
-        .fullScreenCover(isPresented: $showCircleRecorder) {
-            CircleRecorderView { data, dur in
-                vm.sendMedia(data: data, mime: "video/mp4", kind: "video_msg", fileName: nil, duration: dur)
-            }
         }
         .alert("Не удалось прикрепить файл", isPresented: Binding(
             get: { !attachmentError.isEmpty },
@@ -363,7 +465,7 @@ struct ChatView: View {
         HStack(spacing: 10) {
             Avatar(id: peerId, name: title, size: 36,
                    avatarURL: isGroup ? nil : messaging.avatarURL(peerId),
-                   online: messaging.isOnline(peerId) && !isGroup)
+                   online: messaging.isOnline(peerId) && !isGroup && !isSaved)
                 .onLongPressGesture {
                     guard !isGroup, peerId != session.myId.lowercased() else { return }
                     showAvatarMenu = true
@@ -409,8 +511,14 @@ struct ChatView: View {
                                 .padding(.vertical, 6)
                         case .message(let msg, let tail, let showSender):
                             MessageBubble(
-                                message: msg, isGroup: isGroup, showTail: tail, showSender: showSender,
+                                message: msg, isGroup: isGroup, channelStyle: isChannel,
+                                showTail: tail, showSender: showSender,
                                 myId: vm.myId, readTick: palette.readTick,
+                                onQuoteTap: {
+                                    if let rid = msg.payload?.replyToId {
+                                        jumpToMessage(rid, proxy: proxy)
+                                    }
+                                },
                                 onReply: { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { replyTo = msg; inputFocused = true } },
                                 onQuickReact: { vm.react(to: msg, emoji: appearance.quickReaction) },
                                 onPicker: { pickerFor = msg },
@@ -419,6 +527,14 @@ struct ChatView: View {
                                 onRetry: { vm.retry(msg) }
                             )
                             .id(msg.id)
+                            .background {
+                                if highlightedId == msg.id {
+                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                        .fill(palette.accent.opacity(0.18))
+                                        .padding(.horizontal, -8).padding(.vertical, -3)
+                                        .transition(.opacity)
+                                }
+                            }
                             // Новое сообщение плавно въезжает снизу с фейдом — без
                             // scale-«попапа», как в Telegram.
                             .transition(.asymmetric(
@@ -469,6 +585,25 @@ struct ChatView: View {
         }
     }
 
+    /// Прыжок к сообщению по id (тап по цитате): скролл к нему и плавно
+    /// гаснущая подсветка на 3 секунды.
+    private func jumpToMessage(_ id: String, proxy: ScrollViewProxy) {
+        guard vm.messages.contains(where: { $0.id == id }) else { return }
+        // Плавно, но резво: детерминированный easeInOut вместо пружины —
+        // пружина на длинной дистанции выглядела как телепорт.
+        withAnimation(.easeInOut(duration: 0.45)) {
+            proxy.scrollTo(id, anchor: .center)
+        }
+        withAnimation(.easeIn(duration: 0.25)) {
+            highlightedId = id
+        }
+        Task {
+            try? await Task.sleep(nanoseconds: 3_000_000_000)
+            guard highlightedId == id else { return }
+            withAnimation(.easeOut(duration: 0.9)) { highlightedId = nil }
+        }
+    }
+
     // MARK: - Поле ввода
 
     private var inputBarContainer: some View {
@@ -493,22 +628,39 @@ struct ChatView: View {
         Group {
             if channelSubscribed {
                 HStack(spacing: 10) {
+                    // Звук канала (подписка живёт, меняется только звук).
                     Button {
                         Task { await messaging.setMuted(peerId, true) }
                     } label: {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 8) {
                             Image(systemName: "bell.fill")
-                            Text("Уведомления включены")
+                            Text("Выключить звук")
                         }
-                        .font(.subheadline.weight(.medium))
-                        .foregroundStyle(palette.textSecondary)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(palette.textPrimary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 13)
+                        .liquidGlass(Capsule())
+                        .contentShape(Capsule())
                     }
-                    Spacer()
-                    Text("Только чтение").font(.caption).foregroundStyle(palette.textSecondary)
+                    .buttonStyle(.squish)
+
+                    // Маленькая кнопка «покинуть канал».
+                    Button {
+                        Task {
+                            await messaging.groups.leave(groupId: peerId)
+                            dismiss()
+                        }
+                    } label: {
+                        Image(systemName: "rectangle.portrait.and.arrow.right")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(palette.danger)
+                            .frame(width: 46, height: 46)
+                            .liquidGlass(Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.squish)
                 }
-                .padding(.horizontal, 16).padding(.vertical, 12)
-                .frame(maxWidth: .infinity)
-                .liquidGlass(Capsule())
             } else {
                 Button {
                     Task { await messaging.setMuted(peerId, false) }
@@ -571,10 +723,25 @@ struct ChatView: View {
                     case .recording, .locked:
                         recordingStrip
                     case .preview:
+                        if circleMode {
+                            HStack(spacing: 10) {
+                                Image(systemName: "play.circle.fill")
+                                    .foregroundStyle(palette.accent)
+                                Text("Предпросмотр · \(Int(circlePreviewDuration))с")
+                                    .font(.system(size: 15, weight: .medium))
+                                    .foregroundStyle(palette.textPrimary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 14)
+                            .frame(minHeight: composerControl)
+                            .frame(maxWidth: .infinity)
+                            .liquidGlass(Capsule())
+                        } else {
                         VoiceTrimStrip(duration: voicePreviewDuration, start: $trimStart, end: $trimEnd)
                             .padding(.horizontal, 14).padding(.vertical, 8)
                             .frame(maxWidth: .infinity)
                             .liquidGlass(RoundedRectangle(cornerRadius: 21, style: .continuous))
+                        }
                     case .idle, .arming:
                         // Полоса ввода. Плашки ответа/редактирования — внутри той же
                         // стеклянной формы, как утолщение поля сверху.
@@ -646,7 +813,20 @@ struct ChatView: View {
         Group {
             switch recordPhase {
             case .locked:
-                // Запись закреплена: та же кнопка становится «закончить».
+                if circleMode {
+                    // Кружок в локе: красный стоп-квадрат — стоп и предпросмотр.
+                    Button { finishCircle(preview: true) } label: {
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(.white)
+                            .frame(width: 17, height: 17)
+                            .frame(width: composerControl, height: composerControl)
+                            .background(palette.danger, in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.squish)
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                // Голос: «закончить» → превью с обрезкой.
                 Button { stopToPreview() } label: {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 18, weight: .bold))
@@ -657,8 +837,22 @@ struct ChatView: View {
                 }
                 .buttonStyle(.squish)
                 .transition(.scale.combined(with: .opacity))
+                }
             case .preview:
-                // Запись закончена: кнопка становится «отправить» (с обрезкой).
+                if circleMode {
+                    // Кружок: предпросмотр — кнопка отправки.
+                    Button { sendCirclePreview() } label: {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(palette.onAccent)
+                            .frame(width: composerControl, height: composerControl)
+                            .background(palette.accent, in: Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.squish)
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                // Голос: запись закончена — кнопка «отправить» (с обрезкой).
                 Button { sendTrimmedVoice() } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 20, weight: .bold))
@@ -669,6 +863,7 @@ struct ChatView: View {
                 }
                 .buttonStyle(.squish)
                 .transition(.scale.combined(with: .opacity))
+                }
             default:
                 if hasText {
                     Button(action: submit) {
@@ -738,6 +933,12 @@ struct ChatView: View {
                     recordPhase = .idle
                     withAnimation(.easeInOut(duration: 0.15)) { circleMode.toggle() }
                 case .recording:
+                    if circleMode {
+                        if value.translation.height < lockDistance { lockRecording(); return }
+                        if value.translation.width < cancelDistance { cancelRecording() }
+                        else { finishCircle(preview: false) }
+                        return
+                    }
                     guard recorder.isRecording else { cancelRecording(); return }
                     if value.translation.height < lockDistance { lockRecording(); return }
                     if value.translation.width < cancelDistance { cancelRecording() }
@@ -751,8 +952,29 @@ struct ChatView: View {
     private func beginHold() {
         guard recordPhase == .arming else { return }
         if circleMode {
-            recordPhase = .idle
-            showCircleRecorder = true
+            // Кружок: инлайн-запись тем же жестом, что голосовые.
+            switch AVCaptureDevice.authorizationStatus(for: .video) {
+            case .authorized:
+                recordPhase = .recording
+                Task {
+                    circleCam.setFinishHandler { url in circleFinished(url) }
+                    await circleCam.configure()
+                    await MainActor.run {
+                        if circleCam.available, recordPhase == .recording || recordPhase == .locked {
+                            circleCam.startRecording()
+                        } else if !circleCam.available {
+                            recordPhase = .idle
+                            attachmentError = "Камера недоступна."
+                        }
+                    }
+                }
+            case .notDetermined:
+                recordPhase = .idle
+                AVCaptureDevice.requestAccess(for: .video) { _ in }   // спросили; зажмёт ещё раз
+            default:
+                recordPhase = .idle
+                attachmentError = "Нет доступа к камере. Разреши в Настройках iOS."
+            }
             return
         }
         // Разрешение микрофона проверяем ДО старта записи: системный диалог
@@ -777,6 +999,17 @@ struct ChatView: View {
     }
 
     private func cancelRecording() {
+        if circleMode {
+            circleSwitching = false
+            if circleCam.isRecording { circleCam.cancelRecording() }
+            circleCam.stop()
+            for u in circleSegments { try? FileManager.default.removeItem(at: u) }
+            circleSegments = []
+            circleRecordedBefore = 0
+            circleWantPreview = false
+            if let url = circlePreviewURL { try? FileManager.default.removeItem(at: url) }
+            circlePreviewURL = nil
+        }
         recorder.cancel()
         if let url = voicePreviewURL {
             try? FileManager.default.removeItem(at: url)
@@ -786,9 +1019,130 @@ struct ChatView: View {
         dragTranslation = .zero
     }
 
+    /// Кружок: остановить запись. preview=true — показать предпросмотр (стоп-квадрат),
+    /// false — мгновенная отправка (отпустил палец). Итог решается в circleFinished.
+    private func finishCircle(preview: Bool = false) {
+        guard circleCam.isRecording else { cancelRecording(); return }
+        circleWantPreview = preview
+        circleCam.stopRecording()
+        if !preview {
+            withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
+        }
+        dragTranslation = .zero
+    }
+
+    /// Переворот камеры во время записи: закрываем сегмент, свитчимся,
+    /// продолжаем следующим сегментом (склейка при отправке).
+    private func flipCircleCamera() {
+        if circleCam.isRecording {
+            guard !circleSwitching else { return }
+            circleSwitching = true
+            circleCam.stopRecording()   // сегмент придёт в circleFinished
+        } else {
+            circleCam.switchCamera()
+        }
+    }
+
+    private func circleFinished(_ url: URL) {
+        let duration = circleCam.elapsed
+
+        if circleSwitching {
+            // Промежуточный сегмент из-за свитча: копим и продолжаем запись.
+            if duration >= 0.3 {
+                circleSegments.append(url)
+                circleRecordedBefore += duration
+            } else {
+                try? FileManager.default.removeItem(at: url)
+            }
+            circleCam.switchCamera()
+            circleCam.startRecording()
+            circleSwitching = false
+            return
+        }
+
+        // Финал: собрать сегменты → превью или мгновенная отправка.
+        if duration >= 0.3 { circleSegments.append(url) } else { try? FileManager.default.removeItem(at: url) }
+        let segments = circleSegments
+        let total = min(circleRecordedBefore + max(duration, 0), 60)
+        let wantPreview = circleWantPreview
+        circleWantPreview = false
+        circleSegments = []
+        circleRecordedBefore = 0
+        guard !segments.isEmpty, total >= 0.5 else {
+            for u in segments { try? FileManager.default.removeItem(at: u) }
+            circleCam.stop()
+            withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
+            return
+        }
+        Task {
+            // Единый файл (склейка при сегментах); для превью файл сохраняем.
+            let fileURL: URL?
+            if segments.count == 1 {
+                fileURL = segments[0]
+            } else {
+                let merged: URL? = await withTaskGroup(of: URL?.self) { group in
+                    group.addTask { await MediaSanitizer.mergeClips(segments) }
+                    group.addTask {
+                        try? await Task.sleep(nanoseconds: 15_000_000_000)
+                        return nil
+                    }
+                    let first = await group.next() ?? nil
+                    group.cancelAll()
+                    return first
+                }
+                if merged != nil {
+                    for u in segments { try? FileManager.default.removeItem(at: u) }
+                }
+                fileURL = merged ?? segments.last
+            }
+            guard let fileURL else {
+                circleCam.stop()
+                withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
+                return
+            }
+            if wantPreview {
+                // Стоп-квадрат: показать предпросмотр, камера больше не нужна.
+                circleCam.stop()
+                circlePreviewURL = fileURL
+                circlePreviewDuration = total
+                withAnimation(AetherUI.sendAnimation) { recordPhase = .preview }
+            } else {
+                defer { try? FileManager.default.removeItem(at: fileURL) }
+                circleCam.stop()
+                guard let data = try? Data(contentsOf: fileURL) else { return }
+                vm.sendMedia(data: data, mime: "video/mp4", kind: "video_msg", fileName: nil, duration: total, replyTo: replyTo)
+                clearReplyAfterSend()
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+        }
+    }
+
+    /// Отправка кружка из предпросмотра.
+    private func sendCirclePreview() {
+        guard let url = circlePreviewURL else { return }
+        circlePreviewURL = nil
+        withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
+        Task {
+            defer { try? FileManager.default.removeItem(at: url) }
+            guard let data = try? Data(contentsOf: url) else { return }
+            vm.sendMedia(data: data, mime: "video/mp4", kind: "video_msg", fileName: nil, duration: circlePreviewDuration, replyTo: replyTo)
+            clearReplyAfterSend()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
+    }
+
+    /// Сброс плашки ответа после отправки медиа (ГС/кружок/вложение-ответ).
+    private func clearReplyAfterSend() {
+        guard replyTo != nil else { return }
+        Task { @MainActor in
+            withAnimation(AetherUI.sendAnimation) { replyTo = nil }
+        }
+    }
+
     private func finishAndSend() {
         if let (data, dur) = recorder.finish() {
-            vm.sendMedia(data: data, mime: "audio/mp4", kind: "voice", fileName: nil, duration: dur)
+            vm.sendMedia(data: data, mime: "audio/mp4", kind: "voice", fileName: nil, duration: dur, replyTo: replyTo)
+            clearReplyAfterSend()
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
         recordPhase = .idle
@@ -799,7 +1153,7 @@ struct ChatView: View {
     private var recordingStrip: some View {
         HStack(spacing: 10) {
             RecordingDot()
-            Text(timeString(recorder.elapsed))
+            Text(timeString(circleMode ? circleTotalElapsed : recorder.elapsed))
                 .font(.system(size: 16, weight: .medium, design: .monospaced))
                 .foregroundStyle(palette.textPrimary)
                 .contentTransition(.numericText())
@@ -862,7 +1216,8 @@ struct ChatView: View {
                 result = await AudioTrimmer.trim(url: url, start: startSec, end: endSec)
             }
             if let (data, duration) = result {
-                vm.sendMedia(data: data, mime: "audio/mp4", kind: "voice", fileName: nil, duration: duration)
+                vm.sendMedia(data: data, mime: "audio/mp4", kind: "voice", fileName: nil, duration: duration, replyTo: replyTo)
+                clearReplyAfterSend()
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
             }
         }
@@ -880,9 +1235,20 @@ struct ChatView: View {
                 Text(Wire.preview(msg.payloadJson)).font(.caption).foregroundStyle(palette.textSecondary).lineLimit(1)
             }
             Spacer()
-            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { replyTo = nil } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(palette.textSecondary) }
+            // Крестик: крупная хит-зона + plain-стиль, чтобы тап не съедался
+            // контейнером/стеклом и гарантированно закрывал плашку.
+            Button {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { replyTo = nil }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(palette.textSecondary)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14).padding(.vertical, 6)
+        .padding(.leading, 14).padding(.trailing, 4).padding(.vertical, 4)
     }
 
     private var editBanner: some View {
@@ -890,9 +1256,18 @@ struct ChatView: View {
             Image(systemName: "pencil").foregroundStyle(palette.accent)
             Text("Редактирование").font(.caption.weight(.semibold)).foregroundStyle(palette.accent)
             Spacer()
-            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { editing = nil; draft = "" } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(palette.textSecondary) }
+            Button {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { editing = nil; draft = "" }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 18))
+                    .foregroundStyle(palette.textSecondary)
+                    .frame(width: 40, height: 40)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .padding(.horizontal, 14).padding(.vertical, 6)
+        .padding(.leading, 14).padding(.trailing, 4).padding(.vertical, 4)
     }
 
     private func submit() {

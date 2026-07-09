@@ -325,6 +325,7 @@ actor CoreClient {
     func setMutedFlag(_ peer: String, _ v: Bool) { try? store.setMuted(peerId: peer, v: v) }
     func setArchivedFlag(_ peer: String, _ v: Bool) { try? store.setArchived(peerId: peer, v: v) }
     func deleteChatData(_ peer: String) { try? store.deleteChat(peerId: peer) }
+    func deleteHistory(peer: String) throws { try api.deleteHistory(peerId: peer.lowercased()) }
 
     func groupKey(_ groupId: String) -> String? { (try? store.getGroupKey(groupId: groupId)) ?? nil }
     func setGroupKey(_ groupId: String, _ keyB64: String) { try? store.setGroupKey(groupId: groupId, keyB64: keyB64) }

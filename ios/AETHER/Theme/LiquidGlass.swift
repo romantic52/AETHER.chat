@@ -8,12 +8,19 @@ struct LiquidGlass<S: Shape>: ViewModifier {
     let shape: S
     var interactive: Bool = false
     var tintOverride: Color? = nil
+    /// false — при выключенном стекле НЕ рисовать surface-подложку (контент как есть):
+    /// для элементов со своей заливкой (индикатор таб-бара), где подложка — «серое пятно».
+    var surfaceWhenOff: Bool = true
     @EnvironmentObject var appearance: AppearanceSettings
     @Environment(\.palette) private var palette
 
     func body(content: Content) -> some View {
         if !appearance.glassEnabled {
-            content.background(palette.surface, in: shape)
+            if surfaceWhenOff {
+                content.background(palette.surface, in: shape)
+            } else {
+                content
+            }
         } else {
             #if compiler(>=6.0)
             if #available(iOS 26.0, *) {
@@ -52,8 +59,8 @@ struct LiquidGlass<S: Shape>: ViewModifier {
 
 extension View {
     /// Наложить жидкое стекло в заданной форме.
-    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false) -> some View {
-        modifier(LiquidGlass(shape: shape, interactive: interactive))
+    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false, surfaceWhenOff: Bool = true) -> some View {
+        modifier(LiquidGlass(shape: shape, interactive: interactive, surfaceWhenOff: surfaceWhenOff))
     }
     func liquidGlass(cornerRadius: CGFloat = 20, interactive: Bool = false) -> some View {
         modifier(LiquidGlass(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), interactive: interactive))

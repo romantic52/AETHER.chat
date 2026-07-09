@@ -36,6 +36,45 @@ struct AetherLogo: View {
     }
 }
 
+// Фирменный замок: корпус — логотип, сверху металлическая дужка.
+// open=true — дужка «отстёгивается»: приподнимается и поворачивается
+// вокруг правой ноги, как настоящий навесной замок.
+struct BrandLock: View {
+    var size: CGFloat = 96
+    var open: Bool = false
+    @Environment(\.palette) private var palette
+
+    var body: some View {
+        ZStack {
+            ShackleShape()
+                .stroke(palette.textPrimary.opacity(0.92),
+                        style: StrokeStyle(lineWidth: size * 0.095, lineCap: .round))
+                .frame(width: size * 0.52, height: size * 0.5)
+                .offset(y: open ? -size * 0.16 : 0)
+                .rotationEffect(.degrees(open ? 28 : 0), anchor: .bottomTrailing)
+                .offset(y: -size * 0.52)
+            AetherLogo(size: size)
+                .scaleEffect(open ? 1.05 : 1)
+        }
+        // Резерв под дужку сверху, чтобы лейаут не прыгал при открытии.
+        .padding(.top, size * 0.44)
+    }
+}
+
+// Дужка замка: две ноги и полукруг сверху.
+struct ShackleShape: Shape {
+    func path(in rect: CGRect) -> Path {
+        var p = Path()
+        let r = rect.width / 2
+        p.move(to: CGPoint(x: rect.minX, y: rect.maxY))
+        p.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))
+        p.addArc(center: CGPoint(x: rect.midX, y: rect.minY + r), radius: r,
+                 startAngle: .degrees(180), endAngle: .degrees(0), clockwise: false)
+        p.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        return p
+    }
+}
+
 // Геометрический вензель «Æ»: слева бол­ьшая A (штрихи + перекладина), справа угловатая E
 // из трёх параллелограммных перекладин, разделяющая стойку с A.
 struct AEMonogram: Shape {

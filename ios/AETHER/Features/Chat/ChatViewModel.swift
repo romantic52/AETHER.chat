@@ -128,13 +128,22 @@ final class ChatViewModel: ObservableObject {
 
         // Действительно новое сообщение в конце — анимируем вылет.
         let hasNewAtEnd = next.count > oldCount && newLast != oldLast
+        // Реакции меняют высоту пузыря — только этот случай «поднимаем» пружиной.
+        // Прочие фоновые релоады (эхо отправки, статусы) — БЕЗ анимации, иначе
+        // они накладываются второй анимацией поверх optimistic-вставки.
+        let sameIds = next.count == oldCount
+            && zip(next, messages).allSatisfy { $0.id == $1.id }
+        let reactionsChanged = sameIds
+            && zip(next, messages).contains { $0.reactions != $1.reactions }
         if hasNewAtEnd {
             withAnimation(AetherUI.sendAnimation) {
                 rebuild()
             }
+        } else if reactionsChanged {
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
+                rebuild()
+            }
         } else {
-            // Обновление статуса / реакции / удаление — без transition-анимации,
-            // чтобы существующие пузыри не перепрыгивали.
             rebuild()
         }
     }
@@ -163,9 +172,11 @@ final class ChatViewModel: ObservableObject {
     }
 
     func sendMedia(data: Data, mime: String, kind: String, fileName: String?, caption: String? = nil,
-                   duration: Double? = nil) {
+                   duration: Double? = nil, replyTo: ChatMessage? = nil) {
         messaging?.sendMedia(to: peerId, data: data, mime: mime, kind: kind,
-                             fileName: fileName, caption: caption, duration: duration, isGroup: isGroup)
+                             fileName: fileName, caption: caption, duration: duration, isGroup: isGroup,
+                             replyToId: replyTo?.id,
+                             replyToText: replyTo.flatMap { Wire.preview($0.payloadJson) })
     }
 
     func react(to message: ChatMessage, emoji: String) {

@@ -234,15 +234,26 @@ struct EdgeDim: View {
     var boost: Double = 1
 
     var body: some View {
-        // Цвет — фон текущей темы, не чистый чёрный: на светлых темах чёрный
-        // градиент выглядел грязью, фон темы даёт естественный «туман».
-        // Усилено: три стопа (плотнее у края) + повышенный потолок.
-        let a = appearance.edgeDimEnabled ? min(appearance.edgeDimStrength * boost * 1.35, 0.92) : 0
+        // Цвет — фон текущей темы (не чистый чёрный). Три ступени плотности:
+        // у края «мега» (почти непрозрачно на максимуме), затем сильное,
+        // затем слабое растворение — как у Telegram. Настройка задаёт общую силу
+        // и работает одинаково для верха и низа.
+        let a = appearance.edgeDimEnabled ? min(appearance.edgeDimStrength * boost * 1.7, 1.0) : 0
         let base = palette.background
-        let stops: [Color] = edge == .top
-            ? [base.opacity(a), base.opacity(a * 0.55), .clear]
-            : [.clear, base.opacity(a * 0.55), base.opacity(a)]
-        LinearGradient(colors: stops, startPoint: .top, endPoint: .bottom)
+        let stops: [Gradient.Stop] = edge == .top
+            ? [
+                .init(color: base.opacity(a), location: 0),          // мега у края
+                .init(color: base.opacity(a * 0.62), location: 0.34), // сильное
+                .init(color: base.opacity(a * 0.26), location: 0.68), // слабое
+                .init(color: .clear, location: 1),
+            ]
+            : [
+                .init(color: .clear, location: 0),
+                .init(color: base.opacity(a * 0.26), location: 0.32),
+                .init(color: base.opacity(a * 0.62), location: 0.66),
+                .init(color: base.opacity(a), location: 1),
+            ]
+        LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
             .allowsHitTesting(false)
     }
 }
