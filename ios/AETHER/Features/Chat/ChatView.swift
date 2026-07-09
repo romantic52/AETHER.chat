@@ -452,8 +452,19 @@ struct ChatView: View {
                     }
                 }
             }
-            .onChange(of: inputFocused) { _, focused in
-                if focused { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            // Подъём ленты синхронно с клавиатурой: в keyboardWillShow финальная
+            // геометрия уже известна, скроллим с длительностью её же анимации —
+            // лента едет вместе с клавиатурой, а не после.
+            .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { notif in
+                let duration = notif.userInfo?[UIResponder.keyboardAnimationDurationUserInfoKey] as? Double ?? 0.25
+                withAnimation(.easeOut(duration: duration)) {
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
+                // Контрольный доскролл после завершения (округления инсетов).
+                Task {
+                    try? await Task.sleep(nanoseconds: UInt64((duration + 0.05) * 1_000_000_000))
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                }
             }
         }
     }
@@ -516,6 +527,10 @@ struct ChatView: View {
         .padding(.bottom, 8)
     }
 
+    /// Толщина контролов композера: единая (толстая) в обоих состояниях —
+    /// анимируются только ширина и позиция, без схлопывания в компактный размер.
+    private var composerControl: CGFloat { 46 }
+
     private var composerBar: some View {
         VStack(spacing: 6) {
             // Единая раскладка во всех фазах: слева скрепка/корзина, посередине
@@ -529,7 +544,7 @@ struct ChatView: View {
                         Image(systemName: "paperclip")
                             .font(.system(size: 20, weight: .regular))
                             .foregroundStyle(palette.textSecondary)
-                            .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                            .frame(width: composerControl, height: composerControl)
                             .liquidGlass(Circle())
                             .contentShape(Circle())
                             .rotationEffect(.degrees(showAttachMenu ? 45 : 0))
@@ -543,7 +558,7 @@ struct ChatView: View {
                         Image(systemName: "trash.fill")
                             .font(.system(size: 18, weight: .regular))
                             .foregroundStyle(palette.danger)
-                            .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                            .frame(width: composerControl, height: composerControl)
                             .liquidGlass(Circle())
                             .contentShape(Circle())
                     }
@@ -581,7 +596,7 @@ struct ChatView: View {
                                 .focused($inputFocused)
                                 .foregroundStyle(palette.textPrimary)
                                 .padding(.horizontal, 14).padding(.vertical, 9)
-                                .frame(minHeight: AetherUI.composerControl, alignment: .center)
+                                .frame(minHeight: composerControl, alignment: .center)
                                 .onChange(of: draft) { _, value in
                                     vm.typingChanged(isEmpty: value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                                 }
@@ -600,11 +615,10 @@ struct ChatView: View {
             .animation(AetherUI.sendAnimation, value: inputFocused)
             .animation(AetherUI.sendAnimation, value: recordPhase)
         }
-        // Без клавиатуры композер сидит ниже, ближе к краю экрана; с клавиатурой
-        // поднимается с одинаковым зазором с боков и от клавиатуры (симметрия).
-        .padding(.horizontal, inputFocused ? 8 : 22)
-        .padding(.bottom, inputFocused ? 8 : 6)
-        .scaleEffect(inputFocused ? 1.0 : 0.95, anchor: .bottom)
+        // Без клавиатуры: бар уже по ширине, ниже к краю и толще (composerControl 46);
+        // с клавиатурой — компактный, одинаковый зазор с боков и от клавиатуры.
+        .padding(.horizontal, inputFocused ? 8 : 24)
+        .padding(.bottom, inputFocused ? 8 : 4)
         .animation(AetherUI.sendAnimation, value: inputFocused)
     }
 
@@ -614,7 +628,7 @@ struct ChatView: View {
             Image(systemName: icon)
                 .font(.system(size: 20, weight: .regular))
                 .foregroundStyle(palette.textSecondary)
-                .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                .frame(width: composerControl, height: composerControl)
                 .contentShape(Circle())
         }
         .buttonStyle(.squish)
@@ -637,7 +651,7 @@ struct ChatView: View {
                     Image(systemName: "stop.fill")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(palette.onAccent)
-                        .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                        .frame(width: composerControl, height: composerControl)
                         .background(palette.danger, in: Circle())
                         .contentShape(Circle())
                 }
@@ -649,7 +663,7 @@ struct ChatView: View {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(palette.onAccent)
-                        .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                        .frame(width: composerControl, height: composerControl)
                         .background(palette.accent, in: Circle())
                         .contentShape(Circle())
                 }
@@ -661,7 +675,7 @@ struct ChatView: View {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(palette.onAccent)
-                            .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                            .frame(width: composerControl, height: composerControl)
                             .background(palette.accent, in: Circle())
                             .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.5))
                             .contentShape(Circle())
@@ -672,7 +686,7 @@ struct ChatView: View {
                     Image(systemName: circleMode ? "video.fill" : "mic.fill")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundStyle(recordPhase == .recording ? palette.onAccent : palette.accent)
-                        .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                        .frame(width: composerControl, height: composerControl)
                         .background {
                             if recordPhase == .recording {
                                 Circle().fill(palette.accent)
@@ -812,7 +826,7 @@ struct ChatView: View {
             }
         }
         .padding(.horizontal, 14)
-        .frame(minHeight: AetherUI.composerControl)
+        .frame(minHeight: composerControl)
         .frame(maxWidth: .infinity)
         .liquidGlass(Capsule())
     }
