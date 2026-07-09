@@ -229,16 +229,21 @@ final class AppearanceSettings: ObservableObject {
 // boost — множитель для нижнего края, где под таб-баром/композером нужно чуть плотнее.
 struct EdgeDim: View {
     @EnvironmentObject var appearance: AppearanceSettings
+    @Environment(\.palette) private var palette
     var edge: VerticalEdge = .top
     var boost: Double = 1
 
     var body: some View {
-        let a = appearance.edgeDimEnabled ? min(appearance.edgeDimStrength * boost, 0.75) : 0
-        LinearGradient(
-            colors: edge == .top ? [.black.opacity(a), .clear] : [.clear, .black.opacity(a)],
-            startPoint: .top, endPoint: .bottom
-        )
-        .allowsHitTesting(false)
+        // Цвет — фон текущей темы, не чистый чёрный: на светлых темах чёрный
+        // градиент выглядел грязью, фон темы даёт естественный «туман».
+        // Усилено: три стопа (плотнее у края) + повышенный потолок.
+        let a = appearance.edgeDimEnabled ? min(appearance.edgeDimStrength * boost * 1.35, 0.92) : 0
+        let base = palette.background
+        let stops: [Color] = edge == .top
+            ? [base.opacity(a), base.opacity(a * 0.55), .clear]
+            : [.clear, base.opacity(a * 0.55), base.opacity(a)]
+        LinearGradient(colors: stops, startPoint: .top, endPoint: .bottom)
+            .allowsHitTesting(false)
     }
 }
 

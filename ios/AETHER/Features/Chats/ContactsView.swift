@@ -125,7 +125,7 @@ struct ContactsView: View {
                     )
                     FloatingSearchBar(prompt: "Имя или @username", text: $query)
                 }
-                // Без градиента-подложки — как остальные экраны, чистая шапка.
+                .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
             }
             .onChange(of: query) { _, q in scheduleSearch(q) }
             #if DEBUG
