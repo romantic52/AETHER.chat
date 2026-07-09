@@ -1,19 +1,4 @@
-# Xcode / сборка
-*.xcodeproj          # генерируется из project.yml через xcodegen
-xcuserdata/
-DerivedData/
-build/
-*.ipa
-*.dSYM.zip
-
-# Артефакты нативного ядра (собираются build_core_ios.sh на Mac/CI)
-.coreffi-build/
-CoreFFI/SmCoreFFI.xcframework/
-AETHER/CoreFFI/Generated/*.swift
-
-# Скачанные сборки / упаковка для Appetize (локальные)
-_artifact/
-*.app.zip
-
-# macOS
-.DS_Store
+.derivedData/
+CoreFFI/
+AETHER/Core/Generated/
+AETHER.xcodeproj/

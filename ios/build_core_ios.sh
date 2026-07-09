@@ -1,68 +1,77 @@
 #!/usr/bin/env bash
+# Собирает Rust-ядро в SmCoreFFI.xcframework и генерирует sm_core.swift (UniFFI).
+# Запуск на Mac/CI перед `xcodegen generate` и сборкой в Xcode.
 #
-# Сборка общего Rust-ядра (../core) под iOS + генерация Swift-биндингов (UniFFI).
-# ЗАПУСКАЕТСЯ ТОЛЬКО НА macOS (нужны Apple toolchain, lipo, xcodebuild).
+#   ./build_core_ios.sh            # device + sim (arm64) — обычная разработка
+#   FAST=1 ./build_core_ios.sh     # только симулятор arm64 (быстрее)
 #
-# Предусловия (один раз):
-#   rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
-#   (Xcode 26+ для настоящего Liquid Glass в самом приложении)
-#
-# Результат:
-#   ios/CoreFFI/SmCoreFFI.xcframework       — статическое ядро (device + simulator)
-#   ios/AETHER/CoreFFI/Generated/sm_core.swift — высокоуровневые Swift-биндинги
-#
-# После прогона: cd ios && xcodegen generate && open AETHER.xcodeproj
 set -euo pipefail
 
-HERE="$(cd "$(dirname "$0")" && pwd)"
-CORE="$HERE/../core"
-LIB="libsm_core.a"
-BUILD="$HERE/.coreffi-build"
-XCFRAMEWORK="$HERE/CoreFFI/SmCoreFFI.xcframework"
-GEN="$HERE/AETHER/CoreFFI/Generated"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CORE_DIR="$SCRIPT_DIR/../core"
+OUT_DIR="$SCRIPT_DIR/CoreFFI"
+GEN_SWIFT_DIR="$SCRIPT_DIR/AETHER/Core/Generated"
+LIB_NAME="libsm_core.a"
+FFI_MODULE="SmCoreFFI"
 
-echo "== таргеты Rust под iOS =="
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+export PATH="$HOME/.cargo/bin:$PATH"
 
-cd "$CORE"
-echo "== cargo build (release) для device + simulator =="
-cargo build --release --target aarch64-apple-ios          # iPhone (arm64)
-cargo build --release --target aarch64-apple-ios-sim      # симулятор на Apple Silicon
-cargo build --release --target x86_64-apple-ios           # симулятор на Intel
+# Минимальная версия iOS для статической библиотеки — совпадает с деплой-таргетом
+# приложения (17.0), чтобы линкер не ругался на «built for newer version».
+export IPHONEOS_DEPLOYMENT_TARGET="17.0"
 
-rm -rf "$BUILD"; mkdir -p "$BUILD/sim" "$BUILD/device" "$BUILD/headers"
+echo "▸ Rust ядро: $CORE_DIR"
+cd "$CORE_DIR"
 
-echo "== fat-библиотека для симулятора (arm64 + x86_64) =="
-lipo -create \
-  "$CORE/target/aarch64-apple-ios-sim/release/$LIB" \
-  "$CORE/target/x86_64-apple-ios/release/$LIB" \
-  -output "$BUILD/sim/$LIB"
-cp "$CORE/target/aarch64-apple-ios/release/$LIB" "$BUILD/device/$LIB"
+# Цели.
+if [[ "${FAST:-0}" == "1" ]]; then
+  TARGETS=(aarch64-apple-ios-sim)
+else
+  TARGETS=(aarch64-apple-ios aarch64-apple-ios-sim)
+fi
 
-echo "== UniFFI: Swift-биндинги из собранной библиотеки =="
+for t in "${TARGETS[@]}"; do
+  echo "▸ cargo build --release --target $t"
+  cargo build --release --target "$t"
+done
+
+# UniFFI: генерируем Swift-биндинги из собранной библиотеки (proc-macro режим).
+echo "▸ Генерация Swift-биндингов (UniFFI)"
+BINDGEN_LIB="target/aarch64-apple-ios-sim/release/$LIB_NAME"
+rm -rf "$GEN_SWIFT_DIR" && mkdir -p "$GEN_SWIFT_DIR"
 cargo run --release --bin uniffi-bindgen -- generate \
-  --library "$CORE/target/aarch64-apple-ios/release/$LIB" \
+  --library "$BINDGEN_LIB" \
   --language swift \
-  --out-dir "$BUILD/bindings"
+  --out-dir "$GEN_SWIFT_DIR"
 
-# UniFFI кладёт три файла: sm_core.swift, sm_coreFFI.h, sm_coreFFI.modulemap.
-# Для XCFramework нужен заголовок + module.modulemap в каталоге headers.
-cp "$BUILD/bindings/sm_coreFFI.h" "$BUILD/headers/"
-cp "$BUILD/bindings/sm_coreFFI.modulemap" "$BUILD/headers/module.modulemap"
+# UniFFI кладёт: sm_core.swift, sm_coreFFI.h, sm_coreFFI.modulemap.
+# Для xcframework соберём modulemap в правильном имени и заголовки в отдельную папку.
+HEADERS_DIR="$SCRIPT_DIR/CoreFFI/Headers"
+rm -rf "$HEADERS_DIR" && mkdir -p "$HEADERS_DIR"
+cp "$GEN_SWIFT_DIR"/*FFI.h "$HEADERS_DIR"/
+# Clang-модуль ДОЛЖЕН называться sm_coreFFI — именно его импортирует sm_core.swift
+# (`import sm_coreFFI`). Имя файла xcframework (SmCoreFFI.xcframework) с этим не связано.
+cat > "$HEADERS_DIR/module.modulemap" <<EOF
+module sm_coreFFI {
+    header "sm_coreFFI.h"
+    export *
+}
+EOF
+# sm_core.swift остаётся в Generated/ и компилируется в приложении.
+rm -f "$GEN_SWIFT_DIR"/*FFI.h "$GEN_SWIFT_DIR"/*FFI.modulemap "$GEN_SWIFT_DIR"/*.modulemap
 
-echo "== сборка XCFramework =="
-rm -rf "$XCFRAMEWORK"; mkdir -p "$HERE/CoreFFI"
-xcodebuild -create-xcframework \
-  -library "$BUILD/device/$LIB" -headers "$BUILD/headers" \
-  -library "$BUILD/sim/$LIB"    -headers "$BUILD/headers" \
-  -output "$XCFRAMEWORK"
+# Собираем xcframework.
+echo "▸ Сборка $FFI_MODULE.xcframework"
+rm -rf "$OUT_DIR/$FFI_MODULE.xcframework"
 
-echo "== высокоуровневый Swift-биндинг -> в таргет приложения =="
-mkdir -p "$GEN"
-cp "$BUILD/bindings/sm_core.swift" "$GEN/sm_core.swift"
+XCARGS=()
+if [[ " ${TARGETS[*]} " == *" aarch64-apple-ios "* ]]; then
+  XCARGS+=(-library "target/aarch64-apple-ios/release/$LIB_NAME" -headers "$HEADERS_DIR")
+fi
+XCARGS+=(-library "target/aarch64-apple-ios-sim/release/$LIB_NAME" -headers "$HEADERS_DIR")
 
-echo ""
-echo "Готово."
-echo "  XCFramework: $XCFRAMEWORK"
-echo "  Биндинги:    $GEN/sm_core.swift"
-echo "Далее:  cd ios && xcodegen generate && open AETHER.xcodeproj"
+xcodebuild -create-xcframework "${XCARGS[@]}" -output "$OUT_DIR/$FFI_MODULE.xcframework"
+
+echo "✅ Готово:"
+echo "   $OUT_DIR/$FFI_MODULE.xcframework"
+echo "   $GEN_SWIFT_DIR/sm_core.swift"

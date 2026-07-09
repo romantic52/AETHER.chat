@@ -1,124 +1,1067 @@
 import SwiftUI
+import PhotosUI
+import UniformTypeIdentifiers
+import Combine
+import AVFoundation
 
-/// Оболочка диалога: стеклянная шапка, пузыри сообщений, стеклянная строка
-/// ввода. Демо-сообщения — каркас под реальную крипту (`core.boxEncrypt`/
-/// `boxDecrypt`) и доставку через relay.
 struct ChatView: View {
-    @Environment(\.dismiss) private var dismiss
-    var title: String
+    let peerId: String
+    let isGroup: Bool
 
+    @EnvironmentObject var session: Session
+    @EnvironmentObject var messaging: Messaging
+    @EnvironmentObject var appearance: AppearanceSettings
+    @EnvironmentObject var chrome: ChromeState
+    @Environment(\.palette) private var palette
+    @Environment(\.dismiss) private var dismiss
+
+    @StateObject private var vm: ChatViewModel
     @State private var draft = ""
-    @State private var messages: [DemoMessage] = [
-        .init(text: "Стартовое окно на iOS готово.", mine: false),
-        .init(text: "И стекло настоящее, iOS 26 ✨", mine: true),
-        .init(text: "Шифрование — то же ядро, что на Android.", mine: false),
-    ]
+    @State private var replyTo: ChatMessage?
+    @State private var editing: ChatMessage?
+    @State private var pickerFor: ChatMessage?
+    @FocusState private var inputFocused: Bool
+
+    // Вложения.
+    @State private var showAttachMenu = false
+    @State private var showPhotoPicker = false
+    @State private var showFileImporter = false
+    @State private var showCamera = false
+    @State private var photoItems: [PhotosPickerItem] = []
+    @State private var attachmentError = ""
+
+    // Голос / кружки.
+    @StateObject private var recorder = VoiceRecorder()
+    @State private var circleMode = false
+    @State private var showCircleRecorder = false
+
+    private enum RecordPhase { case idle, arming, recording, locked, preview }
+    @State private var recordPhase: RecordPhase = .idle
+    // Предпросмотр/обрезка записанного ГС (фаза .preview).
+    @State private var voicePreviewURL: URL?
+    @State private var voicePreviewDuration: TimeInterval = 0
+    @State private var trimStart: CGFloat = 0
+    @State private var trimEnd: CGFloat = 1
+    @State private var dragTranslation: CGSize = .zero
+    @State private var armTask: Task<Void, Never>?
+    private let holdThreshold: TimeInterval = 0.18
+    private let lockDistance: CGFloat = -80
+    private let cancelDistance: CGFloat = -70
+
+    // Группа/канал.
+    @State private var showGroupProfile = false
+
+    // Локальное фото для контакта (см. AvatarStore) — только для 1:1.
+    @State private var showAvatarMenu = false
+    @State private var showAvatarPicker = false
+    @State private var avatarPickerItem: PhotosPickerItem?
+
+    init(peerId: String, isGroup: Bool) {
+        self.peerId = peerId
+        self.isGroup = isGroup
+        // vm привязывается в .task через rebind-паттерн — здесь плейсхолдер невозможен,
+        // поэтому конструируем лениво в onAppear. Используем обёртку через State.
+        _vm = StateObject(wrappedValue: ChatViewModel.placeholder)
+    }
+
+    private var title: String {
+        if peerId == session.myId.lowercased() { return "Избранное" }
+        let chatTitle = messaging.chats.first { $0.peerId == peerId }?.title ?? ""
+        return chatTitle.isEmpty ? peerId : chatTitle
+    }
+
+    private var subtitle: String {
+        if isGroup {
+            if let info = messaging.groups.info(peerId) {
+                return info.isChannel ? "\(info.memberCount) подписчиков" : "\(info.memberCount) участников"
+            }
+            return ""
+        }
+        if messaging.typingPeers.contains(peerId) { return "печатает…" }
+        return messaging.presenceText(peerId)
+    }
+
+    /// Канал: писать могут только владелец/админы; остальные — read-only.
+    private var isReadOnlyChannel: Bool {
+        guard let info = messaging.groups.info(peerId), info.isChannel else { return false }
+        return !info.isOwnerOrAdmin
+    }
+
+    /// Подписан ли я на уведомления канала (переиспользуем общий флаг muted чата).
+    private var channelSubscribed: Bool {
+        !(messaging.chats.first { $0.peerId == peerId }?.muted ?? false)
+    }
 
     var body: some View {
         ZStack {
-            Brand.backdrop.ignoresSafeArea()
-
-            VStack(spacing: 0) {
-                header
-
-                ScrollView {
-                    VStack(spacing: 8) {
-                        ForEach(messages) { m in
-                            MessageBubble(message: m)
-                        }
-                    }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 12)
+            wallpaper
+            messageList
+                .safeAreaInset(edge: .bottom) {
+                    inputBarContainer
                 }
-
-                inputBar
+        }
+        .toolbar(.hidden, for: .navigationBar)
+        .swipeBackEnabled()
+        .safeAreaInset(edge: .top) { chatTopBar }
+        .sheet(isPresented: $showGroupProfile) {
+            if isGroup {
+                GroupProfileView(groupId: peerId)
+                    .environmentObject(session).environmentObject(messaging)
+            } else {
+                NavigationStack {
+                    UserProfileView(userId: peerId)
+                        .environmentObject(session).environmentObject(messaging)
+                }
             }
         }
+        // Долгое нажатие на аватар в шапке 1:1-чата — локальное (только у меня)
+        // фото для контакта, реальный профиль собеседника мы менять не можем.
+        .confirmationDialog("Фото контакта", isPresented: $showAvatarMenu, titleVisibility: .visible) {
+            Button("Установить фото") { showAvatarPicker = true }
+            if AvatarStore.shared.hasOverride(for: peerId) {
+                Button("Удалить фото", role: .destructive) { AvatarStore.shared.removeOverride(for: peerId) }
+            }
+            Button("Отмена", role: .cancel) {}
+        }
+        .photosPicker(isPresented: $showAvatarPicker, selection: $avatarPickerItem, matching: .images)
+        .onChange(of: avatarPickerItem) { _, item in
+            guard let item else { return }
+            Task {
+                defer { avatarPickerItem = nil }
+                if let data = try? await item.loadTransferable(type: Data.self),
+                   let image = MediaStore.downsample(data: data, maxPixel: 512) {
+                    AvatarStore.shared.setOverride(image, for: peerId)
+                }
+            }
+        }
+        // .task(id:) — при переиспользовании вью под другой peer задача перезапускается.
+        .task(id: peerId) {
+            vm.bind(peerId: peerId, isGroup: isGroup, session: session, messaging: messaging)
+            await vm.onAppear()
+            #if DEBUG
+            if let msg = ProcessInfo.processInfo.environment["AETHER_SEND"], !msg.isEmpty {
+                try? await Task.sleep(nanoseconds: 1_500_000_000)
+                vm.send(text: msg, replyTo: nil)
+            }
+            if isGroup, ProcessInfo.processInfo.environment["AETHER_OPEN_GROUP_PROFILE"] == "1" {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                showGroupProfile = true
+            }
+            if ProcessInfo.processInfo.environment["AETHER_OPEN_ATTACH"] == "1" {
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+                showAttachMenu = true
+            }
+            #endif
+        }
+        .onAppear { chrome.tabBarHidden = true }
+        .onDisappear {
+            chrome.tabBarHidden = false
+            vm.onDisappear()
+            armTask?.cancel()
+            if recordPhase != .idle { recorder.cancel(); recordPhase = .idle }
+        }
+        .onReceive(messaging.inboxTick.$tick.dropFirst()) { _ in
+            vm.requestReload()
+        }
+        .sheet(item: $pickerFor) { msg in
+            ReactionPicker { emoji in
+                vm.react(to: msg, emoji: emoji)
+                pickerFor = nil
+            }
+            .presentationDetents([.height(90)])
+            .presentationBackground(.ultraThinMaterial)
+        }
+        .sheet(isPresented: $showAttachMenu) {
+            AttachmentSheet(
+                onSend: { picked, asFile in sendPicked(picked, asFile: asFile) },
+                onOpenCamera: { showCamera = true },
+                onOpenFullGallery: { showPhotoPicker = true },
+                onOpenFilePicker: { showFileImporter = true }
+            )
+            .presentationDetents([.fraction(0.62), .large])
+            .presentationDragIndicator(.hidden)
+        }
+        .fullScreenCover(isPresented: $showCamera) {
+            CameraCaptureView { picked in sendPicked([picked]) }
+                .ignoresSafeArea()
+        }
+        // Полная галерея (все альбомы) — открывается кнопкой «Галерея» в шторке,
+        // системный пикер поверх нашей сетки последних фото.
+        .photosPicker(isPresented: $showPhotoPicker, selection: $photoItems, maxSelectionCount: 99, matching: .any(of: [.images, .videos]))
+        .onChange(of: photoItems) { _, items in Task { await handlePhotos(items) } }
+        .fileImporter(isPresented: $showFileImporter, allowedContentTypes: [.item], allowsMultipleSelection: true) { result in
+            handleFiles(result)
+        }
+        .fullScreenCover(isPresented: $showCircleRecorder) {
+            CircleRecorderView { data, dur in
+                vm.sendMedia(data: data, mime: "video/mp4", kind: "video_msg", fileName: nil, duration: dur)
+            }
+        }
+        .alert("Не удалось прикрепить файл", isPresented: Binding(
+            get: { !attachmentError.isEmpty },
+            set: { if !$0 { attachmentError = "" } }
+        )) {
+            Button("OK", role: .cancel) { attachmentError = "" }
+        } message: {
+            Text(attachmentError)
+        }
+    }
+
+    // MARK: - Вложения
+
+    private func handlePhotos(_ items: [PhotosPickerItem]) async {
+        var picked: [AttachmentPicked] = []
+        for item in items {
+            guard let data = try? await item.loadTransferable(type: Data.self) else { continue }
+            let isVideo = item.supportedContentTypes.contains { $0.conforms(to: .movie) }
+            picked.append(AttachmentPicked(data: data, mime: isVideo ? "video/mp4" : "image/jpeg",
+                                           kind: isVideo ? "video" : "image", fileName: nil))
+        }
+        photoItems = []
+        sendPicked(picked)
+    }
+
+    /// Отправка вложений (шторка/камера/системный пикер) в порядке выбора.
+    /// asFile — оригиналы без сжатия, файлом. Метаданные (EXIF/GPS/устройство)
+    /// зачищаются ВСЕГДА, обоими путями (MediaSanitizer).
+    private func sendPicked(_ items: [AttachmentPicked], asFile: Bool = false) {
+        Task {
+            // Обезличенные имена: file_ГГГГММДД_ЧЧММСС.расширение; несколько
+            // в одну отправку — добавляется порядковый номер (_2, _3, …).
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyyMMdd_HHmmss"
+            let stamp = formatter.string(from: Date())
+            var fileIndex = 0
+            func anonName(ext: String) -> String {
+                fileIndex += 1
+                return fileIndex == 1 ? "file_\(stamp).\(ext)" : "file_\(stamp)_\(fileIndex).\(ext)"
+            }
+            for item in items {
+                if item.kind == "video" {
+                    guard item.data.count <= 100 * 1024 * 1024 else {
+                        attachmentError = "Видео больше 100 МБ. Выбери файл поменьше."
+                        continue
+                    }
+                    if asFile {
+                        // Файлом — оригинальные дорожки, только зачистка метаданных.
+                        let clean = await MediaSanitizer.strippedVideo(item.data)
+                        vm.sendMedia(data: clean, mime: "video/mp4", kind: "file", fileName: anonName(ext: "mp4"))
+                    } else {
+                        // Обычная отправка — реальное сжатие видео (720p H.264).
+                        let clean = await MediaSanitizer.compressedVideo(item.data)
+                        vm.sendMedia(data: clean, mime: "video/mp4", kind: "video", fileName: nil)
+                    }
+                } else if asFile {
+                    // Оригинал файлом: пиксели без потерь, метаданные вычищены,
+                    // имя обезличено (оригинальное имя из галереи не светим).
+                    let clean = await Task.detached(priority: .userInitiated) {
+                        MediaSanitizer.strippedImage(item.data)
+                    }.value
+                    let ext = item.mime.contains("png") ? "png" : (item.mime.contains("heic") ? "heic" : "jpg")
+                    vm.sendMedia(data: clean, mime: item.mime, kind: "file", fileName: anonName(ext: ext))
+                } else {
+                    // Сжатое фото — реальная экономия места: даунсэмплинг до 1280px
+                    // + JPEG 0.6 (как «сжатая» отправка Telegram; в 15–30 раз меньше
+                    // оригинала). EXIF при перекодировании не переносится.
+                    let jpeg = await Task.detached(priority: .userInitiated) {
+                        autoreleasepool {
+                            let image = MediaStore.downsample(data: item.data, maxPixel: 1280) ?? UIImage(data: item.data)
+                            let compressed = image?.jpegData(compressionQuality: 0.6)
+                            // Страховка: если «сжатие» вдруг вышло крупнее оригинала —
+                            // шлём оригинал (уже без метаданных по пути перекодирования).
+                            if let compressed, compressed.count < item.data.count { return compressed }
+                            return compressed ?? item.data
+                        }
+                    }.value
+                    vm.sendMedia(data: jpeg, mime: "image/jpeg", kind: "image", fileName: nil)
+                }
+            }
+        }
+    }
+
+    private func setTabBarHidden(_ hidden: Bool) {
+        // Плавный fade на месте — без слайда и без disablesAnimations (прежде
+        // выключали анимацию, чтобы бар не «наезжал» снизу вместе с push-переходом
+        // NavigationStack; теперь скрытие — только прозрачностью на фиксированной
+        // позиции, поэтому явный easeOut даёт чистое растворение без «отлипания»).
+        withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = hidden }
+    }
+
+    private func handleFiles(_ result: Result<[URL], Error>) {
+        guard case .success(let urls) = result else { return }
+        for url in urls {
+            Task {
+                let loaded = await Task.detached(priority: .userInitiated) { () -> (Data?, String?) in
+                    let access = url.startAccessingSecurityScopedResource()
+                    defer { if access { url.stopAccessingSecurityScopedResource() } }
+                    let size = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+                    guard size <= 100 * 1024 * 1024 else { return (nil, "Максимальный размер файла — 100 МБ.") }
+                    guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+                        return (nil, "Не удалось прочитать \(url.lastPathComponent).")
+                    }
+                    return (data, nil)
+                }.value
+                if let error = loaded.1 { attachmentError = error; return }
+                guard let data = loaded.0 else { return }
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType ?? "application/octet-stream"
+                // Фото/видео-файлы чистим от метаданных; прочие форматы — как есть
+                // (правка байтов произвольного формата сломала бы содержимое).
+                let clean = await MediaSanitizer.sanitize(data: data, mime: mime)
+                vm.sendMedia(data: clean, mime: mime, kind: "file", fileName: url.lastPathComponent)
+            }
+        }
+    }
+
+    // MARK: - Шапка
+
+    // Плавающая шапка диалога вместо системного навбара (на iOS 27 beta
+    // toolbarBackground(.hidden) не убирает стеклянную подложку).
+    // Слева — отдельная круглая «назад», остальное (шапка чата + звонки + меню) —
+    // единая скруглённая стеклянная панель, в стиле нижнего композера.
+    private var chatTopBar: some View {
+        HStack(spacing: 10) {
+            // 48 = высота стеклянной капсулы (аватар 36 + 6+6 вертикальных отступов).
+            HeaderIconButton(icon: "chevron.left", size: 48) { dismiss() }
+
+            // Тап в любом месте капсулы (кроме кнопки звонка) открывает профиль;
+            // кнопка звонка — меню «аудио/видео». Кнопки-дети выигрывают у тапа родителя.
+            HStack(spacing: 6) {
+                header
+                Spacer(minLength: 0)
+                if peerId != session.myId.lowercased() && !isGroup {
+                    Menu {
+                        Button { messaging.calls.startCall(peer: peerId, video: false) } label: {
+                            Label("Аудиозвонок", systemImage: "phone.fill")
+                        }
+                        Button { messaging.calls.startCall(peer: peerId, video: true) } label: {
+                            Label("Видеозвонок", systemImage: "video.fill")
+                        }
+                    } label: {
+                        Image(systemName: "phone.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundStyle(palette.accent)
+                            .frame(width: 36, height: 36)
+                            .contentShape(Circle())
+                    }
+                }
+            }
+            .padding(.leading, 10)
+            .padding(.trailing, 6)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity)
+            .contentShape(Capsule())
+            .onTapGesture { showGroupProfile = true }
+            .liquidGlass(Capsule())
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+        .padding(.bottom, 8)
+        .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
     }
 
     private var header: some View {
-        HStack(spacing: 12) {
-            Button { dismiss() } label: {
-                Image(systemName: "chevron.left")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(Brand.textPrimary)
-                    .frame(width: 40, height: 40)
-            }
-            Avatar(name: title, size: 38)
+        HStack(spacing: 10) {
+            Avatar(id: peerId, name: title, size: 36,
+                   avatarURL: isGroup ? nil : messaging.avatarURL(peerId),
+                   online: messaging.isOnline(peerId) && !isGroup)
+                .onLongPressGesture {
+                    guard !isGroup, peerId != session.myId.lowercased() else { return }
+                    showAvatarMenu = true
+                }
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 16, weight: .semibold)).foregroundStyle(Brand.textPrimary)
-                Text("в сети").font(.system(size: 12)).foregroundStyle(Brand.textMuted)
-            }
-            Spacer()
-            Button {} label: {
-                Image(systemName: "phone").font(.system(size: 17, weight: .medium)).foregroundStyle(Brand.textPrimary)
+                Text(title).font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                if !subtitle.isEmpty {
+                    Text(subtitle)
+                        .font(.system(size: 12))
+                        .foregroundStyle(subtitle == "печатает…" || subtitle == "в сети" ? palette.accent : palette.textSecondary)
+                }
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .background(.ultraThinMaterial)
-        .overlay(Rectangle().fill(Brand.border).frame(height: 0.5), alignment: .bottom)
+    }
+
+    // MARK: - Список сообщений
+
+    private var messageList: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Обычный VStack, НЕ LazyVStack: ленивые строки измеряются прямо во
+                // время скролла, высота контента меняется под пальцем — отсюда рывки
+                // в начале прокрутки. Страница — 40 сообщений с плоскими пузырями,
+                // измерить всё заранее дешевле, чем дёргать ленту.
+                VStack(spacing: 5) {
+                    if vm.canLoadMore {
+                        Button {
+                            Task { await vm.loadMore() }
+                        } label: {
+                            if vm.loading { ProgressView().tint(palette.accent) }
+                            else { Text("Показать более ранние сообщения").font(.caption) }
+                        }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(palette.accent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                    }
+                    ForEach(vm.timeline) { item in
+                        switch item.kind {
+                        case .date(let label):
+                            DateSeparator(label: label)
+                                .padding(.vertical, 6)
+                        case .message(let msg, let tail, let showSender):
+                            MessageBubble(
+                                message: msg, isGroup: isGroup, showTail: tail, showSender: showSender,
+                                myId: vm.myId, readTick: palette.readTick,
+                                onReply: { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { replyTo = msg; inputFocused = true } },
+                                onQuickReact: { vm.react(to: msg, emoji: appearance.quickReaction) },
+                                onPicker: { pickerFor = msg },
+                                onEdit: { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { editing = msg; draft = msg.payload?.text ?? ""; inputFocused = true } },
+                                onDelete: { vm.delete(msg) },
+                                onRetry: { vm.retry(msg) }
+                            )
+                            .id(msg.id)
+                            // Новое сообщение плавно въезжает снизу с фейдом — без
+                            // scale-«попапа», как в Telegram.
+                            .transition(.asymmetric(
+                                insertion: .offset(y: 22).combined(with: .opacity),
+                                removal: .opacity
+                            ))
+                        }
+                    }
+                    if messaging.typingPeers.contains(peerId) {
+                        TypingBubble().id("typing")
+                    }
+                    Color.clear.frame(height: 8).id("bottom")
+                }
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+            }
+            .scrollDismissesKeyboard(.interactively)
+            // Контент сразу заякорен снизу — без программного скролла при открытии
+            // (анимированный scrollTo на старте дрался с жестом пользователя:
+            // начнёшь скроллить в этот момент — всё дёргается).
+            .defaultScrollAnchor(.bottom)
+            .onChange(of: vm.messages.last?.id) { oldId, newId in
+                guard newId != nil else { return }
+                if oldId == nil {
+                    // Первая загрузка — мгновенный прыжок вниз, без анимации.
+                    proxy.scrollTo("bottom", anchor: .bottom)
+                } else {
+                    // Новое сообщение — той же пружиной, что и вставка пузыря.
+                    withAnimation(AetherUI.sendAnimation) {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+            }
+            .onChange(of: inputFocused) { _, focused in
+                if focused { withAnimation { proxy.scrollTo("bottom", anchor: .bottom) } }
+            }
+        }
+    }
+
+    // MARK: - Поле ввода
+
+    private var inputBarContainer: some View {
+        inputBar
+            .background(
+                EdgeDim(edge: .bottom, boost: 1.6)
+                    .padding(.top, -20)
+                    .ignoresSafeArea(edges: .bottom)
+            )
     }
 
     private var inputBar: some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "paperclip").foregroundStyle(Brand.textMuted)
-                TextField("Сообщение", text: $draft, axis: .vertical)
-                    .foregroundStyle(Brand.textPrimary)
-                    .lineLimit(1...4)
-            }
-            .padding(.horizontal, 14)
-            .padding(.vertical, 11)
-            .liquidGlass(in: RoundedRectangle(cornerRadius: 22, style: .continuous))
+        Group {
+            if isReadOnlyChannel { readOnlyBar } else { composerBar }
+        }
+    }
 
-            Button { send() } label: {
-                Image(systemName: draft.isEmpty ? "mic" : "arrow.up")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundStyle(.black)
-                    .frame(width: 46, height: 46)
-                    .background(Circle().fill(.white))
+    // Плашка для read-only канала: до первой подписки — крупная кнопка «Подписаться»
+    // (включает уведомления), после — компактный переключатель звука. Как в Telegram.
+    // Плавающий остров: стеклянная капсула с отступами, не во всю ширину.
+    private var readOnlyBar: some View {
+        Group {
+            if channelSubscribed {
+                HStack(spacing: 10) {
+                    Button {
+                        Task { await messaging.setMuted(peerId, true) }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "bell.fill")
+                            Text("Уведомления включены")
+                        }
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(palette.textSecondary)
+                    }
+                    Spacer()
+                    Text("Только чтение").font(.caption).foregroundStyle(palette.textSecondary)
+                }
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .frame(maxWidth: .infinity)
+                .liquidGlass(Capsule())
+            } else {
+                Button {
+                    Task { await messaging.setMuted(peerId, false) }
+                } label: {
+                    Text("Подписаться")
+                        .font(.headline)
+                        .foregroundStyle(palette.onAccent)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 14)
+                        .background(palette.accent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                }
+                .buttonStyle(.squish)
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        .animation(.spring(duration: 0.2), value: draft.isEmpty)
+        .padding(.bottom, 8)
     }
 
-    private func send() {
-        let t = draft.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !t.isEmpty else { return }
-        messages.append(.init(text: t, mine: true))
-        draft = ""
+    private var composerBar: some View {
+        VStack(spacing: 6) {
+            // Единая раскладка во всех фазах: слева скрепка/корзина, посередине
+            // поле/строка записи/обрезка, справа ОДНА круглая кнопка, которая
+            // морфится: микрофон → (запись) → стоп → отправить. Кнопка не исчезает
+            // из иерархии — жест зажатия не рвётся.
+            HStack(alignment: .bottom, spacing: 8) {
+                if recordPhase == .idle || recordPhase == .arming {
+                    // Левая круглая кнопка — вложения (скрепка).
+                    Button { showAttachMenu = true } label: {
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 20, weight: .regular))
+                            .foregroundStyle(palette.textSecondary)
+                            .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                            .liquidGlass(Circle())
+                            .contentShape(Circle())
+                            .rotationEffect(.degrees(showAttachMenu ? 45 : 0))
+                    }
+                    .buttonStyle(.squish)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: showAttachMenu)
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    // Во время записи/предпросмотра — корзина (отмена).
+                    Button { cancelRecording() } label: {
+                        Image(systemName: "trash.fill")
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundStyle(palette.danger)
+                            .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                            .liquidGlass(Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.squish)
+                    .transition(.scale.combined(with: .opacity))
+                }
+
+                Group {
+                    switch recordPhase {
+                    case .recording, .locked:
+                        recordingStrip
+                    case .preview:
+                        VoiceTrimStrip(duration: voicePreviewDuration, start: $trimStart, end: $trimEnd)
+                            .padding(.horizontal, 14).padding(.vertical, 8)
+                            .frame(maxWidth: .infinity)
+                            .liquidGlass(RoundedRectangle(cornerRadius: 21, style: .continuous))
+                    case .idle, .arming:
+                        // Полоса ввода. Плашки ответа/редактирования — внутри той же
+                        // стеклянной формы, как утолщение поля сверху.
+                        VStack(spacing: 0) {
+                            if let replyTo {
+                                replyPreview(replyTo)
+                                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                                Rectangle().fill(palette.divider).frame(height: 0.5)
+                                    .padding(.horizontal, 12)
+                            }
+                            if editing != nil {
+                                editBanner
+                                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                                Rectangle().fill(palette.divider).frame(height: 0.5)
+                                    .padding(.horizontal, 12)
+                            }
+                            TextField("Сообщение", text: $draft, axis: .vertical)
+                                .lineLimit(1...5)
+                                .focused($inputFocused)
+                                .foregroundStyle(palette.textPrimary)
+                                .padding(.horizontal, 14).padding(.vertical, 9)
+                                .frame(minHeight: AetherUI.composerControl, alignment: .center)
+                                .onChange(of: draft) { _, value in
+                                    vm.typingChanged(isEmpty: value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                                }
+                        }
+                        .frame(maxWidth: .infinity)
+                        .liquidGlass(RoundedRectangle(cornerRadius: 21, style: .continuous))
+                        .padding(.horizontal, inputFocused ? 0 : 8)
+                        .animation(AetherUI.sendAnimation, value: replyTo?.id)
+                        .animation(AetherUI.sendAnimation, value: editing?.id)
+                    }
+                }
+
+                // Правая круглая кнопка (морф по фазе).
+                sendOrMic
+            }
+            .animation(AetherUI.sendAnimation, value: inputFocused)
+            .animation(AetherUI.sendAnimation, value: recordPhase)
+        }
+        // Без клавиатуры композер сидит ниже, ближе к краю экрана; с клавиатурой
+        // поднимается с одинаковым зазором с боков и от клавиатуры (симметрия).
+        .padding(.horizontal, inputFocused ? 8 : 22)
+        .padding(.bottom, inputFocused ? 8 : 6)
+        .scaleEffect(inputFocused ? 1.0 : 0.95, anchor: .bottom)
+        .animation(AetherUI.sendAnimation, value: inputFocused)
     }
+
+    // Иконка-кнопка в поле ввода (без стеклянного кружка — панель уже стеклянная).
+    private func composerButton(_ icon: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 20, weight: .regular))
+                .foregroundStyle(palette.textSecondary)
+                .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.squish)
+    }
+
+    // Микрофон/кружок (зажать — запись) либо кнопка отправки при наборе текста.
+    // Тап переключает голос/кружок; зажатие — стартует запись (голос — тут же,
+    // кружок — открывает полноэкранную камеру с автостартом). Как в Telegram.
+    // В обоих состояниях — круглый, чтобы совпадать с левой кнопкой-скрепкой.
+    // Морф между состояниями плавный: scale+opacity transition + spring по
+    // draft.isEmpty, чтобы кнопка «превращалась» в отправку, а не мгновенно
+    // перещёлкивалась.
+    @ViewBuilder private var sendOrMic: some View {
+        let hasText = !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        Group {
+            switch recordPhase {
+            case .locked:
+                // Запись закреплена: та же кнопка становится «закончить».
+                Button { stopToPreview() } label: {
+                    Image(systemName: "stop.fill")
+                        .font(.system(size: 18, weight: .bold))
+                        .foregroundStyle(palette.onAccent)
+                        .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                        .background(palette.danger, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.squish)
+                .transition(.scale.combined(with: .opacity))
+            case .preview:
+                // Запись закончена: кнопка становится «отправить» (с обрезкой).
+                Button { sendTrimmedVoice() } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.system(size: 20, weight: .bold))
+                        .foregroundStyle(palette.onAccent)
+                        .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                        .background(palette.accent, in: Circle())
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.squish)
+                .transition(.scale.combined(with: .opacity))
+            default:
+                if hasText {
+                    Button(action: submit) {
+                        Image(systemName: "arrow.up")
+                            .font(.system(size: 20, weight: .bold))
+                            .foregroundStyle(palette.onAccent)
+                            .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                            .background(palette.accent, in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.5))
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.squish)
+                    .transition(.scale.combined(with: .opacity))
+                } else {
+                    Image(systemName: circleMode ? "video.fill" : "mic.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(recordPhase == .recording ? palette.onAccent : palette.accent)
+                        .frame(width: AetherUI.composerControl, height: AetherUI.composerControl)
+                        .background {
+                            if recordPhase == .recording {
+                                Circle().fill(palette.accent)
+                            }
+                        }
+                        .liquidGlass(Circle())
+                        .contentShape(Circle())
+                        .scaleEffect(recordPhase == .recording ? 1.2 : 1)
+                        .gesture(micGesture)
+                        .transition(.scale.combined(with: .opacity))
+                }
+            }
+        }
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: draft.isEmpty)
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: recordPhase)
+    }
+
+    // Единый жест для микрофона/камеры: короткий тап (< holdThreshold, без движения)
+    // переключает режим голос/кружок; более долгое нажатие запускает запись.
+    // Во время записи голоса: свайп вверх — лок (hands-free), свайп влево — отмена,
+    // отпустить — отправка. Курок кружка просто открывает камеру (автостарт внутри).
+    private var micGesture: some Gesture {
+        DragGesture(minimumDistance: 0)
+            .onChanged { value in
+                switch recordPhase {
+                case .idle:
+                    recordPhase = .arming
+                    dragTranslation = .zero
+                    armTask?.cancel()
+                    armTask = Task {
+                        try? await Task.sleep(nanoseconds: UInt64(holdThreshold * 1_000_000_000))
+                        guard !Task.isCancelled else { return }
+                        await MainActor.run { beginHold() }
+                    }
+                case .arming:
+                    break   // ждём решения таймера — тап это или зажатие
+                case .recording:
+                    dragTranslation = value.translation
+                    if value.translation.height < lockDistance { lockRecording() }
+                case .locked, .preview:
+                    break
+                }
+            }
+            .onEnded { value in
+                armTask?.cancel()
+                switch recordPhase {
+                case .arming:
+                    // Отпустили раньше порога — это тап, а не зажатие.
+                    recordPhase = .idle
+                    withAnimation(.easeInOut(duration: 0.15)) { circleMode.toggle() }
+                case .recording:
+                    guard recorder.isRecording else { cancelRecording(); return }
+                    if value.translation.height < lockDistance { lockRecording(); return }
+                    if value.translation.width < cancelDistance { cancelRecording() }
+                    else { finishAndSend() }
+                case .locked, .idle, .preview:
+                    break
+                }
+            }
+    }
+
+    private func beginHold() {
+        guard recordPhase == .arming else { return }
+        if circleMode {
+            recordPhase = .idle
+            showCircleRecorder = true
+            return
+        }
+        // Разрешение микрофона проверяем ДО старта записи: системный диалог
+        // крадёт палец у жеста, и запись зависала без кнопок управления.
+        switch AVAudioApplication.shared.recordPermission {
+        case .granted:
+            recordPhase = .recording
+            recorder.start()
+        case .undetermined:
+            recordPhase = .idle
+            Task { _ = await recorder.requestPermission() }   // спросили; зажмёт ещё раз
+        default:
+            recordPhase = .idle
+            attachmentError = "Нет доступа к микрофону. Разреши в Настройках iOS."
+        }
+    }
+
+    private func lockRecording() {
+        guard recordPhase == .recording else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { recordPhase = .locked }
+        dragTranslation = .zero
+    }
+
+    private func cancelRecording() {
+        recorder.cancel()
+        if let url = voicePreviewURL {
+            try? FileManager.default.removeItem(at: url)
+            voicePreviewURL = nil
+        }
+        withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
+        dragTranslation = .zero
+    }
+
+    private func finishAndSend() {
+        if let (data, dur) = recorder.finish() {
+            vm.sendMedia(data: data, mime: "audio/mp4", kind: "voice", fileName: nil, duration: dur)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        }
+        recordPhase = .idle
+        dragTranslation = .zero
+    }
+
+    // Тонкая строка записи на месте поля ввода: точка, таймер, подсказки.
+    private var recordingStrip: some View {
+        HStack(spacing: 10) {
+            RecordingDot()
+            Text(timeString(recorder.elapsed))
+                .font(.system(size: 16, weight: .medium, design: .monospaced))
+                .foregroundStyle(palette.textPrimary)
+                .contentTransition(.numericText())
+            Spacer(minLength: 8)
+            if recordPhase == .locked {
+                Label("Идёт запись", systemImage: "lock.fill")
+                    .font(.caption)
+                    .foregroundStyle(palette.textSecondary)
+                    .labelStyle(.titleAndIcon)
+            } else if dragTranslation.width < cancelDistance {
+                Text("Отпусти — отмена")
+                    .font(.caption).foregroundStyle(palette.danger)
+            } else {
+                HStack(spacing: 10) {
+                    Text("← отмена")
+                    VStack(spacing: 1) {
+                        Image(systemName: "chevron.up").font(.system(size: 9, weight: .bold))
+                        Image(systemName: "lock.fill").font(.system(size: 11))
+                    }
+                    .offset(y: max(lockDistance, min(0, dragTranslation.height)) * 0.4)
+                }
+                .font(.caption)
+                .foregroundStyle(palette.textSecondary)
+            }
+        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: AetherUI.composerControl)
+        .frame(maxWidth: .infinity)
+        .liquidGlass(Capsule())
+    }
+
+    /// Локнутая запись: «закончить» → предпросмотр с обрезкой.
+    private func stopToPreview() {
+        guard recordPhase == .locked else { return }
+        if let (url, duration) = recorder.stopKeepingFile() {
+            voicePreviewURL = url
+            voicePreviewDuration = duration
+            trimStart = 0
+            trimEnd = 1
+            withAnimation(AetherUI.sendAnimation) { recordPhase = .preview }
+        } else {
+            recordPhase = .idle
+        }
+        dragTranslation = .zero
+    }
+
+    /// Отправка из предпросмотра с учётом обрезки.
+    private func sendTrimmedVoice() {
+        guard let url = voicePreviewURL else { recordPhase = .idle; return }
+        let startSec = Double(trimStart) * voicePreviewDuration
+        let endSec = Double(trimEnd) * voicePreviewDuration
+        voicePreviewURL = nil
+        withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
+        Task {
+            defer { try? FileManager.default.removeItem(at: url) }
+            let result: (data: Data, duration: TimeInterval)?
+            if trimStart <= 0.001 && trimEnd >= 0.999 {
+                result = (try? Data(contentsOf: url)).map { ($0, voicePreviewDuration) }
+            } else {
+                result = await AudioTrimmer.trim(url: url, start: startSec, end: endSec)
+            }
+            if let (data, duration) = result {
+                vm.sendMedia(data: data, mime: "audio/mp4", kind: "voice", fileName: nil, duration: duration)
+                UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            }
+        }
+    }
+
+    private func timeString(_ t: TimeInterval) -> String {
+        String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
+    }
+
+    private func replyPreview(_ msg: ChatMessage) -> some View {
+        HStack(spacing: 8) {
+            Rectangle().fill(palette.accent).frame(width: 3, height: 34).clipShape(Capsule())
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Ответ").font(.caption.weight(.semibold)).foregroundStyle(palette.accent)
+                Text(Wire.preview(msg.payloadJson)).font(.caption).foregroundStyle(palette.textSecondary).lineLimit(1)
+            }
+            Spacer()
+            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { replyTo = nil } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(palette.textSecondary) }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+    }
+
+    private var editBanner: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "pencil").foregroundStyle(palette.accent)
+            Text("Редактирование").font(.caption.weight(.semibold)).foregroundStyle(palette.accent)
+            Spacer()
+            Button { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { editing = nil; draft = "" } } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(palette.textSecondary) }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 6)
+    }
+
+    private func submit() {
+        let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !text.isEmpty else { return }
+        if let editing {
+            vm.edit(editing, newText: text)
+        } else {
+            vm.send(text: text, replyTo: replyTo)
+        }
+        withAnimation(AetherUI.sendAnimation) {
+            draft = ""
+            replyTo = nil
+            self.editing = nil
+        }
+    }
+
+    @ViewBuilder private var wallpaper: some View {
+        palette.background.ignoresSafeArea()
+        LinearGradient(colors: [palette.accent.opacity(0.04), .clear],
+                       startPoint: .top, endPoint: .bottom)
+            .ignoresSafeArea()
+    }
+
 }
 
-struct DemoMessage: Identifiable {
-    let id = UUID()
-    let text: String
-    let mine: Bool
-}
+// Обрезка голосового: волна + две ручки (начало/конец), тайминги снизу.
+// start/end — доли 0…1 от полной длительности.
+struct VoiceTrimStrip: View {
+    let duration: TimeInterval
+    @Binding var start: CGFloat
+    @Binding var end: CGFloat
+    @Environment(\.palette) private var palette
 
-private struct MessageBubble: View {
-    let message: DemoMessage
+    private let minGap: CGFloat = 0.08   // минимум ~8% длительности
 
     var body: some View {
-        HStack {
-            if message.mine { Spacer(minLength: 50) }
-            Text(message.text)
-                .font(.system(size: 15))
-                .foregroundStyle(Brand.textPrimary)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .liquidGlass(
-                    in: RoundedRectangle(cornerRadius: 20, style: .continuous),
-                    tinted: message.mine
-                )
-            if !message.mine { Spacer(minLength: 50) }
+        VStack(spacing: 5) {
+            GeometryReader { geo in
+                let width = geo.size.width
+                ZStack(alignment: .leading) {
+                    waveform(width: width)
+                    // Затемнение отрезанных краёв.
+                    Rectangle().fill(Color.black.opacity(0.45))
+                        .frame(width: max(0, start * width))
+                    Rectangle().fill(Color.black.opacity(0.45))
+                        .frame(width: max(0, (1 - end) * width))
+                        .offset(x: end * width)
+                    handle(at: start * width) { x in
+                        start = min(max(0, x / width), end - minGap)
+                    }
+                    handle(at: end * width) { x in
+                        end = max(min(1, x / width), start + minGap)
+                    }
+                }
+            }
+            .frame(height: 34)
+            HStack {
+                Text(timeText(Double(start) * duration))
+                Spacer()
+                Text(timeText(Double(end) * duration))
+            }
+            .font(.system(size: 11, weight: .medium, design: .monospaced))
+            .foregroundStyle(palette.textSecondary)
+        }
+    }
+
+    private func waveform(width: CGFloat) -> some View {
+        let count = max(16, Int(width / 4.5))
+        return HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<count, id: \.self) { index in
+                let height = 8 + 22 * abs(sin(Double(index) * 1.7 + duration))
+                Capsule()
+                    .fill(palette.accent)
+                    .frame(width: 2.5, height: height)
+            }
+        }
+        .frame(width: width, height: 34)
+    }
+
+    private func handle(at x: CGFloat, onDrag: @escaping (CGFloat) -> Void) -> some View {
+        Capsule()
+            .fill(.white)
+            .frame(width: 5, height: 34)
+            .shadow(radius: 1.5)
+            .contentShape(Rectangle().inset(by: -12))
+            .position(x: x, y: 17)
+            .gesture(
+                DragGesture(minimumDistance: 0)
+                    .onChanged { onDrag($0.location.x) }
+            )
+    }
+
+    private func timeText(_ t: TimeInterval) -> String {
+        String(format: "%d:%02d", Int(t) / 60, Int(t) % 60)
+    }
+}
+
+// Пульсирующая красная точка записи.
+struct RecordingDot: View {
+    @Environment(\.palette) private var palette
+    @State private var pulsing = false
+    var body: some View {
+        Circle()
+            .fill(palette.danger)
+            .frame(width: 11, height: 11)
+            .opacity(pulsing ? 0.35 : 1)
+            .animation(.easeInOut(duration: 0.7).repeatForever(autoreverses: true), value: pulsing)
+            .onAppear { pulsing = true }
+    }
+}
+
+struct DateSeparator: View {
+    let label: String
+    @Environment(\.palette) private var palette
+    var body: some View {
+        Text(label)
+            .font(.system(size: 12, weight: .medium))
+            .foregroundStyle(.white.opacity(0.92))
+            .padding(.horizontal, 12).padding(.vertical, 5)
+            .background(.black.opacity(0.26), in: Capsule())
+            .frame(maxWidth: .infinity)
+    }
+}
+
+struct TypingBubble: View {
+    @Environment(\.palette) private var palette
+    @State private var phase = 0.0
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(0..<3) { i in
+                Circle().fill(palette.textSecondary)
+                    .frame(width: 7, height: 7)
+                    .scaleEffect(1 + 0.4 * sin(phase + Double(i) * 0.6))
+            }
+        }
+        .padding(.horizontal, 14).padding(.vertical, 11)
+        .background(palette.bubbleIn, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { phase = .pi * 2 }
         }
     }
 }
 
-#Preview {
-    ChatView(title: "Aether Team")
+// Пикер реакций (быстрый ряд эмодзи).
+struct ReactionPicker: View {
+    var onPick: (String) -> Void
+    private let emojis = ["❤️", "👍", "🔥", "😂", "😮", "😢", "🙏", "👎"]
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(emojis, id: \.self) { e in
+                Button { onPick(e) } label: {
+                    Text(e).font(.system(size: 30))
+                }.buttonStyle(.squish)
+            }
+        }
+        .padding()
+    }
+}
+
+// Плавающий стеклянный остров ввода: скруглённая капсула с жидким стеклом,
+// поверх которой стоит контент поля/кнопок. Не во всю ширину — отступы снаружи.
+// Уважает glassOnInput: при выключенном стекле на инпуте — плоская surface-капсула.
+private struct IslandBackground: ViewModifier {
+    var cornerRadius: CGFloat = 22
+    @EnvironmentObject var appearance: AppearanceSettings
+    @Environment(\.palette) private var palette
+
+    func body(content: Content) -> some View {
+        if appearance.glassEnabled && appearance.glassOnInput {
+            content.liquidGlass(cornerRadius: cornerRadius, interactive: false)
+        } else {
+            content
+                .background(palette.surface, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(palette.divider, lineWidth: 0.5))
+        }
+    }
+}
+
+private extension View {
+    func islandBackground(cornerRadius: CGFloat = 22) -> some View {
+        modifier(IslandBackground(cornerRadius: cornerRadius))
+    }
 }
