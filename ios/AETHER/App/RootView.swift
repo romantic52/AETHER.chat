@@ -4,6 +4,7 @@ struct RootView: View {
     @EnvironmentObject var session: Session
     @Environment(\.palette) private var palette
     @Environment(\.scenePhase) private var scenePhase
+    @StateObject private var lock = AppLock.shared
 
     var body: some View {
         ZStack {
@@ -27,6 +28,15 @@ struct RootView: View {
         }
         .onChange(of: scenePhase) { _, phase in
             session.setApplicationActive(phase != .background)
+            if phase == .background { lock.appDidEnterBackground() }
+        }
+        // Экран блокировки поверх всего (и поверх контента в App Switcher).
+        .overlay {
+            if lock.locked && session.phase == .ready {
+                LockView(lock: lock)
+                    .transition(.opacity)
+                    .zIndex(200)
+            }
         }
     }
 }

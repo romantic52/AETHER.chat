@@ -12,6 +12,7 @@ struct SettingsView: View {
                 palette.background.ignoresSafeArea()
                 List {
                     profileSection
+                    privacySection
                     notificationsSection
                     appearanceSection
                     glassSection
@@ -49,6 +50,43 @@ struct SettingsView: View {
             }
         }
         .listRowBackground(palette.surface)
+    }
+
+    // MARK: - Приватность (Face ID / PIN)
+
+    @StateObject private var lock = AppLock.shared
+    @State private var showPinSetup = false
+    @State private var lockEnabled = UserDefaults.standard.bool(forKey: AppLock.enabledKey)
+
+    private var privacySection: some View {
+        Section {
+            Toggle(isOn: Binding(
+                get: { lockEnabled },
+                set: { on in
+                    if on {
+                        showPinSetup = true   // включаем только после задания PIN
+                    } else {
+                        lock.disable()
+                        lockEnabled = false
+                    }
+                }
+            )) {
+                SettingsLabel(lock.biometryType == .faceID ? "Face ID и PIN" : "Блокировка (PIN)",
+                              icon: lock.biometryType == .faceID ? "faceid" : "lock.fill",
+                              color: .green)
+            }
+        } header: {
+            Text("Приватность")
+        } footer: {
+            Text("Приложение блокируется при сворачивании: вход по \(lock.biometryType == .faceID ? "Face ID" : "биометрии") или PIN. Контент скрыт в переключателе приложений.")
+        }
+        .listRowBackground(palette.surface)
+        .sheet(isPresented: $showPinSetup) {
+            PinSetupView { pin in
+                lock.enable(pin: pin)
+                lockEnabled = true
+            }
+        }
     }
 
     @AppStorage(NotificationsManager.notifyKey) private var notifyMessages = false
