@@ -18,7 +18,8 @@ enum Wire {
     static func media(fileId: String, symKey: String, mimeType: String, nonce: String,
                       kind: String? = nil, duration: Double? = nil,
                       fileName: String? = nil, fileSize: Int64? = nil,
-                      caption: String? = nil, fwdFrom: String? = nil) -> String {
+                      caption: String? = nil, fwdFrom: String? = nil,
+                      replyToId: String? = nil, replyToText: String? = nil) -> String {
         var obj: [String: Any] = [
             "type": "media", "file_id": fileId, "sym_key": symKey,
             "mime_type": mimeType, "nonce": nonce,
@@ -29,6 +30,8 @@ enum Wire {
         if let s = fileSize { obj["file_size"] = s }
         if let c = caption { obj["caption"] = c }
         if let f = fwdFrom { obj["fwd_from"] = f }
+        if let r = replyToId { obj["reply_to_id"] = r }
+        if let rt = replyToText { obj["reply_to_text"] = rt }
         return json(obj)
     }
 

@@ -1,12 +1,15 @@
 import SwiftUI
 
-// Экран блокировки: монограмма, Face ID (автозапуск) и стеклянный PIN-пад.
+// Экран блокировки: фирменный замок (лого — корпус, сверху дужка), Face ID
+// (автозапуск) и стеклянный PIN-пад. При успехе дужка «отстёгивается», замок
+// подпрыгивает, и весь экран улетает вверх (transition в RootView).
 struct LockView: View {
     @ObservedObject var lock: AppLock
     @Environment(\.palette) private var palette
 
     @State private var pin = ""
     @State private var shake = false
+    @State private var unlocked = false
     private let pinLength = 4
 
     var body: some View {
@@ -20,14 +23,18 @@ struct LockView: View {
             VStack(spacing: 0) {
                 Spacer()
 
-                Text("Æ")
-                    .font(.system(size: 64, weight: .bold, design: .serif))
-                    .foregroundStyle(palette.accent)
+                BrandLock(size: 96, open: unlocked)
 
-                Text("AETHER заблокирован")
-                    .font(.headline)
+                Text("Æther")
+                    .font(.system(size: 26, weight: .bold, design: .rounded))
                     .foregroundStyle(palette.textPrimary)
-                    .padding(.top, 10)
+                    .padding(.top, 14)
+
+                Text(unlocked ? "Разблокировано" : "Заблокировано")
+                    .font(.subheadline)
+                    .foregroundStyle(palette.textSecondary)
+                    .padding(.top, 4)
+                    .contentTransition(.opacity)
 
                 // Индикатор PIN.
                 HStack(spacing: 14) {
@@ -37,7 +44,7 @@ struct LockView: View {
                             .frame(width: 14, height: 14)
                     }
                 }
-                .padding(.top, 26)
+                .padding(.top, 22)
                 .offset(x: shake ? -10 : 0)
                 .animation(shake ? .spring(response: 0.1, dampingFraction: 0.15) : .default, value: shake)
 
@@ -47,7 +54,7 @@ struct LockView: View {
 
                 if lock.biometryAvailable {
                     Button {
-                        Task { _ = await lock.tryBiometrics() }
+                        Task { if await lock.tryBiometrics() { await performUnlock() } }
                     } label: {
                         Label(lock.biometryType == .faceID ? "Face ID" : "Touch ID",
                               systemImage: lock.biometryType == .faceID ? "faceid" : "touchid")
@@ -65,8 +72,18 @@ struct LockView: View {
         }
         .task {
             // Автозапуск биометрии при показе экрана.
-            _ = await lock.tryBiometrics()
+            if await lock.tryBiometrics() { await performUnlock() }
         }
+    }
+
+    /// Единая точка успеха: дужка открывается, короткая пауза — и RootView
+    /// уводит экран вверх через finishUnlock().
+    private func performUnlock() async {
+        guard !unlocked else { return }
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+        withAnimation(.spring(response: 0.4, dampingFraction: 0.62)) { unlocked = true }
+        try? await Task.sleep(nanoseconds: 520_000_000)
+        lock.finishUnlock()
     }
 
     private var pinPad: some View {
@@ -102,7 +119,9 @@ struct LockView: View {
             pin.append(digit)
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
             if pin.count == pinLength {
-                if !lock.tryPin(pin) {
+                if lock.tryPin(pin) {
+                    Task { await performUnlock() }
+                } else {
                     // Неверный PIN: встряска и сброс.
                     UINotificationFeedbackGenerator().notificationOccurred(.error)
                     shake = true

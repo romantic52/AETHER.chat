@@ -265,7 +265,7 @@ final class Messaging: ObservableObject {
 
     func updateTyping(to peer: String, isTyping: Bool) {
         let id = peer.lowercased()
-        guard !id.isEmpty else { return }
+        guard !id.isEmpty, id != myId.lowercased() else { return }   // в Избранное не «печатаем»
         stopTypingTasks[id]?.cancel()
 
         guard isTyping else {
@@ -369,6 +369,18 @@ final class Messaging: ObservableObject {
                                     status: 1, ts: ts, reactions: [:], edited: false, deleted: false,
                                     payload: payload)
             await save(store, incUnread: senderId != myId && activePeer != peerId, isGroup: isGroup)
+            // Входящее медиа — в кеш устройства сразу (ГС/кружки всегда, тяжёлое по настройке).
+            if payload.type == "media", let fid = payload.fileId,
+               let key = payload.symKey, !key.isEmpty {
+                let kind = payload.mediaKind
+                let autoHeavy = UserDefaults.standard.bool(forKey: Self.autoDownloadKey)
+                if kind == .voice || kind == .videoNote || ((kind == .image || kind == .video) && autoHeavy) {
+                    let nonce = payload.nonce ?? ""
+                    Task.detached(priority: .background) {
+                        _ = await MediaStore.shared.data(fileId: fid, symKey: key, nonce: nonce)
+                    }
+                }
+            }
             if !isGroup && senderId != myId {
                 sendReceipts(to: senderId, read: activePeer == peerId)
             }
@@ -466,12 +478,15 @@ final class Messaging: ObservableObject {
     func refreshChats() async {
         let nextChats = (try? await core.chatList()) ?? []
         let nextUnread = await core.totalUnread()
-        if chats != nextChats { chats = nextChats }
+        if chats != nextChats {
+            withAnimation(.spring(response: 0.38, dampingFraction: 0.85)) { chats = nextChats }
+        }
         if totalUnread != nextUnread { totalUnread = nextUnread }
     }
 
     func openChat(_ peerId: String, isGroup: Bool) async {
         activePeer = peerId
+        prefetchMedia(for: peerId)
         await core.clearUnread(peerId)
         await refreshChats()
         if !isGroup {
@@ -514,6 +529,15 @@ final class Messaging: ObservableObject {
     func setMuted(_ peer: String, _ v: Bool) async { await core.setMutedFlag(peer, v); await refreshChats() }
     func setArchived(_ peer: String, _ v: Bool) async { await core.setArchivedFlag(peer, v); await refreshChats() }
     func deleteChat(_ peer: String) async { await core.deleteChatData(peer); await refreshChats() }
+
+    /// Избранное: очистка истории (сам «личный канал» не удаляется — id аккаунта).
+    func clearSavedMessages() async {
+        let me = myId.lowercased()
+        try? await core.deleteHistory(peer: me)   // и на сервере
+        await core.deleteChatData(me)
+        await refreshChats()
+        inboxTick.fire()
+    }
 
     // MARK: - Отправка (optimistic)
 
@@ -582,7 +606,8 @@ final class Messaging: ObservableObject {
                         fileId: upload.fileId, symKey: upload.symKey,
                         mimeType: payload.mimeType ?? "application/octet-stream", nonce: upload.nonce,
                         kind: payload.kind, duration: payload.duration, fileName: payload.fileName,
-                        fileSize: payload.fileSize, caption: payload.caption, fwdFrom: payload.fwdFrom
+                        fileSize: payload.fileSize, caption: payload.caption, fwdFrom: payload.fwdFrom,
+                        replyToId: payload.replyToId, replyToText: payload.replyToText
                     )
                     await core.updatePayload(message.id, finalPayload)
                     await deliverPending(localId: message.id, peer: message.peerId,
@@ -602,14 +627,16 @@ final class Messaging: ObservableObject {
     /// в кэше), затем в фоне шифрует+грузит через ядро и досылает финальный payload.
     func sendMedia(to peer: String, data: Data, mime: String, kind: String,
                    fileName: String? = nil, caption: String? = nil,
-                   duration: Double? = nil, isGroup: Bool = false) {
+                   duration: Double? = nil, isGroup: Bool = false,
+                   replyToId: String? = nil, replyToText: String? = nil) {
         let localId = "local_\(UUID().uuidString)"
         let ts = Int64(Date().timeIntervalSince1970 * 1000)
         let size = Int64(data.count)
         // Оптимистичный payload: file_id = localId, ключей ещё нет — превью берётся из кэша по localId.
         let payload0 = Wire.media(fileId: localId, symKey: "", mimeType: mime, nonce: "",
                                   kind: kind, duration: duration, fileName: fileName,
-                                  fileSize: size, caption: caption)
+                                  fileSize: size, caption: caption,
+                                  replyToId: replyToId, replyToText: replyToText)
         let stored = StoredMessage(id: localId, peerId: peer.lowercased(), outgoing: true,
                                    senderId: myId.lowercased(), payloadJson: payload0,
                                    status: 0, ts: ts, reactionsJson: "{}", edited: false, deleted: false)
@@ -624,7 +651,8 @@ final class Messaging: ObservableObject {
                 await MediaStore.shared.seed(fileId: up.fileId, data: data)
                 let payload = Wire.media(fileId: up.fileId, symKey: up.symKey, mimeType: mime,
                                          nonce: up.nonce, kind: kind, duration: duration,
-                                         fileName: fileName, fileSize: size, caption: caption)
+                                         fileName: fileName, fileSize: size, caption: caption,
+                                         replyToId: replyToId, replyToText: replyToText)
                 await core.updatePayload(localId, payload)   // финальный payload без пометки «изменено»
                 let realId: String
                 if isGroup {
@@ -688,6 +716,51 @@ final class Messaging: ObservableObject {
             }
             let isGroup = chats.first { $0.peerId == m.peerId }?.isGroup ?? false
             await deliverPending(localId: m.id, peer: m.peerId, payload: m.payloadJson, isGroup: isGroup)
+        }
+    }
+
+    // MARK: - Автозагрузка медиа в кеш
+
+    /// Настройка: авто-скачивание фото/видео (тяжёлое). Голосовые и кружки
+    /// качаются всегда — они должны жить на устройстве независимо от сети.
+    static let autoDownloadKey = "autoDownloadMedia"
+
+    private var prefetchTasks: [String: Task<Void, Never>] = [:]
+
+    /// Префетч медиа чата: последние ≤200 сообщений, поэтапно (по одному файлу),
+    /// сначала голосовые/кружки, затем фото/видео (если включена автозагрузка).
+    /// Кеш-хиты мгновенны — повторный вызов дёшев; после очистки кеша всё
+    /// докачается заново этим же путём.
+    func prefetchMedia(for peer: String) {
+        let id = peer.lowercased()
+        guard prefetchTasks[id] == nil else { return }
+        let autoHeavy = UserDefaults.standard.bool(forKey: Self.autoDownloadKey)
+        prefetchTasks[id] = Task { [weak self] in
+            guard let self else { return }
+            defer { Task { @MainActor in self.prefetchTasks[id] = nil } }
+            let page = (try? await self.core.messages(peer: id, beforeTs: 0, limit: 200)) ?? []
+            var voices: [(String, String, String)] = []   // fileId, key, nonce
+            var heavy: [(String, String, String)] = []
+            for m in page.reversed() {   // свежие в приоритете
+                guard !m.deleted, let payload = Wire.parse(m.payloadJson),
+                      payload.type == "media",
+                      let fid = payload.fileId, let key = payload.symKey, !key.isEmpty else { continue }
+                let item = (fid, key, payload.nonce ?? "")
+                switch payload.mediaKind {
+                case .voice, .videoNote: voices.append(item)
+                case .image, .video: heavy.append(item)
+                case .file: break   // документы — только вручную
+                }
+            }
+            for (fid, key, nonce) in voices {
+                guard !Task.isCancelled else { return }
+                _ = await MediaStore.shared.data(fileId: fid, symKey: key, nonce: nonce)
+            }
+            guard autoHeavy else { return }
+            for (fid, key, nonce) in heavy {
+                guard !Task.isCancelled else { return }
+                _ = await MediaStore.shared.data(fileId: fid, symKey: key, nonce: nonce)
+            }
         }
     }
 

@@ -6,6 +6,7 @@ struct ContactsView: View {
     var globalSearch: Bool = false
     @EnvironmentObject var session: Session
     @EnvironmentObject var messaging: Messaging
+    @EnvironmentObject var chrome: ChromeState
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
 
@@ -138,6 +139,10 @@ struct ContactsView: View {
             #endif
             .navigationDestination(item: $navPeer) { peer in
                 ChatView(peerId: peer, isGroup: false).environmentObject(messaging)
+            }
+            // См. ChatsListView: мгновенный возврат таб-бара при выходе из чата.
+            .onChange(of: navPeer) { _, peer in
+                if peer == nil { withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = false } }
             }
         }
     }

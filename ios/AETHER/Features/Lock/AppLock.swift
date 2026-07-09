@@ -48,25 +48,23 @@ final class AppLock: ObservableObject {
                 .deviceOwnerAuthenticationWithBiometrics,
                 localizedReason: "Разблокировать AETHER"
             )
-            if ok { unlock() }
             return ok
         } catch {
             return false
         }
     }
 
-    /// Проверка PIN (фолбэк).
+    /// Проверка PIN (фолбэк). Успех НЕ снимает блокировку сам — LockView сначала
+    /// проигрывает анимацию замка и затем зовёт finishUnlock().
     func tryPin(_ pin: String) -> Bool {
         guard let stored = Keychain.string(for: Keychain.kPin), !stored.isEmpty else { return false }
-        if pin == stored {
-            unlock()
-            return true
-        }
-        return false
+        return pin == stored
     }
 
-    private func unlock() {
-        withAnimation(.easeOut(duration: 0.25)) { locked = false }
+    /// Снять блокировку после анимации открытия замка: экран уезжает вверх
+    /// (transition .move(.top) в RootView) вслед за «отстегнувшейся» дужкой.
+    func finishUnlock() {
+        withAnimation(.easeIn(duration: 0.38)) { locked = false }
     }
 
     // MARK: - Настройка

@@ -123,9 +123,14 @@ struct TabBar: View {
 
                 if barWidth > 0 {
                     let segment = barWidth / CGFloat(tabs.count)
+                    // Со стеклом — стеклянная капсула (как было); без стекла
+                    // surface-подложка не рисуется (surfaceWhenOff: false) —
+                    // остаётся чистый акцентный овал выбора.
                     Capsule()
-                        .fill(palette.accent.opacity(isPressing ? 0.22 : 0.12))
-                        .liquidGlass(Capsule(), interactive: true)
+                        .fill(palette.accent.opacity(
+                            appearance.glassEnabled ? (isPressing ? 0.22 : 0.12)
+                                                    : (isPressing ? 0.28 : 0.18)))
+                        .liquidGlass(Capsule(), interactive: true, surfaceWhenOff: false)
                         .frame(width: max(segment - 4, 0), height: barHeight - 4)
                         .offset(x: 8 + segment * activePosition + 2)
                         .allowsHitTesting(false)
