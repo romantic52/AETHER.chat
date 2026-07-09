@@ -174,6 +174,19 @@ actor CoreClient {
         return (key, changed)
     }
 
+    /// Пин ключа пира (для TOFU-экрана).
+    func keyPin(_ peerId: String) throws -> KeyPin? {
+        try store.pinGet(peerId: peerId.lowercased())
+    }
+
+    /// Отметить ключ пира проверенным/непроверенным (сверка отпечатков).
+    func setKeyVerified(_ peerId: String, _ verified: Bool) throws {
+        try store.pinSetVerified(peerId: peerId.lowercased(), verified: verified)
+    }
+
+    /// Мой публичный ключ (для отпечатка на TOFU-экране).
+    func myPublicKeyB64() -> String { myPublicKey }
+
     // MARK: - Отправка
 
     /// Запечатать личное сообщение и отправить. wirePayload — готовый JSON (см. WireBuilder).

@@ -424,6 +424,9 @@ struct UserProfileView: View {
                     }
                     .padding(.horizontal, 24)
 
+                    keyVerificationRow
+                        .padding(.horizontal, 24)
+
                     if !mediaItems.isEmpty || !fileItems.isEmpty {
                         sharedMediaSection
                     }
@@ -441,6 +444,45 @@ struct UserProfileView: View {
         .task {
             profile = try? await session.core.getProfile(userId)
             await loadSharedMedia()
+        }
+    }
+
+    // MARK: - Проверка ключа (TOFU)
+
+    @State private var keyPin: KeyPin?
+    @State private var showKeyVerification = false
+
+    private var keyVerificationRow: some View {
+        Button { showKeyVerification = true } label: {
+            HStack(spacing: 12) {
+                Image(systemName: (keyPin?.verified ?? false) ? "checkmark.shield.fill" : "shield.lefthalf.filled")
+                    .font(.system(size: 20))
+                    .foregroundStyle((keyPin?.verified ?? false) ? palette.readTick : palette.accent)
+                    .frame(width: 36, height: 36)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Проверка ключа шифрования")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                    Text((keyPin?.verified ?? false) ? "Подтверждён" : "Сравни отпечаток с собеседником")
+                        .font(.caption)
+                        .foregroundStyle(palette.textSecondary)
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(palette.textSecondary)
+            }
+            .padding(.horizontal, 14).padding(.vertical, 12)
+            .background(palette.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .task { keyPin = try? await session.core.keyPin(userId) }
+        .fullScreenCover(isPresented: $showKeyVerification, onDismiss: {
+            Task { keyPin = try? await session.core.keyPin(userId) }
+        }) {
+            KeyVerificationView(peerId: userId, peerName: profile?.displayName ?? userId)
+                .environmentObject(session)
         }
     }
 
