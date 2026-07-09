@@ -21,7 +21,7 @@ struct MediaBubbleContent: View {
         case .voice:
             VoiceBubble(payload: payload, outgoing: outgoing)
         case .videoNote:
-            VideoNoteBubble(payload: payload)
+            VideoNoteBubble(payload: payload, outgoing: outgoing)
         }
     }
 }
@@ -106,13 +106,15 @@ private struct FullScreenVideoView: View {
 // Видео-кружок в чате: круглый зацикленный плеер.
 struct VideoNoteBubble: View {
     let payload: Wire.Payload
+    var outgoing: Bool = false
     @Environment(\.palette) private var palette
     @State private var url: URL?
 
     var body: some View {
         Group {
             if let url {
-                LoopingCirclePlayer(url: url, size: 200, muted: true)
+                LoopingCirclePlayer(url: url, size: 200, muted: false, loop: false,
+                                    chatAlignment: outgoing ? .trailing : .leading)
             } else {
                 Circle().fill(palette.surfaceElevated).frame(width: 200, height: 200)
                     .overlay(ProgressView().tint(palette.accent))

@@ -127,6 +127,12 @@ struct SettingsView: View {
                 Text(cacheBytes < 0 ? "…" : ByteCountFormatter.string(fromByteCount: cacheBytes, countStyle: .file))
                     .foregroundStyle(palette.textSecondary)
             }
+            Toggle(isOn: Binding(
+                get: { UserDefaults.standard.bool(forKey: Messaging.autoDownloadKey) },
+                set: { UserDefaults.standard.set($0, forKey: Messaging.autoDownloadKey) }
+            )) {
+                SettingsLabel("Автозагрузка фото и видео", icon: "arrow.down.circle.fill", color: .blue)
+            }
             Button(role: .destructive) { confirmClearCache = true } label: {
                 SettingsLabel("Очистить кеш", icon: "trash.fill", color: .red)
             }
@@ -134,7 +140,7 @@ struct SettingsView: View {
         } header: {
             Text("Данные и память")
         } footer: {
-            Text("Фото, видео, голосовые и аватарки хранятся в кеше и не скачиваются повторно. Очистка не удаляет сообщения — медиа скачается заново при открытии.")
+            Text("Голосовые и кружки скачиваются на устройство всегда (доступны офлайн, до 200 последних сообщений чата, поэтапно). Фото и видео — вручную по тапу или автоматически этим тумблером (качаются после голосовых). Очистка кеша не удаляет сообщения — медиа докачается заново.")
         }
         .listRowBackground(palette.surface)
         .task { await refreshCacheSize() }
@@ -179,7 +185,7 @@ struct SettingsView: View {
                         Text("\(Int(appearance.edgeDimStrength * 100))%")
                             .font(.caption).foregroundStyle(palette.textSecondary)
                     }
-                    Slider(value: $appearance.edgeDimStrength, in: 0.05...0.5)
+                    Slider(value: $appearance.edgeDimStrength, in: 0.05...0.8)
                 }
             }
         }

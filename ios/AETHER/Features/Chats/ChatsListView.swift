@@ -3,6 +3,7 @@ import SwiftUI
 struct ChatsListView: View {
     @EnvironmentObject var session: Session
     @EnvironmentObject var messaging: Messaging
+    @EnvironmentObject var chrome: ChromeState
     @Environment(\.palette) private var palette
 
     @State private var openedPeer: String?
@@ -63,6 +64,11 @@ struct ChatsListView: View {
                 ChatView(peerId: peer, isGroup: messaging.isGroup(peer))
                     .environmentObject(messaging)
             }
+            // Возврат таб-бара сразу при выходе из чата: onDisappear пушнутого
+            // экрана на iOS 27 срабатывает с большим лагом, item-биндинг — мгновенно.
+            .onChange(of: openedPeer) { _, peer in
+                if peer == nil { withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = false } }
+            }
             .navigationDestination(isPresented: $showArchive) {
                 ArchiveView()
                     .environmentObject(session)
@@ -72,6 +78,7 @@ struct ChatsListView: View {
                 ContactsView(onPick: { peer in openedPeer = peer })
                     .environmentObject(session)
                     .environmentObject(messaging)
+                    .environmentObject(chrome)
             }
             .sheet(isPresented: $newGroupPresented) {
                 GroupCreateView(isChannel: false, skipTypeSelection: true, onCreated: { id in openedPeer = id })
@@ -235,9 +242,16 @@ struct ChatsListView: View {
                 .tint(palette.accent)
         }
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            Button(role: .destructive) {
-                Task { await messaging.deleteChat(chat.peerId) }
-            } label: { Label("Удалить", systemImage: "trash.fill") }
+            if chat.peerId == session.myId.lowercased() {
+                // Избранное — личный канал: удалить нельзя, только очистить историю.
+                Button(role: .destructive) {
+                    Task { await messaging.clearSavedMessages() }
+                } label: { Label("Очистить", systemImage: "paintbrush.fill") }
+            } else {
+                Button(role: .destructive) {
+                    Task { await messaging.deleteChat(chat.peerId) }
+                } label: { Label("Удалить", systemImage: "trash.fill") }
+            }
             Button {
                 Task { await messaging.setMuted(chat.peerId, !chat.muted) }
             } label: { Label(chat.muted ? "Вкл. звук" : "Без звука", systemImage: chat.muted ? "bell.fill" : "bell.slash.fill") }

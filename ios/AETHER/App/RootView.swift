@@ -34,7 +34,10 @@ struct RootView: View {
         .overlay {
             if lock.locked && session.phase == .ready {
                 LockView(lock: lock)
-                    .transition(.opacity)
+                    // Появление — мгновенно/тихо (фон, App Switcher), уход — экран
+                    // «слетает» вверх вслед за открывшимся замком.
+                    .transition(.asymmetric(insertion: .opacity,
+                                            removal: .move(edge: .top).combined(with: .opacity)))
                     .zIndex(200)
             }
         }

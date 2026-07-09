@@ -82,3 +82,70 @@ enum MediaSanitizer {
         return data
     }
 }
+
+
+// ---- Кружки: склейка сегментов дозаписи и обрезка ----
+
+extension MediaSanitizer {
+    /// Склеивает видео-сегменты (дозапись кружка) в один mp4 (720p, метаданные
+    /// вычищены). Для одного сегмента без обрезки — тоже сюда: заодно унифицирует
+    /// контейнер. Возвращает URL временного файла (вызывающий удаляет).
+    static func mergeClips(_ urls: [URL]) async -> URL? {
+        guard !urls.isEmpty else { return nil }
+        let composition = AVMutableComposition()
+        guard let videoTrack = composition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid) else { return nil }
+        let audioTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+
+        var cursor = CMTime.zero
+        for url in urls {
+            let asset = AVURLAsset(url: url)
+            guard let srcVideo = try? await asset.loadTracks(withMediaType: .video).first,
+                  let duration = try? await asset.load(.duration) else { continue }
+            let range = CMTimeRange(start: .zero, duration: duration)
+            try? videoTrack.insertTimeRange(range, of: srcVideo, at: cursor)
+            if let srcAudio = try? await asset.loadTracks(withMediaType: .audio).first {
+                try? audioTrack?.insertTimeRange(range, of: srcAudio, at: cursor)
+            }
+            // Сохранить ориентацию/зеркало первого сегмента.
+            if cursor == .zero, let transform = try? await srcVideo.load(.preferredTransform) {
+                videoTrack.preferredTransform = transform
+            }
+            cursor = CMTimeAdd(cursor, duration)
+        }
+        guard cursor > .zero,
+              let export = AVAssetExportSession(asset: composition, presetName: AVAssetExportPreset1280x720) else { return nil }
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("circle_merged_\(UUID().uuidString).mp4")
+        export.outputURL = out
+        export.outputFileType = .mp4
+        export.metadata = []
+        export.metadataItemFilter = .forSharing()
+        await export.export()
+        guard export.status == .completed else { return nil }
+        return out
+    }
+
+    /// Обрезка готового файла по диапазону (passthrough — без перекодирования).
+    static func trimmedClip(url: URL, start: TimeInterval, end: TimeInterval) async -> Data? {
+        let duration = max(0, end - start)
+        guard duration >= 0.5 else { return nil }
+        let asset = AVURLAsset(url: url)
+        guard let export = AVAssetExportSession(asset: asset, presetName: AVAssetExportPresetPassthrough) else {
+            return try? Data(contentsOf: url)
+        }
+        let out = FileManager.default.temporaryDirectory.appendingPathComponent("circle_trim_\(UUID().uuidString).mp4")
+        defer { try? FileManager.default.removeItem(at: out) }
+        export.outputURL = out
+        export.outputFileType = .mp4
+        export.metadata = []
+        export.metadataItemFilter = .forSharing()
+        export.timeRange = CMTimeRange(
+            start: CMTime(seconds: start, preferredTimescale: 600),
+            end: CMTime(seconds: end, preferredTimescale: 600)
+        )
+        await export.export()
+        guard export.status == .completed, let data = try? Data(contentsOf: out) else {
+            return try? Data(contentsOf: url)
+        }
+        return data
+    }
+}

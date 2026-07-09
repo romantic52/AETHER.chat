@@ -10,83 +10,37 @@ struct CircleRecorderView: View {
     @Environment(\.palette) private var palette
     @StateObject private var cam = CircleCamera()
 
-    @State private var locked = false
-    @State private var finishing = false
+    // Telegram-флоу: запись стартует сразу; пауза копит сегменты (дозапись);
+    // отправка в любой момент; прогресс — белая дуга вокруг кружка.
+    @State private var segments: [URL] = []
+    @State private var recordedBefore: TimeInterval = 0   // сумма прошлых сегментов
+    @State private var paused = false
+    @State private var sending = false
+    @State private var pendingSend = false                // стоп ради отправки
     private let maxDuration: TimeInterval = 60
+
+    private var totalElapsed: TimeInterval {
+        recordedBefore + (cam.isRecording ? cam.elapsed : 0)
+    }
 
     var body: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                HStack {
-                    Button { cancelAndClose() } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 17, weight: .bold))
-                            .foregroundStyle(.white)
-                            .frame(width: 42, height: 42)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }
-                    Spacer()
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 8)
-
-                Spacer()
-
+            // Кружок — по центру, чуть выше середины (как в Telegram).
+            VStack {
+                Spacer().frame(height: 120)
                 ZStack {
-                    // Круговой blur-ореол из камеры: сильный у кружка, растворяется
-                    // к краю пятна (с отступом от краёв экрана) и пульсирует
-                    // как эквалайзер во время записи.
-                    if cam.available {
-                        // Ореол: второй слой камеры + системный материал сверху
-                        // (backdrop-блюр умеет размывать видеослой, в отличие от
-                        // SwiftUI .blur, который на видео даёт черноту). Края
-                        // растворяются в фон радиальным градиентом, с отступом
-                        // от краёв экрана; пульс — «эквалайзер» при записи.
-                        TimelineView(.animation) { timeline in
-                            let t = timeline.date.timeIntervalSinceReferenceDate
-                            let pulse: CGFloat = cam.isRecording ? 1 + 0.07 * abs(sin(t * 2.6)) + 0.03 * abs(sin(t * 4.1)) : 1
-                            let halo = UIScreen.main.bounds.width - 36
-                            ZStack {
-                                CameraPreview(session: cam.session)
-                                    .frame(width: halo, height: halo)
-                                Circle().fill(.regularMaterial)
-                                    .frame(width: halo, height: halo)
-                                RadialGradient(colors: [.clear, .black.opacity(0.25), .black],
-                                               center: .center,
-                                               startRadius: 140, endRadius: halo / 2)
-                            }
-                            .frame(width: halo, height: halo)
-                            .clipShape(Circle())
-                            .scaleEffect(pulse)
-                            .allowsHitTesting(false)
-                            .environment(\.colorScheme, .dark)
-                        }
-                    }
-
-                    // «Эквалайзер»: пульсирующие кольца вокруг кружка во время записи.
-                    if cam.isRecording {
-                        TimelineView(.animation) { timeline in
-                            let t = timeline.date.timeIntervalSinceReferenceDate
-                            ZStack {
-                                ForEach(0..<3, id: \.self) { ring in
-                                    let phase = t * 2.2 + Double(ring) * 1.1
-                                    let pulse = 0.5 + 0.5 * abs(sin(phase))
-                                    Circle()
-                                        .stroke(palette.accent.opacity(0.5 - Double(ring) * 0.14),
-                                                lineWidth: 3 - CGFloat(ring) * 0.7)
-                                        .frame(width: 310, height: 310)
-                                        .scaleEffect(1 + CGFloat(pulse) * 0.055 * CGFloat(ring + 1))
-                                }
-                            }
-                        }
-                    }
-
                     if cam.available {
                         CameraPreview(session: cam.session)
                             .frame(width: 300, height: 300)
                             .clipShape(Circle())
+                            .opacity(paused ? 0.45 : 1)
+                        if paused {
+                            Image(systemName: "pause.fill")
+                                .font(.system(size: 40, weight: .bold))
+                                .foregroundStyle(.white.opacity(0.9))
+                        }
                     } else {
                         Circle().fill(palette.surfaceElevated).frame(width: 300, height: 300)
                             .overlay(VStack(spacing: 10) {
@@ -96,112 +50,169 @@ struct CircleRecorderView: View {
                             })
                     }
 
-                    // Прогресс лимита 60 секунд.
-                    Circle()
-                        .trim(from: 0, to: CGFloat(min(1, cam.elapsed / maxDuration)))
-                        .stroke(palette.accent, style: StrokeStyle(lineWidth: 4, lineCap: .round))
-                        .frame(width: 312, height: 312)
-                        .rotationEffect(.degrees(-90))
-                        .animation(.linear(duration: 0.1), value: cam.elapsed)
+                    // Белая дуга прогресса ВОКРУГ кружка (обозначение записи, как в TG):
+                    // длина = записанное время из 60с, лёгкая пульсация при записи.
+                    TimelineView(.animation) { timeline in
+                        let t = timeline.date.timeIntervalSinceReferenceDate
+                        let pulse: CGFloat = cam.isRecording ? 1 + 0.5 * abs(sin(t * 3.0)) : 1
+                        Circle()
+                            .trim(from: 0, to: max(0.015, CGFloat(min(1, totalElapsed / maxDuration))))
+                            .stroke(.white.opacity(0.95),
+                                    style: StrokeStyle(lineWidth: 3.5 * pulse, lineCap: .round))
+                            .frame(width: 314, height: 314)
+                            .rotationEffect(.degrees(-90))
+                    }
+                    .allowsHitTesting(false)
                 }
-
-                Text(timeString(cam.isRecording ? cam.elapsed : 0))
-                    .font(.system(size: 19, weight: .semibold, design: .monospaced))
-                    .foregroundStyle(.white)
-                    .contentTransition(.numericText())
-                    .padding(.top, 22)
-
                 Spacer()
+            }
 
-                recordControl
-                    .padding(.bottom, 6)
+            // Нижняя панель: [● таймер · Отмена] — слева; пауза и синяя отправка — справа.
+            VStack {
+                Spacer()
+                HStack(alignment: .center, spacing: 12) {
+                    HStack(spacing: 10) {
+                        Circle().fill(palette.danger).frame(width: 9, height: 9)
+                            .opacity(cam.isRecording ? 1 : 0.4)
+                        Text(timeString(totalElapsed))
+                            .font(.system(size: 16, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.white)
+                            .contentTransition(.numericText())
+                        Spacer(minLength: 8)
+                        Button("Отмена") { cancelAndClose() }
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(palette.accent)
+                        Spacer(minLength: 8)
+                    }
+                    .padding(.horizontal, 16)
+                    .frame(height: 50)
+                    .background(.ultraThinMaterial, in: Capsule())
 
-                Text(locked ? "Тапни — закончить и отправить"
-                            : (cam.isRecording ? "Отпусти — отправить · вверх — без рук"
-                                               : "Зажми и говори"))
-                    .font(.footnote)
-                    .foregroundStyle(.white.opacity(0.75))
-                    .padding(.bottom, 26)
-                    .animation(.easeInOut(duration: 0.15), value: locked)
-                    .animation(.easeInOut(duration: 0.15), value: cam.isRecording)
+                    // Пауза / продолжить (дозапись сегментами).
+                    Button { togglePause() } label: {
+                        Image(systemName: paused ? "record.circle" : "pause.fill")
+                            .font(.system(size: 19, weight: .semibold))
+                            .foregroundStyle(.white)
+                            .frame(width: 50, height: 50)
+                            .background(.ultraThinMaterial, in: Circle())
+                    }
+                    .buttonStyle(.squish)
+                    .disabled(!cam.available || sending || (paused && remainingIsOut))
+
+                    // Отправить.
+                    Button { send() } label: {
+                        Group {
+                            if sending { ProgressView().tint(.white) }
+                            else {
+                                Image(systemName: "arrow.up")
+                                    .font(.system(size: 24, weight: .bold))
+                                    .foregroundStyle(.white)
+                            }
+                        }
+                        .frame(width: 64, height: 64)
+                        .background(palette.accent, in: Circle())
+                    }
+                    .buttonStyle(.squish)
+                    .disabled(sending || (!cam.isRecording && segments.isEmpty))
+                }
+                .padding(.horizontal, 16)
+                .padding(.bottom, 24)
             }
         }
         .task {
-            cam.setFinishHandler { url in finish(url) }
+            cam.setFinishHandler { url in segmentFinished(url) }
             await cam.configure()
+            if cam.available { cam.startRecording() }   // автостарт, как в Telegram
         }
         .onChange(of: cam.elapsed) { _, t in
-            // Жёсткий лимит кружка — 60 секунд: автостоп и отправка.
-            if t >= maxDuration, cam.isRecording, !finishing {
-                finishing = true
-                cam.stopRecording()
+            // Лимит 60с суммарно: автостоп и отправка.
+            if recordedBefore + t >= maxDuration, cam.isRecording, !pendingSend {
+                send()
             }
         }
         .onDisappear { cam.stop() }
     }
 
-    // Кнопка записи: зажал — пишем, отпустил — отправилось; вверх — лок;
-    // в локе кнопка становится «стоп» (тап — закончить и отправить).
-    @ViewBuilder private var recordControl: some View {
-        if locked {
-            Button {
-                guard !finishing else { return }
-                finishing = true
-                cam.stopRecording()
-            } label: {
-                ZStack {
-                    Circle().stroke(.white, lineWidth: 4).frame(width: 82, height: 82)
-                    RoundedRectangle(cornerRadius: 7, style: .continuous)
-                        .fill(palette.danger)
-                        .frame(width: 34, height: 34)
-                }
-            }
-            .buttonStyle(.squish)
-        } else {
-            ZStack {
-                Circle().stroke(.white, lineWidth: 4).frame(width: 82, height: 82)
-                Circle()
-                    .fill(palette.danger)
-                    .frame(width: cam.isRecording ? 74 : 64, height: cam.isRecording ? 74 : 64)
-                    .animation(.spring(response: 0.25, dampingFraction: 0.7), value: cam.isRecording)
-            }
-            .contentShape(Circle())
-            .gesture(
-                DragGesture(minimumDistance: 0)
-                    .onChanged { value in
-                        if !cam.isRecording, cam.available, !finishing {
-                            cam.startRecording()
-                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                        }
-                        if value.translation.height < -70, cam.isRecording, !locked {
-                            locked = true
-                            UISelectionFeedbackGenerator().selectionChanged()
-                        }
-                    }
-                    .onEnded { _ in
-                        guard cam.isRecording, !locked, !finishing else { return }
-                        finishing = true
-                        cam.stopRecording()   // отпустил — отправляем
-                    }
-            )
+    private var remainingIsOut: Bool { recordedBefore >= maxDuration - 0.5 }
+
+    private func togglePause() {
+        if cam.isRecording {
+            paused = true
+            cam.stopRecording()   // сегмент докопится в segmentFinished
+        } else if !remainingIsOut {
+            paused = false
+            cam.startRecording()
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         }
     }
 
-    private func finish(_ url: URL) {
-        defer { try? FileManager.default.removeItem(at: url) }
-        let duration = cam.elapsed
-        guard finishing, duration >= 0.5, let data = try? Data(contentsOf: url) else {
-            finishing = false
-            locked = false
-            return
+    private func send() {
+        guard !sending else { return }
+        if cam.isRecording {
+            pendingSend = true
+            sending = true
+            cam.stopRecording()   // отправим из segmentFinished
+        } else if !segments.isEmpty {
+            sending = true
+            Task { await mergeAndSend() }
         }
-        onSend(data, min(duration, maxDuration))
+    }
+
+    private func segmentFinished(_ url: URL) {
+        let duration = cam.elapsed
+        if duration >= 0.4 {
+            segments.append(url)
+            recordedBefore += duration
+        } else {
+            try? FileManager.default.removeItem(at: url)
+        }
+        if pendingSend {
+            pendingSend = false
+            Task { await mergeAndSend() }
+        }
+    }
+
+    private func mergeAndSend() async {
+        defer { sending = false }
+        guard !segments.isEmpty else { return }
+        let data: Data?
+        let duration = min(recordedBefore, maxDuration)
+        if segments.count == 1 {
+            data = try? Data(contentsOf: segments[0])
+        } else {
+            // Склейка дозаписи; таймаут, чтобы не зависнуть навсегда.
+            let merged: URL? = await withTaskGroup(of: URL?.self) { group in
+                group.addTask { await MediaSanitizer.mergeClips(segments) }
+                group.addTask {
+                    try? await Task.sleep(nanoseconds: 15_000_000_000)
+                    return nil
+                }
+                let first = await group.next() ?? nil
+                group.cancelAll()
+                return first
+            }
+            if let merged {
+                data = try? Data(contentsOf: merged)
+                try? FileManager.default.removeItem(at: merged)
+            } else {
+                data = try? Data(contentsOf: segments[segments.count - 1])   // фолбэк
+            }
+        }
+        cleanupSegments()
+        guard let data else { return }
+        onSend(data, duration)
         dismiss()
     }
 
+    private func cleanupSegments() {
+        for url in segments { try? FileManager.default.removeItem(at: url) }
+        segments = []
+        recordedBefore = 0
+    }
+
     private func cancelAndClose() {
-        finishing = false
         if cam.isRecording { cam.cancelRecording() }
+        cleanupSegments()
         dismiss()
     }
 
@@ -225,6 +236,8 @@ final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordi
     private var timer: Timer?
     private var startedAt: Date?
     private var onFinish: ((URL) -> Void)?
+    private var videoInput: AVCaptureDeviceInput?
+    private var position: AVCaptureDevice.Position = .front
     private var cancelled = false
 
     func configure() async {
@@ -236,9 +249,10 @@ final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordi
         // это давало заметный лаг открытия.
         let session = self.session
         let output = self.output
-        let ok: Bool = await Task.detached(priority: .userInitiated) {
-            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: .front),
-                  let input = try? AVCaptureDeviceInput(device: device) else { return false }
+        let position = self.position
+        let result: AVCaptureDeviceInput? = await Task.detached(priority: .userInitiated) {
+            guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
+                  let input = try? AVCaptureDeviceInput(device: device) else { return nil }
             session.beginConfiguration()
             session.sessionPreset = .high
             if session.canAddInput(input) { session.addInput(input) }
@@ -250,12 +264,36 @@ final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordi
             // Зеркалим запись с фронталки — как в превью.
             if let connection = output.connection(with: .video), connection.isVideoMirroringSupported {
                 connection.automaticallyAdjustsVideoMirroring = false
-                connection.isVideoMirrored = true
+                connection.isVideoMirrored = (position == .front)
             }
-            session.startRunning()
-            return true
+            if !session.isRunning { session.startRunning() }
+            return input
         }.value
-        available = ok
+        videoInput = result
+        available = result != nil
+    }
+
+    /// Переворот камеры (фронт ↔ тыл) — работает и во время записи.
+    func switchCamera() {
+        guard let current = videoInput else { return }
+        let next: AVCaptureDevice.Position = position == .front ? .back : .front
+        guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: next),
+              let input = try? AVCaptureDeviceInput(device: device) else { return }
+        session.beginConfiguration()
+        session.removeInput(current)
+        if session.canAddInput(input) {
+            session.addInput(input)
+            videoInput = input
+            position = next
+        } else {
+            session.addInput(current)   // откат
+        }
+        session.commitConfiguration()
+        if let connection = output.connection(with: .video), connection.isVideoMirroringSupported {
+            connection.automaticallyAdjustsVideoMirroring = false
+            connection.isVideoMirrored = (position == .front)
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     func startRecording() {
@@ -317,14 +355,46 @@ struct LoopingCirclePlayer: View {
     let url: URL
     var size: CGFloat = 200
     var muted: Bool = true
+    /// true — бесконечный цикл (превью записи); false — одно воспроизведение
+    /// (кружок в чате: доиграл — уменьшился и остановился).
+    var loop: Bool = true
     @State private var player: AVQueuePlayer?
     @State private var looper: AVPlayerLooper?
     @State private var isMuted = true
     @State private var isPlaying = false
+    /// Выравнивание в ленте (leading/trailing по автору); при увеличении — центр.
+    var chatAlignment: Alignment? = nil
+    /// Кружок увеличен во время воспроизведения и остаётся таким на паузе;
+    /// уменьшается только когда доиграл или уехал с экрана. Рост — лейаутный:
+    /// кружок реально становится больше и раздвигает соседние сообщения.
+    @State private var enlarged = false
+    @State private var scrubStart: Double? = nil
+
+    private var displaySize: CGFloat { enlarged ? size * 1.4 : size }
+    private static let growSpring = Animation.spring(response: 0.5, dampingFraction: 0.88)
+
+    private var progress: Double {
+        guard let player, let item = player.currentItem else { return 0 }
+        let duration = item.duration.seconds
+        guard duration.isFinite, duration > 0 else { return 0 }
+        return min(1, max(0, player.currentTime().seconds / duration))
+    }
+
+    private func setEnlarged(_ value: Bool) {
+        withAnimation(Self.growSpring) { enlarged = value }
+    }
+
+    private func seek(toProgress value: Double) {
+        guard let player, let item = player.currentItem else { return }
+        let duration = item.duration.seconds
+        guard duration.isFinite, duration > 0 else { return }
+        let target = CMTime(seconds: min(0.999, max(0, value)) * duration, preferredTimescale: 600)
+        player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+    }
 
     var body: some View {
         VideoLayerView(player: player)
-            .frame(width: size, height: size)
+            .frame(width: displaySize, height: displaySize)
             .background(Color.black, in: Circle())
             .clipShape(Circle())
             .overlay(Circle().stroke(.white.opacity(0.15), lineWidth: 1))
@@ -338,41 +408,109 @@ struct LoopingCirclePlayer: View {
                         .allowsHitTesting(false)
                 }
             }
-            .overlay(alignment: .bottomTrailing) {
-                Button {
-                    isMuted.toggle()
-                    player?.isMuted = isMuted
-                } label: {
-                    Image(systemName: isMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.system(size: 12)).foregroundStyle(.white)
-                        .padding(6).background(.black.opacity(0.4), in: Circle()).padding(8)
+            // Контролы поверх играющего кружка: кольцо прогресса, закрыть, перемотка драгом.
+            .overlay {
+                if enlarged {
+                    TimelineView(.periodic(from: .now, by: 0.1)) { _ in
+                        Circle()
+                            .trim(from: 0, to: max(0.003, progress))
+                            .stroke(.white.opacity(0.9), style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                            .rotationEffect(.degrees(-90))
+                            .padding(2)
+                    }
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
                 }
-                .buttonStyle(.plain)
             }
+            .overlay(alignment: .topTrailing) {
+                if enlarged {
+                    Button {
+                        player?.pause()
+                        player?.seek(to: .zero)
+                        isPlaying = false
+                        setEnlarged(false)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .padding(9)
+                            .background(.black.opacity(0.65), in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.35), lineWidth: 1))
+                    }
+                    .padding(2)
+                    .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: chatAlignment != nil ? .infinity : nil,
+                   alignment: enlarged ? .center : (chatAlignment ?? .center))
             .onTapGesture {
                 if player == nil {
                     setup()
                     isPlaying = true
+                    setEnlarged(true)
                     player?.play()
                     return
                 }
                 isPlaying.toggle()
-                if isPlaying { player?.play() } else { player?.pause() }
+                if isPlaying {
+                    setEnlarged(true)
+                    player?.play()
+                } else {
+                    player?.pause()   // пауза НЕ уменьшает кружок
+                }
+            }
+            // Перемотка: слой с драгом существует ТОЛЬКО у увеличенного кружка —
+            // иначе жест перехватывал скролл ленты и всё дёргалось.
+            .overlay {
+                if enlarged {
+                    Circle()
+                        .fill(Color.clear)
+                        .contentShape(Circle())
+                        .onTapGesture {
+                            isPlaying.toggle()
+                            if isPlaying { player?.play() } else { player?.pause() }
+                        }
+                        .gesture(
+                            DragGesture(minimumDistance: 14)
+                                .onChanged { value in
+                                    if scrubStart == nil { scrubStart = progress }
+                                    let delta = Double(value.translation.width / max(displaySize, 1))
+                                    seek(toProgress: (scrubStart ?? 0) + delta)
+                                }
+                                .onEnded { _ in scrubStart = nil }
+                        )
+                }
             }
             .onDisappear {
+                // Промотал переписку — кружок сворачивается и глохнет.
                 player?.pause()
                 player?.removeAllItems()
                 player = nil
                 looper = nil
+                isPlaying = false
+                enlarged = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .AVPlayerItemDidPlayToEndTime)) { notif in
+                // Доиграл (не-loop): уменьшить, остановить, перемотать в начало.
+                guard !loop, let item = notif.object as? AVPlayerItem,
+                      item == player?.currentItem else { return }
+                isPlaying = false
+                setEnlarged(false)
+                player?.seek(to: .zero)
             }
     }
 
     private func setup() {
         let item = AVPlayerItem(url: url)
         let q = AVQueuePlayer()
-        looper = AVPlayerLooper(player: q, templateItem: item)
-        q.isMuted = muted
-        isMuted = muted
+        if loop {
+            looper = AVPlayerLooper(player: q, templateItem: item)
+        } else {
+            q.insert(item, after: nil)
+            q.actionAtItemEnd = .pause
+        }
+        q.isMuted = false   // кружок играет со звуком (запуск и так по тапу)
+        isMuted = false
         player = q
         isPlaying = false
     }
