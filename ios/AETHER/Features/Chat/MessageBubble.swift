@@ -1,0 +1,356 @@
+import SwiftUI
+
+// Пузырь сообщения: текст, хвост, статусы ✓/✓✓, реакции, свайп-ответ, контекст-меню.
+struct MessageBubble: View {
+    private static let timeFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm"
+        return formatter
+    }()
+    let message: ChatMessage
+    let isGroup: Bool
+    let showTail: Bool
+    let showSender: Bool
+    let myId: String
+    let readTick: Color
+
+    var onReply: () -> Void
+    var onQuickReact: () -> Void
+    var onPicker: () -> Void
+    var onEdit: () -> Void
+    var onDelete: () -> Void
+    var onRetry: () -> Void
+
+    @Environment(\.palette) private var palette
+    @State private var dragX: CGFloat = 0
+
+    private var outgoing: Bool { message.outgoing }
+    private var payload: Wire.Payload? { message.payload }
+
+    var body: some View {
+        HStack {
+            if outgoing { Spacer(minLength: 50) }
+            // Жест ответа висит на самом пузыре, а не на всей строке: пустое место
+            // рядом с сообщением остаётся свободным (скролл/системный свайп-назад).
+            VStack(alignment: outgoing ? .trailing : .leading, spacing: 2) {
+                if showSender, let sender = displaySender {
+                    Text(sender)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(palette.accent)
+                        .padding(.leading, 12)
+                }
+                bubbleBody
+                if !message.reactions.isEmpty { reactionChips }
+            }
+            .offset(x: dragX)
+            .gesture(replySwipe)
+            .contextMenu { contextMenu }
+            if !outgoing { Spacer(minLength: 50) }
+        }
+    }
+
+    private var displaySender: String? {
+        showSender ? message.senderId : nil
+    }
+
+    @ViewBuilder private var bubbleBody: some View {
+        if let p = payload, p.type == "media" {
+            if p.mediaKind == .videoNote {
+                // Кружок — без прямоугольного пузыря.
+                MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
+                    .overlay(alignment: .bottomTrailing) { statusRow.padding(4) }
+            } else {
+                MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
+                    .modifier(BubbleContainer(outgoing: outgoing, showTail: showTail, palette: palette))
+                    .overlay(alignment: .bottomTrailing) { statusRow.padding(6) }
+            }
+        } else {
+            textBubble
+        }
+    }
+
+    private var textBubble: some View {
+        // В Telegram время у коротких сообщений пишется в ту же строку справа.
+        // Чтобы добиться этого в SwiftUI, мы используем ZStack: текст имеет
+        // отступ справа, а статус (время + галочки) всегда прибит в правый нижний угол.
+        ZStack(alignment: .bottomTrailing) {
+            VStack(alignment: .leading, spacing: 4) {
+                if let rid = payload?.replyToId, !rid.isEmpty {
+                    replyQuote(payload?.replyToText ?? "")
+                }
+                Text(payload?.text ?? "")
+                    .font(.system(size: 16))
+                    .foregroundStyle(outgoing ? palette.bubbleOutText : palette.textPrimary)
+            }
+            .padding(.trailing, 54) // Оставляем место для времени и галочек
+            .padding(.bottom, 2)
+
+            HStack(spacing: 4) {
+                if message.edited {
+                    Text("изм.").font(.system(size: 10)).foregroundStyle(bubbleSecondary)
+                }
+                Text(timeString)
+                    .font(.system(size: 10))
+                    .foregroundStyle(bubbleSecondary)
+                if outgoing { statusIcon }
+            }
+            .padding(.bottom, -2)
+            .padding(.trailing, -2)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 8)
+        .modifier(BubbleContainer(outgoing: outgoing, showTail: showTail, palette: palette))
+    }
+
+    private func replyQuote(_ text: String) -> some View {
+        HStack(spacing: 6) {
+            Rectangle().fill(outgoing ? Color.white.opacity(0.7) : palette.accent)
+                .frame(width: 3).clipShape(Capsule())
+            Text(text.isEmpty ? "Сообщение" : text)
+                .font(.system(size: 13))
+                .foregroundStyle(bubbleSecondary)
+                .lineLimit(2)
+        }
+        .padding(.vertical, 2)
+    }
+
+    private var reactionChips: some View {
+        HStack(spacing: 4) {
+            ForEach(message.reactions.sorted { $0.key < $1.key }, id: \.key) { emoji, users in
+                HStack(spacing: 2) {
+                    Text(emoji).font(.system(size: 13))
+                    if users.count > 1 { Text("\(users.count)").font(.system(size: 11, weight: .semibold)) }
+                }
+                .padding(.horizontal, 7).padding(.vertical, 3)
+                .background(
+                    users.contains(myId) ? palette.accent.opacity(0.25) : palette.surfaceElevated,
+                    in: Capsule()
+                )
+                .foregroundStyle(palette.textPrimary)
+            }
+        }
+        .padding(outgoing ? .trailing : .leading, 8)
+    }
+
+    private var statusRow: some View {
+        HStack(spacing: 3) {
+            Text(timeString).font(.system(size: 10)).foregroundStyle(.white.opacity(0.85))
+            if outgoing { statusIcon }
+        }
+        .padding(.horizontal, 6).padding(.vertical, 2)
+        .background(.black.opacity(0.28), in: Capsule())
+    }
+
+    @ViewBuilder private var statusIcon: some View {
+        switch message.status {
+        case 0: Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(bubbleSecondary)
+        case 1: Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(bubbleSecondary)
+        case 2: doubleCheck(color: bubbleSecondary)
+        case 3: doubleCheck(color: readTick)
+        case -1: Image(systemName: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(palette.danger)
+        default: EmptyView()
+        }
+    }
+
+    private func doubleCheck(color: Color) -> some View {
+        ZStack {
+            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).offset(x: -3)
+            Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).offset(x: 1)
+        }.foregroundStyle(color)
+    }
+
+    private var bubbleSecondary: Color {
+        outgoing ? palette.bubbleOutText.opacity(0.68) : palette.textSecondary
+    }
+
+    private var timeString: String {
+        Self.timeFormatter.string(from: message.date)
+    }
+
+    // Свайп вправо по пузырю → ответ. Левые 5% экрана отданы системному
+    // свайпу-назад — жест ответа там не стартует.
+    private static let backEdgeZone = UIScreen.main.bounds.width * 0.05
+
+    private var replySwipe: some Gesture {
+        DragGesture(minimumDistance: 20, coordinateSpace: .global)
+            .onChanged { v in
+                guard v.startLocation.x > Self.backEdgeZone else { return }
+                if v.translation.width > 0 { dragX = min(v.translation.width, 70) }
+            }
+            .onEnded { v in
+                guard v.startLocation.x > Self.backEdgeZone else { return }
+                if v.translation.width > 55 { onReply() }
+                withAnimation(.easeOut(duration: 0.16)) { dragX = 0 }
+            }
+    }
+
+    @ViewBuilder private var contextMenu: some View {
+        if message.status == -1 {
+            Button { onRetry() } label: { Label("Отправить снова", systemImage: "arrow.clockwise") }
+        }
+        Button { onReply() } label: { Label("Ответить", systemImage: "arrowshape.turn.up.left") }
+        Button { onQuickReact() } label: { Label("Реакция", systemImage: "heart") }
+        Button { onPicker() } label: { Label("Выбрать реакцию", systemImage: "face.smiling") }
+        if let p = payload, p.type == "text" {
+            Button {
+                UIPasteboard.general.string = p.text
+            } label: { Label("Копировать", systemImage: "doc.on.doc") }
+            if outgoing {
+                Button { onEdit() } label: { Label("Изменить", systemImage: "pencil") }
+            }
+        }
+        if outgoing {
+            Button(role: .destructive) { onDelete() } label: { Label("Удалить", systemImage: "trash") }
+        }
+    }
+}
+
+// Форма пузыря с хвостом (как в Telegram): скруглённый прямоугольник, у хвостовой
+// стороны нижний угол острый. Все пузыри — liquid glass; исходящие с лёгким акцентным тинтом.
+struct BubbleContainer: ViewModifier {
+    let outgoing: Bool
+    let showTail: Bool
+    let palette: Palette
+    @EnvironmentObject var appearance: AppearanceSettings
+
+    func body(content: Content) -> some View {
+        let tailEnabled = appearance.bubbleTails && showTail
+        let shape = BubbleShapeNew(outgoing: outgoing, tail: tailEnabled,
+                                   radius: CGFloat(appearance.bubbleRadius),
+                                   connected: CGFloat(appearance.bubbleConnected))
+        let tailW: CGFloat = tailEnabled ? 6 : 0
+        // Пузыри — плоские цвета темы, БЕЗ glassEffect: стекло на каждой строке
+        // ленты — это отдельный blur-проход на сообщение, и скролл заметно лагает
+        // (стекло остаётся только на панелях: шапка, композер, таб-бар).
+        content
+            .padding(.trailing, outgoing ? tailW : 0)
+            .padding(.leading, outgoing ? 0 : tailW)
+            .background(shape.fill(outgoing ? palette.bubbleOut : palette.bubbleIn))
+            // Клип по форме пузыря: без него фото/видео торчат за скругления,
+            // и «сообщение с картинкой» выглядит как голая прямоугольная картинка.
+            .clipShape(shape)
+            // Хит-зона и зона контекст-меню — строго форма пузыря: следом идёт
+            // широкий выравнивающий frame (78% экрана), и без явного contentShape
+            // жесты ловились в невидимой области вокруг пузыря.
+            .contentShape(.interaction, shape)
+            .contentShape(.contextMenuPreview, shape)
+            .overlay(shape.stroke(Color.white.opacity(0.06), lineWidth: 0.5))
+            .frame(maxWidth: min(420, UIScreen.main.bounds.width * 0.78),
+                   alignment: outgoing ? .trailing : .leading)
+    }
+}
+
+struct BubbleShape: Shape {
+    let outgoing: Bool
+    let tail: Bool
+    func path(in rect: CGRect) -> Path {
+        let tailWidth: CGFloat = tail ? 4 : 0
+        let body = outgoing
+            ? CGRect(x: rect.minX, y: rect.minY, width: rect.width - tailWidth, height: rect.height)
+            : CGRect(x: rect.minX + tailWidth, y: rect.minY, width: rect.width - tailWidth, height: rect.height)
+        let connected = AetherUI.connectedRadius
+        let shape = UnevenRoundedRectangle(
+            topLeadingRadius: AetherUI.bubbleRadius,
+            bottomLeadingRadius: outgoing ? AetherUI.bubbleRadius : (tail ? 0 : connected),
+            bottomTrailingRadius: outgoing ? (tail ? 0 : connected) : AetherUI.bubbleRadius,
+            topTrailingRadius: AetherUI.bubbleRadius,
+            style: .continuous
+        )
+        var path = shape.path(in: body)
+        guard tail else { return path }
+
+        if outgoing {
+            path.move(to: CGPoint(x: body.maxX - 5, y: body.maxY - 10))
+            path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY),
+                              control: CGPoint(x: body.maxX, y: body.maxY - 2))
+            path.addQuadCurve(to: CGPoint(x: body.maxX - 8, y: body.maxY - 2),
+                              control: CGPoint(x: body.maxX - 2, y: body.maxY))
+        } else {
+            path.move(to: CGPoint(x: body.minX + 5, y: body.maxY - 10))
+            path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY),
+                              control: CGPoint(x: body.minX, y: body.maxY - 2))
+            path.addQuadCurve(to: CGPoint(x: body.minX + 8, y: body.maxY - 2),
+                              control: CGPoint(x: body.minX + 2, y: body.maxY))
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+
+// Простой хвостик-треугольник для liquid glass пузыря.
+struct TailShape: Shape {
+    let outgoing: Bool
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        if outgoing {
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+        } else {
+            path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+            path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        }
+        path.closeSubpath()
+        return path
+    }
+}
+import SwiftUI
+
+struct BubbleShapeNew: Shape {
+    let outgoing: Bool
+    let tail: Bool
+    var radius: CGFloat = AetherUI.bubbleRadius
+    var connected: CGFloat = AetherUI.connectedRadius
+    
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        let r = radius
+        let c = connected
+        let tailW: CGFloat = 6 // Всегда резервируем место для выравнивания
+        
+        if outgoing {
+            let bodyR = rect.maxX - tailW
+            
+            path.move(to: CGPoint(x: rect.minX, y: rect.minY + r))
+            path.addArc(center: CGPoint(x: rect.minX + r, y: rect.minY + r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+            
+            path.addLine(to: CGPoint(x: bodyR - r, y: rect.minY))
+            path.addArc(center: CGPoint(x: bodyR - r, y: rect.minY + r), radius: r, startAngle: .degrees(270), endAngle: .degrees(360), clockwise: false)
+            
+            if tail {
+                path.addLine(to: CGPoint(x: bodyR, y: rect.maxY - 12))
+                path.addQuadCurve(to: CGPoint(x: rect.maxX, y: rect.maxY), control: CGPoint(x: bodyR, y: rect.maxY - 1))
+                path.addQuadCurve(to: CGPoint(x: bodyR - 10, y: rect.maxY), control: CGPoint(x: bodyR - 2, y: rect.maxY))
+            } else {
+                path.addLine(to: CGPoint(x: bodyR, y: rect.maxY - c))
+                path.addArc(center: CGPoint(x: bodyR - c, y: rect.maxY - c), radius: c, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+            }
+            
+            path.addLine(to: CGPoint(x: rect.minX + r, y: rect.maxY))
+            path.addArc(center: CGPoint(x: rect.minX + r, y: rect.maxY - r), radius: r, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+            path.closeSubpath()
+        } else {
+            let bodyL = rect.minX + tailW
+            
+            path.move(to: CGPoint(x: bodyL + r, y: rect.minY))
+            path.addArc(center: CGPoint(x: rect.maxX - r, y: rect.minY + r), radius: r, startAngle: .degrees(270), endAngle: .degrees(360), clockwise: false)
+            
+            path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))
+            path.addArc(center: CGPoint(x: rect.maxX - r, y: rect.maxY - r), radius: r, startAngle: .degrees(0), endAngle: .degrees(90), clockwise: false)
+            
+            if tail {
+                path.addLine(to: CGPoint(x: bodyL + 10, y: rect.maxY))
+                path.addQuadCurve(to: CGPoint(x: rect.minX, y: rect.maxY), control: CGPoint(x: bodyL + 2, y: rect.maxY))
+                path.addQuadCurve(to: CGPoint(x: bodyL, y: rect.maxY - 12), control: CGPoint(x: bodyL, y: rect.maxY - 1))
+            } else {
+                path.addLine(to: CGPoint(x: bodyL + c, y: rect.maxY))
+                path.addArc(center: CGPoint(x: bodyL + c, y: rect.maxY - c), radius: c, startAngle: .degrees(90), endAngle: .degrees(180), clockwise: false)
+            }
+            
+            path.addLine(to: CGPoint(x: bodyL, y: rect.minY + r))
+            path.addArc(center: CGPoint(x: bodyL + r, y: rect.minY + r), radius: r, startAngle: .degrees(180), endAngle: .degrees(270), clockwise: false)
+            path.closeSubpath()
+        }
+        return path
+    }
+}

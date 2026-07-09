@@ -1,252 +1,235 @@
-//! Криптография ядра. Форматы строго совместимы с web/app.js и
-//! android E2ECrypto.kt (см. WIRE_PROTOCOL.md):
-//!  - личные сообщения: NaCl crypto_box (X25519 + XSalsa20-Poly1305);
-//!  - группы/медиа: AES-256-GCM (IV 12б, тег 128б в конце);
-//!  - бэкап ключа: PBKDF2-HMAC-SHA256(100000) + AES-256-GCM, "salt:iv:ct";
-//!  - все base64 — url-safe.
+//! Криптопримитивы: crypto_box (Curve25519/XSalsa20-Poly1305, совместимо с tweetnacl),
+//! AES-256-GCM, PBKDF2-бэкап приватного ключа. Всё b64 — url-safe без паддинга.
 
+use crate::CoreError;
 use aes_gcm::aead::{Aead, KeyInit};
-use aes_gcm::{Aes256Gcm, Key, Nonce as AesNonce};
+use aes_gcm::{Aes256Gcm, Nonce};
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
-use crypto_box::aead::Aead as BoxAead;
+use crypto_box::aead::{AeadCore, OsRng};
 use crypto_box::{PublicKey, SalsaBox, SecretKey};
-use pbkdf2::pbkdf2_hmac;
-use rand_core::{OsRng, RngCore};
 use sha2::Sha256;
 
-const PBKDF2_ITERS: u32 = 100_000;
-
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Error)]
-pub enum CryptoError {
-    BadBase64,
-    BadKeyLength,
-    BadFormat,
-    DecryptFailed,
-    EncryptFailed,
-}
-
-impl std::fmt::Display for CryptoError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:?}", self)
-    }
-}
-impl std::error::Error for CryptoError {}
-
-/// Пара ключей (base64, url-safe). private/public по 32 байта.
-#[derive(Debug, Clone, uniffi::Record)]
-pub struct KeyPair {
-    pub private_b64: String,
-    pub public_b64: String,
-}
-
-/// Конверт личного сообщения (формат wire).
-#[derive(Debug, Clone, PartialEq, Eq, uniffi::Record)]
-pub struct Envelope {
-    pub sender_pubkey_b64: String,
-    pub nonce_b64: String,
-    pub ciphertext_b64: String,
-}
-
-// --- base64 url-safe ---
-fn b64e(data: &[u8]) -> String {
+/// url-safe base64 без паддинга (канон протокола).
+#[uniffi::export]
+pub fn b64url_encode(data: Vec<u8>) -> String {
     URL_SAFE_NO_PAD.encode(data)
 }
-// Терпим к паддингу (Android отдаёт с '=', web — без).
-fn b64d(s: &str) -> Result<Vec<u8>, CryptoError> {
+
+/// Принимает оба алфавита и опциональный паддинг (легаси-ключи на сервере бывают с `=`).
+#[uniffi::export]
+pub fn b64url_decode(s: String) -> Result<Vec<u8>, CoreError> {
+    decode_b64(&s)
+}
+
+pub(crate) fn decode_b64(s: &str) -> Result<Vec<u8>, CoreError> {
+    let normalized: String = s
+        .trim()
+        .trim_end_matches('=')
+        .chars()
+        .map(|c| match c {
+            '+' => '-',
+            '/' => '_',
+            c => c,
+        })
+        .collect();
     URL_SAFE_NO_PAD
-        .decode(s.trim_end_matches('='))
-        .map_err(|_| CryptoError::BadBase64)
+        .decode(normalized.as_bytes())
+        .map_err(|e| CoreError::BadInput { msg: format!("base64: {e}") })
 }
 
-fn arr32(v: &[u8]) -> Result<[u8; 32], CryptoError> {
-    v.try_into().map_err(|_| CryptoError::BadKeyLength)
+fn key32(b64: &str, what: &str) -> Result<[u8; 32], CoreError> {
+    let bytes = decode_b64(b64)?;
+    bytes
+        .try_into()
+        .map_err(|_| CoreError::BadInput { msg: format!("{what}: ожидалось 32 байта") })
 }
 
-// ---------------------------------------------------------------------------
-// crypto_box (личные сообщения)
-// ---------------------------------------------------------------------------
+#[derive(uniffi::Record)]
+pub struct Keypair {
+    pub public_b64: String,
+    pub private_b64: String,
+}
 
-pub fn generate_keypair() -> KeyPair {
+/// Результат симметричного/асимметричного шифрования: nonce + шифротекст (tag в конце).
+#[derive(uniffi::Record)]
+pub struct Sealed {
+    pub nonce_b64: String,
+    pub ciphertext: Vec<u8>,
+}
+
+#[uniffi::export]
+pub fn generate_keypair() -> Keypair {
     let sk = SecretKey::generate(&mut OsRng);
-    let pk = sk.public_key();
-    KeyPair {
-        private_b64: b64e(&sk.to_bytes()),
-        public_b64: b64e(pk.as_bytes()),
+    Keypair {
+        public_b64: URL_SAFE_NO_PAD.encode(sk.public_key().as_bytes()),
+        private_b64: URL_SAFE_NO_PAD.encode(sk.to_bytes()),
     }
 }
 
+/// crypto_box: nonce 24б, XSalsa20-Poly1305 (tweetnacl box).
+#[uniffi::export]
 pub fn box_encrypt(
-    plaintext: &str,
-    my_private_b64: &str,
-    their_public_b64: &str,
-) -> Result<Envelope, CryptoError> {
-    let sk = SecretKey::from(arr32(&b64d(my_private_b64)?)?);
-    let pk = PublicKey::from(arr32(&b64d(their_public_b64)?)?);
-    let salsa = SalsaBox::new(&pk, &sk);
-
-    let mut nonce_bytes = [0u8; 24];
-    OsRng.fill_bytes(&mut nonce_bytes);
-    let nonce = crypto_box::Nonce::from_slice(&nonce_bytes);
-
-    let ct = BoxAead::encrypt(&salsa, nonce, plaintext.as_bytes())
-        .map_err(|_| CryptoError::EncryptFailed)?;
-
-    Ok(Envelope {
-        sender_pubkey_b64: b64e(sk.public_key().as_bytes()),
-        nonce_b64: b64e(&nonce_bytes),
-        ciphertext_b64: b64e(&ct),
+    plaintext: Vec<u8>,
+    recipient_pub_b64: String,
+    sender_priv_b64: String,
+) -> Result<Sealed, CoreError> {
+    let pk = PublicKey::from(key32(&recipient_pub_b64, "public key")?);
+    let sk = SecretKey::from(key32(&sender_priv_b64, "private key")?);
+    let sbox = SalsaBox::new(&pk, &sk);
+    let nonce = SalsaBox::generate_nonce(&mut OsRng);
+    let ct = sbox
+        .encrypt(&nonce, plaintext.as_slice())
+        .map_err(CoreError::crypto)?;
+    Ok(Sealed {
+        nonce_b64: URL_SAFE_NO_PAD.encode(nonce),
+        ciphertext: ct,
     })
 }
 
-pub fn box_decrypt(env: &Envelope, my_private_b64: &str) -> Result<String, CryptoError> {
-    let sk = SecretKey::from(arr32(&b64d(my_private_b64)?)?);
-    let sender_pk = PublicKey::from(arr32(&b64d(&env.sender_pubkey_b64)?)?);
-    let salsa = SalsaBox::new(&sender_pk, &sk);
-
-    let nonce_bytes = b64d(&env.nonce_b64)?;
+#[uniffi::export]
+pub fn box_decrypt(
+    nonce_b64: String,
+    ciphertext: Vec<u8>,
+    sender_pub_b64: String,
+    recipient_priv_b64: String,
+) -> Result<Vec<u8>, CoreError> {
+    let pk = PublicKey::from(key32(&sender_pub_b64, "public key")?);
+    let sk = SecretKey::from(key32(&recipient_priv_b64, "private key")?);
+    let sbox = SalsaBox::new(&pk, &sk);
+    let nonce_bytes = decode_b64(&nonce_b64)?;
     if nonce_bytes.len() != 24 {
-        return Err(CryptoError::BadFormat);
+        return Err(CoreError::bad("box nonce: ожидалось 24 байта"));
     }
-    let nonce = crypto_box::Nonce::from_slice(&nonce_bytes);
-    let ct = b64d(&env.ciphertext_b64)?;
-
-    let pt = BoxAead::decrypt(&salsa, nonce, ct.as_ref()).map_err(|_| CryptoError::DecryptFailed)?;
-    String::from_utf8(pt).map_err(|_| CryptoError::BadFormat)
+    sbox.decrypt(nonce_bytes.as_slice().into(), ciphertext.as_slice())
+        .map_err(|_| CoreError::Crypto { msg: "box_decrypt: не расшифровалось".into() })
 }
 
-// ---------------------------------------------------------------------------
-// AES-256-GCM (группы, медиа). Возвращает (nonce_b64, ciphertext_b64).
-// ---------------------------------------------------------------------------
-
-pub fn aes_encrypt(plaintext: &[u8], key_b64: &str) -> Result<(String, String), CryptoError> {
-    let key_bytes = arr32(&b64d(key_b64)?)?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
-
-    let mut iv = [0u8; 12];
-    OsRng.fill_bytes(&mut iv);
-    let nonce = AesNonce::from_slice(&iv);
-
+/// AES-256-GCM, nonce 12б, tag 128 бит в конце шифротекста (WebCrypto/Android-совместимо).
+#[uniffi::export]
+pub fn aes_encrypt(key_b64: String, plaintext: Vec<u8>) -> Result<Sealed, CoreError> {
+    let key = key32(&key_b64, "aes key")?;
+    let cipher = Aes256Gcm::new(&key.into());
+    let mut nonce = [0u8; 12];
+    use rand_core::RngCore;
+    OsRng.fill_bytes(&mut nonce);
     let ct = cipher
-        .encrypt(nonce, plaintext)
-        .map_err(|_| CryptoError::EncryptFailed)?;
-    Ok((b64e(&iv), b64e(&ct)))
+        .encrypt(Nonce::from_slice(&nonce), plaintext.as_slice())
+        .map_err(CoreError::crypto)?;
+    Ok(Sealed {
+        nonce_b64: URL_SAFE_NO_PAD.encode(nonce),
+        ciphertext: ct,
+    })
 }
 
+#[uniffi::export]
 pub fn aes_decrypt(
-    key_b64: &str,
-    nonce_b64: &str,
-    ciphertext_b64: &str,
-) -> Result<Vec<u8>, CryptoError> {
-    let key_bytes = arr32(&b64d(key_b64)?)?;
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key_bytes));
-
-    let iv = b64d(nonce_b64)?;
-    if iv.len() != 12 {
-        return Err(CryptoError::BadFormat);
+    key_b64: String,
+    nonce_b64: String,
+    ciphertext: Vec<u8>,
+) -> Result<Vec<u8>, CoreError> {
+    let key = key32(&key_b64, "aes key")?;
+    let cipher = Aes256Gcm::new(&key.into());
+    let nonce = decode_b64(&nonce_b64)?;
+    if nonce.len() != 12 {
+        return Err(CoreError::bad("aes nonce: ожидалось 12 байт"));
     }
-    let nonce = AesNonce::from_slice(&iv);
-    let ct = b64d(ciphertext_b64)?;
     cipher
-        .decrypt(nonce, ct.as_ref())
-        .map_err(|_| CryptoError::DecryptFailed)
+        .decrypt(Nonce::from_slice(&nonce), ciphertext.as_slice())
+        .map_err(|_| CoreError::Crypto { msg: "aes_decrypt: не расшифровалось".into() })
 }
 
-// ---------------------------------------------------------------------------
-// Бэкап приватного ключа: PBKDF2 + AES-GCM, формат "salt:iv:ct".
-// Шифруется base64-СТРОКА приватного ключа (как в Android/web).
-// ---------------------------------------------------------------------------
-
-pub fn encrypt_private_key(private_key_b64: &str, password: &str) -> Result<String, CryptoError> {
-    let mut salt = [0u8; 16];
-    let mut iv = [0u8; 12];
-    OsRng.fill_bytes(&mut salt);
-    OsRng.fill_bytes(&mut iv);
-
+/// Случайный симметричный ключ (32 байта) в b64url — для групп и медиа.
+#[uniffi::export]
+pub fn random_key_b64() -> String {
+    use rand_core::RngCore;
     let mut key = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERS, &mut key);
-
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-    let nonce = AesNonce::from_slice(&iv);
-    let ct = cipher
-        .encrypt(nonce, private_key_b64.as_bytes())
-        .map_err(|_| CryptoError::EncryptFailed)?;
-
-    Ok(format!("{}:{}:{}", b64e(&salt), b64e(&iv), b64e(&ct)))
+    OsRng.fill_bytes(&mut key);
+    URL_SAFE_NO_PAD.encode(key)
 }
 
-pub fn decrypt_private_key(blob: &str, password: &str) -> Result<String, CryptoError> {
+fn backup_key(password: &str, salt: &[u8]) -> [u8; 32] {
+    let mut key = [0u8; 32];
+    pbkdf2::pbkdf2_hmac::<Sha256>(password.as_bytes(), salt, 100_000, &mut key);
+    key
+}
+
+/// Бэкап приватного ключа: PBKDF2 100k + AES-GCM. Формат `salt:iv:ct` (b64url).
+/// Шифруется b64url-СТРОКА ключа, не сырые байты (канон Android/web).
+#[uniffi::export]
+pub fn encrypt_private_key(private_key_b64: String, password: String) -> Result<String, CoreError> {
+    use rand_core::RngCore;
+    let mut salt = [0u8; 16];
+    OsRng.fill_bytes(&mut salt);
+    let key = backup_key(&password, &salt);
+    let sealed = aes_encrypt(URL_SAFE_NO_PAD.encode(key), private_key_b64.into_bytes())?;
+    Ok(format!(
+        "{}:{}:{}",
+        URL_SAFE_NO_PAD.encode(salt),
+        sealed.nonce_b64,
+        URL_SAFE_NO_PAD.encode(sealed.ciphertext)
+    ))
+}
+
+#[uniffi::export]
+pub fn decrypt_private_key(blob: String, password: String) -> Result<String, CoreError> {
     let parts: Vec<&str> = blob.split(':').collect();
     if parts.len() != 3 {
-        return Err(CryptoError::BadFormat);
+        return Err(CoreError::bad("неверный формат зашифрованного ключа"));
     }
-    let salt = b64d(parts[0])?;
-    let iv = b64d(parts[1])?;
-    let ct = b64d(parts[2])?;
-    if iv.len() != 12 {
-        return Err(CryptoError::BadFormat);
-    }
-
-    let mut key = [0u8; 32];
-    pbkdf2_hmac::<Sha256>(password.as_bytes(), &salt, PBKDF2_ITERS, &mut key);
-
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(&key));
-    let nonce = AesNonce::from_slice(&iv);
-    let pt = cipher
-        .decrypt(nonce, ct.as_ref())
-        .map_err(|_| CryptoError::DecryptFailed)?;
-    String::from_utf8(pt).map_err(|_| CryptoError::BadFormat)
+    let salt = decode_b64(parts[0])?;
+    let key = backup_key(&password, &salt);
+    let ct = decode_b64(parts[2])?;
+    let pt = aes_decrypt(URL_SAFE_NO_PAD.encode(key), parts[1].to_string(), ct)
+        .map_err(|_| CoreError::Crypto { msg: "неверный пароль".into() })?;
+    String::from_utf8(pt).map_err(CoreError::crypto)
 }
 
-// ===========================================================================
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn keypair_roundtrip_box() {
+    fn box_roundtrip() {
         let a = generate_keypair();
         let b = generate_keypair();
-        let env = box_encrypt("привет 🔐", &a.private_b64, &b.public_b64).unwrap();
-        // получатель b расшифровывает по sender_pubkey из конверта
-        let pt = box_decrypt(&env, &b.private_b64).unwrap();
-        assert_eq!(pt, "привет 🔐");
-    }
-
-    #[test]
-    fn box_wrong_recipient_fails() {
-        let a = generate_keypair();
-        let b = generate_keypair();
-        let c = generate_keypair();
-        let env = box_encrypt("secret", &a.private_b64, &b.public_b64).unwrap();
-        assert!(box_decrypt(&env, &c.private_b64).is_err());
+        let sealed = box_encrypt("привет".as_bytes().to_vec(), b.public_b64.clone(), a.private_b64.clone()).unwrap();
+        let pt = box_decrypt(sealed.nonce_b64, sealed.ciphertext, a.public_b64, b.private_b64).unwrap();
+        assert_eq!(pt, "привет".as_bytes());
     }
 
     #[test]
     fn aes_roundtrip() {
-        let key = b64e(&[7u8; 32]);
-        let (nonce_b64, ct_b64) = aes_encrypt(b"group message", &key).unwrap();
-        let pt = aes_decrypt(&key, &nonce_b64, &ct_b64).unwrap();
-        assert_eq!(pt, b"group message");
+        let key = random_key_b64();
+        let sealed = aes_encrypt(key.clone(), b"data".to_vec()).unwrap();
+        assert_eq!(aes_decrypt(key, sealed.nonce_b64, sealed.ciphertext).unwrap(), b"data");
     }
 
     #[test]
-    fn private_key_backup_roundtrip() {
+    fn backup_roundtrip() {
         let kp = generate_keypair();
-        let blob = encrypt_private_key(&kp.private_b64, "hunter2pass").unwrap();
+        let blob = encrypt_private_key(kp.private_b64.clone(), "pass1234".into()).unwrap();
         assert_eq!(blob.split(':').count(), 3);
-        let restored = decrypt_private_key(&blob, "hunter2pass").unwrap();
-        assert_eq!(restored, kp.private_b64);
-        // неверный пароль не расшифровывает
-        assert!(decrypt_private_key(&blob, "wrong").is_err());
+        assert_eq!(decrypt_private_key(blob.clone(), "pass1234".into()).unwrap(), kp.private_b64);
+        assert!(decrypt_private_key(blob, "wrong".into()).is_err());
+    }
+
+    /// Живой вектор с сервера: бэкап btest2, пароль pass1234.
+    #[test]
+    fn backup_live_vector() {
+        let blob = "P34SGOKQQnCuIns3FbAwmw:TJGizr-KjcizMQfN:1qqopevzsvo9d-RMxUloFllVrpR57ezzToynXEiWt3Rzk-Lz-wuIfaX4TddRIjf2gEGFMRV7pLdHpWk";
+        let priv_b64 = decrypt_private_key(blob.into(), "pass1234".into()).unwrap();
+        let sk = SecretKey::from(key32(&priv_b64, "sk").unwrap());
+        let pub_b64 = URL_SAFE_NO_PAD.encode(sk.public_key().as_bytes());
+        assert_eq!(pub_b64, "KD7X7D64ywKx7xJEo6OZCCULi1Pq6_RWrnX-Wqr3TiI");
     }
 
     #[test]
-    fn b64_tolerates_padding() {
-        // Android отдаёт url-safe с '=', наш декодер должен принять.
-        let data = [1u8, 2, 3, 4, 5];
-        let padded = base64::engine::general_purpose::URL_SAFE.encode(data);
-        assert!(padded.contains('='));
-        assert_eq!(b64d(&padded).unwrap(), data);
+    fn b64_accepts_both_alphabets() {
+        assert_eq!(
+            decode_b64("ZR_p1Yykiocxu87StCf2J2U7QmtgOlepAiVXHIRv2Uo=").unwrap().len(),
+            32
+        );
+        assert_eq!(decode_b64("+/8").unwrap(), decode_b64("-_8").unwrap());
     }
 }

@@ -1,46 +1,96 @@
-# XcodeGen spec — генерирует AETHER.xcodeproj на Mac.
-#   brew install xcodegen   (один раз)
-#   cd ios && xcodegen generate
-#
-# Зачем XcodeGen: .xcodeproj — это огромный машинный pbxproj, который нельзя
-# осмысленно править/мержить руками и нельзя собрать на Windows. Этот yml —
-# человекочитаемый источник правды; на Mac из него детерминированно
-# собирается проект. В git коммитим project.yml, а не сам .xcodeproj.
-
 name: AETHER
 options:
-  bundleIdPrefix: org.groktest
+  bundleIdPrefix: io.aether
   deploymentTarget:
-    iOS: "18.0"          # рантайм-минимум; Liquid Glass включается на iOS 26 через #available
-  developmentLanguage: ru
+    iOS: "17.0"
   createIntermediateGroups: true
+  groupSortPosition: top
 
 settings:
   base:
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "1.0"
     CURRENT_PROJECT_VERSION: "1"
-    SWIFT_VERSION: "5.0"
-    DEVELOPMENT_TEAM: ""        # подставить Team ID на Mac (или собирать без подписи в симулятор)
+    SWIFT_VERSION: "5.10"
+    DEVELOPMENT_TEAM: 2353RU43PS
     CODE_SIGN_STYLE: Automatic
     ENABLE_USER_SCRIPT_SANDBOXING: NO
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+    TARGETED_DEVICE_FAMILY: "1"
+
+packages:
+  WebRTC:
+    url: https://github.com/stasel/WebRTC.git
+    from: "149.0.0"
 
 targets:
   AETHER:
     type: application
     platform: iOS
+    deploymentTarget: "17.0"
     sources:
       - path: AETHER
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.groktest.aether
-        INFOPLIST_FILE: AETHER/Resources/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.rmkhc.aether
+        INFOPLIST_FILE: AETHER/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
-        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
-        TARGETED_DEVICE_FAMILY: "1"   # iPhone
-        # Линкуем нативное Rust-ядро (собирается build_core_ios.sh → CoreFFI/SmCoreFFI.xcframework)
-        OTHER_LDFLAGS: ["-ObjC"]
+        GENERATE_INFOPLIST_FILE: NO
+        SWIFT_OBJC_BRIDGING_HEADER: ""
+        OTHER_LDFLAGS:
+          - "-lc++"
+          - "-framework"
+          - "Security"
+        # xcframework и генерённый sm_core.swift подключаются как исходники/фреймворк.
     dependencies:
       - framework: CoreFFI/SmCoreFFI.xcframework
-        embed: false       # static — встраивать не нужно
+        embed: false
+      - package: WebRTC
+      - target: AetherIsland
     info:
-      path: AETHER/Resources/Info.plist
+      path: AETHER/Info.plist
+      properties:
+        CFBundleDisplayName: Æther
+        CFBundleShortVersionString: "1.0"
+        UILaunchScreen: {}
+        UIRequiresFullScreen: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
+        NSCameraUsageDescription: "Æther использует камеру для фото, видео-кружков и звонков."
+        NSMicrophoneUsageDescription: "Æther использует микрофон для голосовых сообщений и звонков."
+        NSLocalNetworkUsageDescription: "Æther использует локальную сеть для прямого соединения во время звонков."
+        NSPhotoLibraryUsageDescription: "Æther получает доступ к фото для отправки медиа."
+        NSFaceIDUsageDescription: "Face ID разблокирует доступ к вашим чатам."
+        UIBackgroundModes:
+          - audio
+          - processing
+          - fetch
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.rmkhc.aether.refresh
+        ITSAppUsesNonExemptEncryption: false
+        NSSupportsLiveActivities: true
+        CFBundleURLTypes:
+          - CFBundleURLName: com.rmkhc.aether.deeplink
+            CFBundleURLSchemes:
+              - aether
+
+  # Виджет-расширение: Live Activity звонка в Dynamic Island.
+  AetherIsland:
+    type: app-extension
+    platform: iOS
+    deploymentTarget: "17.0"
+    sources:
+      - path: AetherIsland
+      - path: AETHER/Core/CallActivityAttributes.swift
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.rmkhc.aether.AetherIsland
+        INFOPLIST_FILE: AetherIsland/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
+        SKIP_INSTALL: YES
+    info:
+      path: AetherIsland/Info.plist
+      properties:
+        CFBundleDisplayName: Æther
+        CFBundleShortVersionString: "1.0"
+        NSExtension:
+          NSExtensionPointIdentifier: com.apple.widgetkit-extension
