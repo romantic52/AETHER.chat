@@ -1302,7 +1302,8 @@ def leave_group(group_id: str, current_user: str = Depends(get_current_user)) ->
 def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.public_join, g.username, g.avatar_file_id, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role
+            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.public_join, g.username, g.avatar_file_id, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role,
+                      (SELECT COUNT(*) FROM group_members gm2 WHERE LOWER(gm2.group_id) = LOWER(g.id)) AS member_count
                FROM groups g
                JOIN group_members gm ON LOWER(g.id) = LOWER(gm.group_id)
                WHERE LOWER(gm.user_id) = LOWER(%s)""",
@@ -1323,7 +1324,8 @@ def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
                 "linked_group_id": r["linked_group_id"],
                 "created_at": r["created_at"],
                 "encrypted_key_b64": r["encrypted_key_b64"],
-                "role": r["role"]
+                "role": r["role"],
+                "member_count": r["member_count"]
             })
     return {"groups": groups}
 
