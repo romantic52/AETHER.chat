@@ -66,8 +66,6 @@ struct ChatView: View {
 
     // Группа/канал.
     @State private var showGroupProfile = false
-    // Открытие группы обсуждения (комментарии под постом канала).
-    @State private var openDiscussion: String?
 
     // Локальное фото для контакта (см. AvatarStore) — только для 1:1.
     @State private var showAvatarMenu = false
@@ -205,10 +203,6 @@ struct ChatView: View {
         .animation(AetherUI.sendAnimation, value: circleActive)
         .toolbar(.hidden, for: .navigationBar)
         .swipeBackEnabled()
-        .navigationDestination(item: $openDiscussion) { gid in
-            ChatView(peerId: gid, isGroup: true)
-                .environmentObject(messaging)
-        }
         .safeAreaInset(edge: .top) { chatTopBar }
         .sheet(isPresented: $showGroupProfile) {
             if isGroup {
@@ -462,7 +456,7 @@ struct ChatView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Avatar(id: peerId, name: title, size: 36,
-                   avatarURL: isGroup ? nil : messaging.avatarURL(peerId),
+                   avatarURL: messaging.avatarURL(peerId),
                    online: messaging.isOnline(peerId) && !isGroup && !isSaved)
                 .onLongPressGesture {
                     guard !isGroup, peerId != session.myId.lowercased() else { return }
@@ -524,12 +518,18 @@ struct ChatView: View {
                                 onDelete: { vm.delete(msg) },
                                 onRetry: { vm.retry(msg) }
                             )
-                            // Комментарии: у канала с подвязанной группой обсуждения
-                            // под каждым постом — кнопка, открывающая обсуждение.
+                            // Комментарии: у канала с обсуждением — лёгкая кнопка под
+                            // постом (БЕЗ стекла: 40 glassEffect на экран = лаги).
                             .safeAreaInset(edge: .bottom, spacing: 0) {
                                 if isChannel, let linked = messaging.groups.info(peerId)?.linkedGroupId {
                                     Button {
-                                        openDiscussion = linked.lowercased()
+                                        // Через общий deep-link (без вложенного
+                                        // navigationDestination — на iOS 27 он
+                                        // выкидывал из запушенного чата).
+                                        NotificationCenter.default.post(
+                                            name: NotificationsManager.openChatNotification,
+                                            object: nil, userInfo: ["peer": linked.lowercased()]
+                                        )
                                     } label: {
                                         HStack(spacing: 6) {
                                             Image(systemName: "bubble.left.and.bubble.right")
@@ -539,7 +539,7 @@ struct ChatView: View {
                                         }
                                         .foregroundStyle(palette.accent)
                                         .padding(.horizontal, 12).padding(.vertical, 6)
-                                        .liquidGlass(Capsule())
+                                        .background(palette.surface, in: Capsule())
                                     }
                                     .buttonStyle(.squish)
                                     .frame(maxWidth: .infinity, alignment: .leading)
