@@ -408,11 +408,11 @@ struct SettingsView: View {
 }
 
 struct SettingsLabel: View {
-    let title: String
+    let title: LocalizedStringKey
     let icon: String
     let color: Color
 
-    init(_ title: String, icon: String, color: Color) {
+    init(_ title: LocalizedStringKey, icon: String, color: Color) {
         self.title = title
         self.icon = icon
         self.color = color

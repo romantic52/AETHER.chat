@@ -815,7 +815,7 @@ final class Messaging: ObservableObject {
 
     /// «был(а) N минут назад» или «в сети».
     func presenceText(_ peer: String) -> String {
-        if isOnline(peer) { return "в сети" }
+        if isOnline(peer) { return String(localized: "в сети") }
         guard let iso = profiles[peer.lowercased()]?.lastActive else { return "" }
         guard let d = Self.isoFractional.date(from: iso) ?? Self.isoBasic.date(from: iso) else { return "" }
         let mins = Int(Date().timeIntervalSince(d) / 60)

@@ -484,7 +484,7 @@ struct ChatRow: View {
     }()
     private static let weekdayFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.locale = .current
         formatter.dateFormat = "EEE"
         return formatter
     }()
@@ -574,7 +574,7 @@ struct ChatRow: View {
         let date = Date(timeIntervalSince1970: Double(ms) / 1000)
         let cal = Calendar.current
         if cal.isDateInToday(date) { return Self.clockFormatter.string(from: date) }
-        else if cal.isDateInYesterday(date) { return "вчера" }
+        else if cal.isDateInYesterday(date) { return String(localized: "вчера") }
         else if cal.isDate(date, equalTo: Date(), toGranularity: .weekOfYear) {
             return Self.weekdayFormatter.string(from: date)
         }

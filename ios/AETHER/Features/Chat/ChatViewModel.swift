@@ -16,13 +16,13 @@ struct ChatTimelineRow: Identifiable {
 final class ChatViewModel: ObservableObject {
     private static let dayMonthFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.locale = .current
         formatter.dateFormat = "d MMMM"
         return formatter
     }()
     private static let fullDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
-        formatter.locale = Locale(identifier: "ru_RU")
+        formatter.locale = .current
         formatter.dateFormat = "d MMMM yyyy"
         return formatter
     }()
@@ -245,8 +245,8 @@ final class ChatViewModel: ObservableObject {
 
     private static func dayLabel(_ date: Date) -> String {
         let calendar = Calendar.current
-        if calendar.isDateInToday(date) { return "Сегодня" }
-        if calendar.isDateInYesterday(date) { return "Вчера" }
+        if calendar.isDateInToday(date) { return String(localized: "Сегодня") }
+        if calendar.isDateInYesterday(date) { return String(localized: "Вчера") }
         return calendar.isDate(date, equalTo: Date(), toGranularity: .year)
             ? dayMonthFormatter.string(from: date)
             : fullDateFormatter.string(from: date)
