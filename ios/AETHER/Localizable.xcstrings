@@ -2928,6 +2928,86 @@
           }
         }
       }
+    },
+    "был(а) только что": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "был(а) только что"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "last seen just now"
+          }
+        }
+      }
+    },
+    "был(а) %lld мин назад": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "был(а) %lld мин назад"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "last seen %lld min ago"
+          }
+        }
+      }
+    },
+    "был(а) сегодня в %@": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "был(а) сегодня в %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "last seen today at %@"
+          }
+        }
+      }
+    },
+    "был(а) вчера в %@": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "был(а) вчера в %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "last seen yesterday at %@"
+          }
+        }
+      }
+    },
+    "был(а) %@": {
+      "localizations": {
+        "ru": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "был(а) %@"
+          }
+        },
+        "en": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "last seen %@"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

@@ -813,17 +813,32 @@ final class Messaging: ObservableObject {
         return Date().timeIntervalSince(d) < 75
     }
 
-    /// «был(а) N минут назад» или «в сети».
+    private static let presenceClock: DateFormatter = {
+        let f = DateFormatter(); f.locale = .current; f.dateFormat = "HH:mm"; return f
+    }()
+    private static let presenceDate: DateFormatter = {
+        let f = DateFormatter(); f.locale = .current; f.dateFormat = "dd.MM.yyyy"; return f
+    }()
+
+    /// Telegram-стиль: «в сети», «только что», «N мин назад», дальше — точное
+    /// время: «сегодня в 14:20», «вчера в 9:15», «был(а) 12.05.2026».
     func presenceText(_ peer: String) -> String {
         if isOnline(peer) { return String(localized: "в сети") }
-        guard let iso = profiles[peer.lowercased()]?.lastActive else { return "" }
-        guard let d = Self.isoFractional.date(from: iso) ?? Self.isoBasic.date(from: iso) else { return "" }
+        guard let iso = profiles[peer.lowercased()]?.lastActive,
+              let d = Self.isoFractional.date(from: iso) ?? Self.isoBasic.date(from: iso) else { return "" }
         let mins = Int(Date().timeIntervalSince(d) / 60)
-        if mins < 1 { return "был(а) только что" }
-        if mins < 60 { return "был(а) \(mins) мин назад" }
-        let hours = mins / 60
-        if hours < 24 { return "был(а) \(hours) ч назад" }
-        return "был(а) давно"
+        if mins < 1 { return String(localized: "был(а) только что") }
+        if mins < 60 {
+            return String(format: String(localized: "был(а) %lld мин назад"), mins)
+        }
+        let cal = Calendar.current
+        if cal.isDateInToday(d) {
+            return String(format: String(localized: "был(а) сегодня в %@"), Self.presenceClock.string(from: d))
+        }
+        if cal.isDateInYesterday(d) {
+            return String(format: String(localized: "был(а) вчера в %@"), Self.presenceClock.string(from: d))
+        }
+        return String(format: String(localized: "был(а) %@"), Self.presenceDate.string(from: d))
     }
 }
 
