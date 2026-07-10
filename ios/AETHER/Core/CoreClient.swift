@@ -38,7 +38,9 @@ actor CoreClient {
     // сборках симулятора ненадёжен, а потеря ключа = потеря локальной истории.
     private static let kDbKey = "db_encryption_key"
 
-    private static func dbEncryptionKey() -> String {
+    /// Сохранённый ключ БД, если он ДОСТУПЕН прямо сейчас. Ничего не генерирует:
+    /// nil может означать и «первый запуск», и «Keychain ещё заперт» — решает вызывающий.
+    private static func storedDbKey() -> String? {
         if let key = Keychain.string(for: kDbKey) {
             #if DEBUG
             UserDefaults.standard.set(key, forKey: kDbKey)
@@ -51,6 +53,10 @@ actor CoreClient {
             return key
         }
         #endif
+        return nil
+    }
+
+    private static func makeAndStoreDbKey() -> String {
         let key = randomKeyB64()
         Keychain.set(key, for: kDbKey)
         #if DEBUG
@@ -59,16 +65,38 @@ actor CoreClient {
         return key
     }
 
+    // Открытие базы, которое НИКОГДА не уничтожает историю из-за недоступного
+    // ключа. Инцидент 10.07: запуск при запертом Keychain → ключ «не найден» →
+    // сгенерирован новый → база не открылась → её похоронили как corrupt.
+    // Теперь: нет ключа при существующей базе — ждём Keychain (ретраи), в худшем
+    // случае падаем (перезапуск безопаснее потери переписки). Переименование в
+    // .corrupt-* — только когда база реально не открывается ВАЛИДНЫМ ключом,
+    // и файл при этом остаётся рядом как бэкап.
     private static func openStoreRecovering(path: String) -> CoreStore {
-        if let store = try? CoreStore.open(path: path, encryptionKeyB64: dbEncryptionKey()) { return store }
         let fm = FileManager.default
+        let dbExists = fm.fileExists(atPath: path)
+
+        var key = storedDbKey()
+        if key == nil, dbExists {
+            // База есть, ключа «нет» — почти наверняка Keychain ещё недоступен.
+            for _ in 0..<20 where key == nil {
+                Thread.sleep(forTimeInterval: 0.5)
+                key = storedDbKey()
+            }
+            guard key != nil else {
+                fatalError("AETHER: ключ шифрования БД недоступен — отказываюсь пересоздавать базу с историей")
+            }
+        }
+        let effectiveKey = key ?? makeAndStoreDbKey()   // nil здесь = первый запуск
+
+        if let store = try? CoreStore.open(path: path, encryptionKeyB64: effectiveKey) { return store }
+        // Валидный ключ, но база не открылась — настоящее повреждение.
+        // Сохраняем файлы рядом (восстановимы вручную) и начинаем с чистой.
         let suffix = ".corrupt-\(Int(Date().timeIntervalSince1970))"
         for candidate in [path, path + "-wal", path + "-shm"] where fm.fileExists(atPath: candidate) {
             try? fm.moveItem(atPath: candidate, toPath: candidate + suffix)
         }
-        // Если SQLite не открывается даже после сохранения повреждённой копии,
-        // приложение действительно не может продолжить работу.
-        return try! CoreStore.open(path: path, encryptionKeyB64: dbEncryptionKey())
+        return try! CoreStore.open(path: path, encryptionKeyB64: effectiveKey)
     }
 
     private func selectStore(for userId: String) {
