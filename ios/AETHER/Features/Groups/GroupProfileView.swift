@@ -1,4 +1,5 @@
 import SwiftUI
+import PhotosUI
 
 // Профиль группы/канала в стиле Telegram: крупная шапка, «N участников, X онлайн»,
 // круглые кнопки-действия, секции-карточки, роли владелец/админ, онлайн-точки.
@@ -21,6 +22,7 @@ struct GroupProfileView: View {
     @State private var publicDraft = false
     @State private var usernameDraft = ""
     @State private var visibilityError: String?
+    @State private var groupAvatarItem: PhotosPickerItem?
 
     private var info: GroupInfo? { messaging.groups.info(groupId) }
     private var isChannel: Bool { info?.isChannel ?? false }
@@ -88,13 +90,42 @@ struct GroupProfileView: View {
     private var headerSection: some View {
         Section {
             VStack(spacing: 14) {
-                ZStack {
-                    Circle().fill(LinearGradient(colors: [palette.accent, palette.accent.opacity(0.6)],
-                                                 startPoint: .top, endPoint: .bottom))
-                    Image(systemName: isChannel ? "megaphone.fill" : "person.3.fill")
-                        .font(.system(size: 46)).foregroundStyle(.white)
+                ZStack(alignment: .bottomTrailing) {
+                    if let fid = info?.avatarFileId, !fid.isEmpty {
+                        Avatar(id: groupId, name: info?.name ?? groupId, size: 110,
+                               avatarURL: URL(string: "\(CoreClient.baseURL)/avatars/\(fid)"))
+                    } else {
+                        ZStack {
+                            Circle().fill(LinearGradient(colors: [palette.accent, palette.accent.opacity(0.6)],
+                                                         startPoint: .top, endPoint: .bottom))
+                            Image(systemName: isChannel ? "megaphone.fill" : "person.3.fill")
+                                .font(.system(size: 46)).foregroundStyle(.white)
+                        }
+                        .frame(width: 110, height: 110)
+                    }
+                    if isOwnerOrAdmin {
+                        PhotosPicker(selection: $groupAvatarItem, matching: .images) {
+                            Image(systemName: "camera.fill")
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundStyle(palette.onAccent)
+                                .frame(width: 32, height: 32)
+                                .background(palette.accent, in: Circle())
+                        }
+                        .offset(x: 2, y: 2)
+                    }
                 }
                 .frame(width: 110, height: 110)
+                .onChange(of: groupAvatarItem) { _, item in
+                    guard let item else { return }
+                    Task {
+                        defer { groupAvatarItem = nil }
+                        if let data = try? await item.loadTransferable(type: Data.self),
+                           let jpeg = MediaStore.downsample(data: data, maxPixel: 512)?
+                               .jpegData(compressionQuality: 0.85) {
+                            await messaging.groups.setGroupAvatar(groupId: groupId, data: jpeg, mime: "image/jpeg")
+                        }
+                    }
+                }
 
                 Text(info?.name ?? groupId)
                     .font(.title2.weight(.bold)).foregroundStyle(palette.textPrimary)

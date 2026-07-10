@@ -237,11 +237,13 @@ struct MessageBubble: View {
             Button {
                 UIPasteboard.general.string = p.text
             } label: { Label("Копировать", systemImage: "doc.on.doc") }
-            if outgoing {
+            // Авторство — по message.outgoing, а не по outgoing (в канале свои
+            // посты рисуются слева как «входящие», но править/удалять их можно).
+            if message.outgoing {
                 Button { onEdit() } label: { Label("Изменить", systemImage: "pencil") }
             }
         }
-        if outgoing {
+        if message.outgoing {
             Button(role: .destructive) { onDelete() } label: { Label("Удалить", systemImage: "trash") }
         }
     }

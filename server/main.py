@@ -284,7 +284,8 @@ def init_db() -> None:
         )
         for col, ddl in [("public_join", "INTEGER NOT NULL DEFAULT 0"),
                          ("join_key_b64", "TEXT"),
-                         ("username", "TEXT")]:
+                         ("username", "TEXT"),
+                         ("avatar_file_id", "TEXT")]:
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_name='groups' AND column_name=%s)""", (col,))
@@ -481,6 +482,7 @@ class AddGroupMemberRequest(BaseModel):
 class UpdateGroupRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
+    avatar_file_id: Optional[str] = None
 
 @app.on_event("startup")
 def startup() -> None:
@@ -655,7 +657,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
             group_rows = []
         else:
             cur.execute(
-                """SELECT id, name, description, is_channel, public_join, username FROM groups
+                """SELECT id, name, description, is_channel, public_join, username, avatar_file_id FROM groups
                    WHERE LOWER(name) LIKE LOWER(%s) OR LOWER(id) LIKE LOWER(%s)
                       OR LOWER(COALESCE(username,'')) LIKE LOWER(%s) LIMIT 20""",
                 (search_term, search_term, search_term)
@@ -677,6 +679,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
             "is_channel": bool(r["is_channel"]),
             "public_join": bool(r["public_join"]),
             "username": r["username"],
+            "avatar_file_id": r["avatar_file_id"],
         })
         
     return {"users": users, "groups": groups}
@@ -1227,7 +1230,10 @@ def update_group(group_id: str, body: UpdateGroupRequest, current_user: str = De
         if body.description is not None:
             updates.append("description = %s")
             values.append(body.description)
-        
+        if body.avatar_file_id is not None:
+            updates.append("avatar_file_id = %s")
+            values.append(body.avatar_file_id)
+
         if not updates:
             return {"ok": True}
         
@@ -1265,7 +1271,7 @@ def leave_group(group_id: str, current_user: str = Depends(get_current_user)) ->
 def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.public_join, g.username, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role
+            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.public_join, g.username, g.avatar_file_id, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role
                FROM groups g
                JOIN group_members gm ON LOWER(g.id) = LOWER(gm.group_id)
                WHERE LOWER(gm.user_id) = LOWER(%s)""",
@@ -1282,6 +1288,7 @@ def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
                 "is_channel": bool(r["is_channel"]),
                 "public_join": bool(r["public_join"]),
                 "username": r["username"],
+                "avatar_file_id": r["avatar_file_id"],
                 "linked_group_id": r["linked_group_id"],
                 "created_at": r["created_at"],
                 "encrypted_key_b64": r["encrypted_key_b64"],

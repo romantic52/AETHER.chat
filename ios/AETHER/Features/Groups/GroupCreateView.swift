@@ -305,6 +305,11 @@ struct GroupCreateView: View {
         Task {
             do {
                 let id = try await messaging.groups.create(name: nm, isChannel: channel, memberIds: members)
+                // Аватар: даунсэмплинг до 512px и загрузка (публичный, как у профилей).
+                if let avatarData,
+                   let jpeg = MediaStore.downsample(data: avatarData, maxPixel: 512)?.jpegData(compressionQuality: 0.85) {
+                    await messaging.groups.setGroupAvatar(groupId: id, data: jpeg, mime: "image/jpeg")
+                }
                 if isPublic {
                     if let err = await messaging.groups.setGroupPublic(groupId: id, isPublic: true, username: uname) {
                         // Создано, но публичность не включилась (имя занято/лимит) —
