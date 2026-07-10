@@ -5,113 +5,122 @@
 <h1 align="center">Æther</h1>
 
 <p align="center">
-  Защищённый E2E-мессенджер с Telegram-подобным UX.<br>
-  Rust-ядро · нативные iOS и Android · web-PWA · self-hosted сервер.
+  End-to-end encrypted messenger with a Telegram-like UX.<br>
+  Rust core · native iOS & Android · web PWA · self-hosted server.
 </p>
 
-Сообщения **шифруются на устройстве отправителя** и **расшифровываются только
-у получателя** — сервер видит лишь ciphertext.
+<p align="center"><a href="README.ru.md">Русская версия</a></p>
 
-## Философия
+Messages are **encrypted on the sender's device** and **decrypted only by the
+recipient** — the server sees nothing but ciphertext.
 
-- **Свой сервер за 10 минут.** Официальные серверы существуют, но любой может
-  арендовать VPS и поднять собственный — клиенты указывают URL сервера при входе.
-  Твоя переписка живёт там, где решил ты.
-- **Минимум данных.** Аккаунт — это `@username` + пароль. Ни телефона, ни почты,
-  ни адресной книги. Сервер хранит только публичные ключи и зашифрованные конверты.
-- **Ноль трекинга.** Нет аналитики, нет рекламных SDK, нет телеметрии.
-- **История — только у тебя.** Локальная база зашифрована (SQLCipher), сервер
-  хранит сообщения лишь до доставки. Цена приватности: потерял устройство —
-  потерял историю.
-- **Публичное — публично, приватное — приватно.** E2E для личек, групп и
-  приватных каналов без компромиссов. Публичные каналы (открытая подписка по
-  @имени) — единственное место, где ключ знает сервер: их контент публичен
-  по определению владельца.
+## Philosophy
 
-## Возможности
+- **Your own server in 10 minutes.** Official servers exist, but anyone can
+  rent a VPS and run their own — clients enter the server URL at login.
+  Your conversations live wherever you decide.
+- **Minimal data.** An account is a `@username` + password. No phone number,
+  no email, no address book. The server stores only public keys and encrypted
+  envelopes.
+- **Zero tracking.** No analytics, no ad SDKs, no telemetry.
+- **Your history stays with you.** The local database is encrypted (SQLCipher);
+  the server keeps messages only until delivery. The price of privacy: lose
+  the device — lose the history.
+- **Public is public, private is private.** Uncompromised E2E for DMs, groups
+  and private channels. Public channels (open subscription by @name) are the
+  single place where the server knows the key — their content is public by
+  the owner's own choice.
 
-Лички, группы и каналы (публичные с @именами и подпиской из поиска, приватные
-по приглашению) · комментарии к постам · голосовые и видео-кружки · фото/видео/файлы
-с полной зачисткой метаданных (EXIF/GPS) · аудио- и видеозвонки (WebRTC, p2p) ·
-реакции, ответы, редактирование · TOFU-сверка ключей · Face ID/PIN-блокировка ·
-мультиаккаунт (до 5) · глобальный поиск · тёмные/светлые темы, liquid glass.
+## Features
 
-## Архитектура
+DMs, groups and channels (public with @usernames and one-tap subscription from
+search, private by invitation) · post comments · voice messages and video
+circles · photos/videos/files with full metadata stripping (EXIF/GPS) ·
+audio & video calls (WebRTC, p2p) · reactions, replies, editing · TOFU key
+verification · Face ID/PIN lock · multi-account (up to 5) · global search ·
+dark/light themes, liquid glass.
 
-| Компонент | Стек | Назначение |
-|-----------|------|------------|
-| `core/` | Rust + UniFFI | Общее ядро: крипта, wire-протокол, сетевой клиент, локальное хранилище (SQLite). Используется Android и iOS через сгенерированные биндинги |
-| `server/main.py` | FastAPI + PostgreSQL | Relay: хранит публичные ключи и зашифрованные сообщения, не видит plaintext |
-| `android/` | Kotlin + Jetpack Compose | Нативное Android-приложение |
-| `ios/` | SwiftUI + Liquid Glass | Нативное iOS-приложение (см. [ios/README.md](ios/README.md)); переиспользует то же ядро |
-| `web/` | Vanilla JS + WebCrypto/TweetNaCl | Браузерный клиент (PWA), протокол-совместим с остальными клиентами |
+## Architecture
 
-Единый протокол между клиентами описан в [WIRE_PROTOCOL.md](WIRE_PROTOCOL.md) —
-один аккаунт работает в браузере, на Android и на iOS.
+| Component | Stack | Purpose |
+|-----------|-------|---------|
+| `core/` | Rust + UniFFI | Shared core: crypto, wire protocol, network client, local storage (SQLite). Used by Android and iOS through generated bindings |
+| `server/main.py` | FastAPI + PostgreSQL | Relay: stores public keys and encrypted messages, never sees plaintext |
+| `android/` | Kotlin + Jetpack Compose | Native Android app |
+| `ios/` | SwiftUI + Liquid Glass | Native iOS app (see [ios/README.md](ios/README.md)); reuses the same core |
+| `web/` | Vanilla JS + WebCrypto/TweetNaCl | Browser client (PWA), protocol-compatible with the other clients |
 
-### Криптография
-- Личные сообщения: `crypto_box` (Curve25519, XSalsa20-Poly1305).
-- Группы: AES-GCM общим ключом, ключ роздан участникам через `crypto_box`.
-- Ключи: случайная пара, приватный ключ зашифрован паролем (PBKDF2 100k + AES-GCM)
-  и хранится на сервере как резервная копия.
-- Медиа: AES-GCM, шифротекст в `/upload`, ключ — внутри зашифрованного сообщения.
+The single cross-client protocol is described in
+[WIRE_PROTOCOL.md](WIRE_PROTOCOL.md) — one account works in the browser, on
+Android and on iOS.
 
-## Дорожная карта
+### Cryptography
+- Direct messages: `crypto_box` (Curve25519, XSalsa20-Poly1305).
+- Groups: AES-GCM with a shared key, distributed to members via `crypto_box`.
+- Keys: random keypair; the private key is encrypted with the password
+  (PBKDF2 100k + AES-GCM) and stored on the server as a backup.
+- Media: AES-GCM; ciphertext goes to `/upload`, the key travels inside the
+  encrypted message.
 
-Цель — лёгкий нативный мессенджер на всех платформах с общим защищённым ядром
-(модель TDLib):
+## Roadmap
 
-1. **Общее ядро на Rust** (крипта + протокол + хранилище), биндинги через UniFFI.
-2. **ПК-приложение** на Compose Multiplatform (полноценное нативное, не веб-обёртка).
-3. Web остаётся браузерным клиентом, протокол-совместимым через то же ядро (WASM).
+The goal is a lightweight native messenger on every platform with a shared
+secure core (the TDLib model):
 
-## Свой сервер (self-hosting)
+1. **Shared Rust core** (crypto + protocol + storage), bindings via UniFFI.
+2. **Desktop app** on Compose Multiplatform (fully native, not a web wrapper).
+3. Web stays a browser client, protocol-compatible through the same core (WASM).
 
-Нужны: Linux VPS, Python 3.10+, PostgreSQL, реверс-прокси с TLS (Caddy/nginx).
+## Self-hosting
+
+You need: a Linux VPS, Python 3.10+, PostgreSQL, and a TLS reverse proxy
+(Caddy/nginx).
 
 ```bash
 git clone https://github.com/romantic52/AETHER.chat && cd AETHER.chat
 pip install -r requirements.txt
-# Переменные окружения: DB_NAME/DB_USER/DB_PASS/DB_HOST, ALLOWED_ORIGINS,
-# опционально APNS_* для iOS-пушей — см. начало server/main.py и server/apns.py.
+# Environment variables: DB_NAME/DB_USER/DB_PASS/DB_HOST, ALLOWED_ORIGINS,
+# optionally APNS_* for iOS pushes — see the top of server/main.py and server/apns.py.
 uvicorn server.main:app --host 127.0.0.1 --port 8000
 ```
 
-Миграции БД применяются автоматически при старте. Наружу — только через
-TLS-прокси. Windows-скрипты для разработки: [`scripts/run_server.ps1`](scripts/run_server.ps1).
+Database migrations run automatically on startup. Expose only through the TLS
+proxy. Windows dev scripts: [`scripts/run_server.ps1`](scripts/run_server.ps1).
 
-## Ядро (Rust)
+## Core (Rust)
 
-`core/` — общая крипта/протокол/хранилище для Android и iOS. Сборка под Android:
-[`core/build_android.ps1`](core/build_android.ps1) (кладёт `.so` в `android/app/src/main/jniLibs`
-и генерирует Kotlin-биндинги). Сборка под iOS: [`ios/build_core_ios.sh`](ios/build_core_ios.sh)
-(на macOS — собирает XCFramework + Swift-биндинги).
+`core/` is the shared crypto/protocol/storage for Android and iOS. Android
+build: [`core/build_android.ps1`](core/build_android.ps1) (drops `.so` into
+`android/app/src/main/jniLibs` and generates Kotlin bindings). iOS build:
+[`ios/build_core_ios.sh`](ios/build_core_ios.sh) (macOS — builds the
+XCFramework + Swift bindings).
 
 ## Android
 
-Откройте папку [`android/`](android/) в Android Studio. Перед первой сборкой
-выполните `core/build_android.ps1`, иначе не будет `.so` и Kotlin-биндингов ядра.
-Сборка APK из консоли: [`scripts/build_apk.ps1`](scripts/build_apk.ps1)
-(через PowerShell + gradlew; bat/cmd ломаются на кодировке).
-Эмулятор обращается к серверу по `http://10.0.2.2:8765`.
-В приложении задайте URL своего сервера на экране входа.
+Open [`android/`](android/) in Android Studio. Run `core/build_android.ps1`
+before the first build, otherwise the core `.so` and Kotlin bindings are
+missing. Console APK build: [`scripts/build_apk.ps1`](scripts/build_apk.ps1)
+(PowerShell + gradlew; bat/cmd break on encoding). The emulator reaches the
+server at `http://10.0.2.2:8765`. Set your server URL on the login screen.
 
 ## iOS
 
-Смотрите [`ios/README.md`](ios/README.md) — сборка возможна только на macOS
-(Xcode) либо через готовый пайплайн GitHub Actions ([`.github/workflows/ios.yml`](.github/workflows/ios.yml)).
+See [`ios/README.md`](ios/README.md) — building requires macOS (Xcode) or the
+ready-made GitHub Actions pipeline
+([`.github/workflows/ios.yml`](.github/workflows/ios.yml)).
 
 ## Web
 
-Статика в [`web/`](web/), отдаётся сервером. Тесты протокола: `node web/test_wire.js`.
+Static files live in [`web/`](web/) and are served by the server. Protocol
+tests: `node web/test_wire.js`.
 
-## Безопасность
+## Security
 
-См. [SECURITY_REVIEW_P0-P2.md](SECURITY_REVIEW_P0-P2.md) и
-[P6_TOFU_DESIGN.md](P6_TOFU_DESIGN.md) (TOFU-пиннинг ключей).
-Нашли уязвимость — откройте issue или напишите владельцу репозитория.
+See [SECURITY_REVIEW_P0-P2.md](SECURITY_REVIEW_P0-P2.md) and
+[P6_TOFU_DESIGN.md](P6_TOFU_DESIGN.md) (TOFU key pinning).
+Found a vulnerability — open an issue or contact the repository owner.
 
-## Лицензия
+## License
 
-[AGPL-3.0](LICENSE) — форки и хостинг модифицированных серверов обязаны
-открывать исходники. Приватность не должна закрываться.
+[AGPL-3.0](LICENSE) — forks and hosted modified servers must publish their
+source. Privacy should never go closed.
