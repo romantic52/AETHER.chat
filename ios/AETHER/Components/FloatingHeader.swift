@@ -7,7 +7,7 @@ import SwiftUI
 // что у кастомной шапки экрана «Чаты».
 struct FloatingHeader: View {
     @Environment(\.palette) private var palette
-    var title: String
+    var title: LocalizedStringKey
     var large = true
     var leading: AnyView? = nil
     var trailing: AnyView? = nil
@@ -62,7 +62,7 @@ struct HeaderIconButton: View {
 // который живёт в системном навбаре и тянет за собой его подложку).
 struct FloatingSearchBar: View {
     @Environment(\.palette) private var palette
-    var prompt = "Поиск"
+    var prompt: LocalizedStringKey = "Поиск"
     @Binding var text: String
 
     var body: some View {
