@@ -55,6 +55,8 @@ struct SettingsView: View {
     // MARK: - Аккаунты (мультиаккаунт, до 5)
 
     @State private var showAddAccount = false
+    @State private var wallpaperItem: PhotosPickerItem?
+    @ObservedObject private var wallpaperStore = WallpaperStore.shared
 
     private var accountsSection: some View {
         Section {
@@ -231,6 +233,37 @@ struct SettingsView: View {
                             .font(.caption).foregroundStyle(palette.textSecondary)
                     }
                     Slider(value: $appearance.edgeDimStrength, in: 0.05...0.8)
+                }
+            }
+
+            // Обои чата: своё фото фоном во всех чатах.
+            PhotosPicker(selection: $wallpaperItem, matching: .images) {
+                HStack {
+                    SettingsLabel("Обои чата", icon: "photo.fill", color: .mint)
+                    Spacer()
+                    if let img = wallpaperStore.image {
+                        Image(uiImage: img)
+                            .resizable().scaledToFill()
+                            .frame(width: 34, height: 34)
+                            .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    } else {
+                        Text("Стандартные")
+                            .font(.caption).foregroundStyle(palette.textSecondary)
+                    }
+                }
+            }
+            .onChange(of: wallpaperItem) { _, item in
+                guard let item else { return }
+                Task {
+                    defer { wallpaperItem = nil }
+                    if let data = try? await item.loadTransferable(type: Data.self) {
+                        wallpaperStore.set(data)
+                    }
+                }
+            }
+            if wallpaperStore.image != nil {
+                Button(role: .destructive) { wallpaperStore.clear() } label: {
+                    SettingsLabel("Убрать обои", icon: "photo", color: .gray)
                 }
             }
         }
