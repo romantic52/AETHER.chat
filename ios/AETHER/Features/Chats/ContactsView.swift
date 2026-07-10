@@ -22,15 +22,30 @@ struct ContactsView: View {
         var seen = Set<String>()
         return messaging.chats
             .filter { !$0.isGroup && $0.peerId != own && seen.insert($0.peerId).inserted }
-            .filter {
-                query.isEmpty || $0.title.localizedCaseInsensitiveContains(query) ||
-                    $0.peerId.localizedCaseInsensitiveContains(query)
+            .filter { chat in
+                guard !query.isEmpty else { return true }
+                let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+                let raw = q.hasPrefix("@") ? String(q.dropFirst()) : q
+                guard !raw.isEmpty else { return true }
+                return chat.title.lowercased().contains(raw) ||
+                    chat.peerId.lowercased().contains(raw) ||
+                    (messaging.profiles[chat.peerId]?.username?.lowercased().contains(raw) ?? false) ||
+                    (messaging.profiles[chat.peerId]?.displayName?.lowercased().contains(raw) ?? false)
             }
             .sorted { ($0.title.isEmpty ? $0.peerId : $0.title).localizedCaseInsensitiveCompare($1.title.isEmpty ? $1.peerId : $1.title) == .orderedAscending }
     }
 
+    // Как вкладка — живёт в общем стеке HomeView; как шторка («Новый чат»,
+    // глобальный поиск) — со своим NavigationStack (отдельный контекст показа).
     var body: some View {
-        NavigationStack {
+        if onPick != nil || globalSearch {
+            NavigationStack { core }
+        } else {
+            core
+        }
+    }
+
+    private var core: some View {
             ZStack {
                 palette.background.ignoresSafeArea()
                 List {
@@ -113,9 +128,11 @@ struct ContactsView: View {
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .scrollDismissesKeyboard(.interactively)
                 .safeAreaPadding(.bottom, 110)
             }
             .toolbar(.hidden, for: .navigationBar)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
             .safeAreaInset(edge: .top) {
                 VStack(spacing: 0) {
                     FloatingHeader(
@@ -140,11 +157,6 @@ struct ContactsView: View {
             .navigationDestination(item: $navPeer) { peer in
                 ChatView(peerId: peer, isGroup: false).environmentObject(messaging)
             }
-            // См. ChatsListView: мгновенный возврат таб-бара при выходе из чата.
-            .onChange(of: navPeer) { _, peer in
-                if peer == nil { withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = false } }
-            }
-        }
     }
 
     private func contactRow(id: String, name: String) -> some View {
@@ -175,12 +187,13 @@ struct ContactsView: View {
         searchGeneration = UUID()
         let generation = searchGeneration
         let trimmed = q.trimmingCharacters(in: .whitespaces)
-        guard trimmed.count >= 2 else { results = []; searching = false; return }
+        let raw = trimmed.hasPrefix("@") ? String(trimmed.dropFirst()) : trimmed
+        guard raw.count >= 2 else { results = []; searching = false; return }
         searchTask = Task {
             try? await Task.sleep(nanoseconds: 300_000_000)
             guard !Task.isCancelled else { return }
             searching = true
-            let found = (try? await session.core.searchUsers(trimmed)) ?? []
+            let found = (try? await session.core.searchUsers(raw)) ?? []
             guard !Task.isCancelled, generation == searchGeneration else { return }
             results = found.filter { $0.userId.lowercased() != session.myId.lowercased() }
             searching = false

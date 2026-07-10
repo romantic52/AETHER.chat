@@ -41,7 +41,20 @@ final class AppDelegate: NSObject, UIApplicationDelegate, UNUserNotificationCent
                      didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         UNUserNotificationCenter.current().delegate = self
         AppRefresh.shared.register()
+        // APNs: токен нужен и до включения тумблера уведомлений — сервер шлёт
+        // generic-баннеры только офлайн-получателям, текста в них нет.
+        PushRegistrar.requestRegistration()
         return true
+    }
+
+    func application(_ application: UIApplication,
+                     didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        PushRegistrar.uploadToken(deviceToken)
+    }
+
+    func application(_ application: UIApplication,
+                     didFailToRegisterForRemoteNotificationsWithError error: Error) {
+        // Нет сети/окружения без aps — не критично, WS-доставка работает.
     }
 
     // Тап по локальному уведомлению → открыть чат отправителя.

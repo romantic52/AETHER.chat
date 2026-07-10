@@ -4,47 +4,48 @@ import UIKit
 // Домашний экран: контент + нижний таб-бар в стиле Telegram (5 вкладок).
 struct HomeView: View {
     @EnvironmentObject var session: Session
+    @EnvironmentObject var appearance: AppearanceSettings
     @Environment(\.palette) private var palette
     @Environment(\.scenePhase) private var scenePhase
     @StateObject private var messaging: Messaging
     @StateObject private var chrome = ChromeState()
-    @State private var tab: Tab = .chats
-
-    enum Tab: Hashable { case contacts, calls, chats, settings }
 
     init() {
         _messaging = StateObject(wrappedValue: Messaging())
     }
 
     var body: some View {
-        ZStack {
-            palette.background.ignoresSafeArea()
-
-            Group {
-                switch tab {
-                case .contacts: ContactsView()
-                case .calls: CallsView()
-                case .chats: ChatsListView()
-                case .settings: SettingsView()
-                }
-            }
-            .environmentObject(messaging)
-            .environmentObject(chrome)
-        }
-        .ignoresSafeArea(edges: .bottom)
-        .overlay(alignment: .bottom) {
+        // ЕДИНЫЙ NavigationStack на всё приложение и ЕДИНСТВЕННЫЙ таб-бар:
+        // пуш чата/архива накрывает и вкладку, и бар (свайп-бэк показывает бар
+        // сразу из-под уезжающего экрана), а смена вкладок бар вообще не трогает —
+        // никаких пересозданий стекла, призраков и рывков.
+        NavigationStack {
             ZStack(alignment: .bottom) {
-                EdgeDim(edge: .bottom, boost: 1.6)
-                    .frame(height: 120)
-                    .ignoresSafeArea(edges: .bottom)
+                ZStack {
+                    palette.background.ignoresSafeArea()
+                    // Вкладки живут одновременно (скролл/состояние не сбрасываются),
+                    // переключение — прозрачностью с настраиваемым фейдом.
+                    tabRoot(ContactsView(), .contacts)
+                    tabRoot(CallsView(), .calls)
+                    tabRoot(ChatsListView(), .chats)
+                    tabRoot(SettingsView(), .settings)
+                }
+                .frame(maxHeight: .infinity)
 
-                TabBar(tab: $tab, unread: messaging.totalUnread)
+                ZStack(alignment: .bottom) {
+                    EdgeDim(edge: .bottom, boost: 1.6)
+                        .frame(height: 120)
+                        .ignoresSafeArea(edges: .bottom)
+                    TabBar(tab: $chrome.tab, unread: messaging.totalUnread)
+                }
+                .zIndex(10)
             }
-            .opacity(chrome.tabBarHidden ? 0 : 1)
-            .offset(y: 34)
-            .allowsHitTesting(!chrome.tabBarHidden)
-            .zIndex(10)
+            .ignoresSafeArea(edges: .bottom)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .toolbar(.hidden, for: .navigationBar)
         }
+        .environmentObject(messaging)
+        .environmentObject(chrome)
         .overlay { CallOverlay(calls: messaging.calls) }
         .onAppear {
             messaging.rebind(session: session)
@@ -53,9 +54,9 @@ struct HomeView: View {
             if scenePhase == .active { messaging.start() }
             #if DEBUG
             switch ProcessInfo.processInfo.environment["AETHER_TAB"] {
-            case "settings": tab = .settings
-            case "contacts": tab = .contacts
-            case "calls": tab = .calls
+            case "settings": chrome.tab = .settings
+            case "contacts": chrome.tab = .contacts
+            case "calls": chrome.tab = .calls
             default: break
             }
             #endif
@@ -66,11 +67,23 @@ struct HomeView: View {
         // Deep link из островка/уведомления: переключаемся на вкладку чатов,
         // сам чат откроет ChatsListView (подписан на то же уведомление).
         .onReceive(NotificationCenter.default.publisher(for: NotificationsManager.openChatNotification)) { _ in
-            tab = .chats
+            chrome.tab = .chats
         }
         .onDisappear { messaging.stop() }
     }
 
+    @ViewBuilder
+    private func tabRoot(_ view: some View, _ tab: AppTab) -> some View {
+        let active = chrome.tab == tab
+        view
+            .opacity(active ? 1 : 0)
+            // Телеграмный фейд контента; бар — отдельный слой, его не трогает.
+            .animation(appearance.tabFadeEnabled
+                       ? .easeInOut(duration: appearance.tabFadeDuration) : nil,
+                       value: active)
+            .allowsHitTesting(active)
+            .accessibilityHidden(!active)
+    }
 }
 
 // Наблюдает за CallManager напрямую (вложенный ObservableObject не поднимает изменения
@@ -87,18 +100,22 @@ struct CallOverlay: View {
 }
 
 struct TabBar: View {
-    @Binding var tab: HomeView.Tab
+    @Binding var tab: AppTab
     var unread: Int64
     @Environment(\.palette) private var palette
     @EnvironmentObject var appearance: AppearanceSettings
 
-    private let tabs: [HomeView.Tab] = [.contacts, .calls, .chats, .settings]
+    private let tabs: [AppTab] = [.contacts, .calls, .chats, .settings]
     private let barHeight: CGFloat = 58
 
+    @EnvironmentObject var chrome: ChromeState
     @State private var barWidth: CGFloat = 0
-    @State private var isPressing = false
-    @State private var livePosition: CGFloat?
     @State private var hapticTarget: Int?
+
+    // Транзиентный стейт жеста — в ChromeState: жест может начаться на баре
+    // одной вкладки, а рисоваться уже на баре другой (вкладки живут вместе).
+    private var isPressing: Bool { chrome.barPressing }
+    private var livePosition: CGFloat? { chrome.barLivePosition }
 
     private var activePosition: CGFloat { livePosition ?? CGFloat(tabs.firstIndex(of: tab) ?? 0) }
 
@@ -123,9 +140,8 @@ struct TabBar: View {
 
                 if barWidth > 0 {
                     let segment = barWidth / CGFloat(tabs.count)
-                    // Со стеклом — стеклянная капсула (как было); без стекла
-                    // surface-подложка не рисуется (surfaceWhenOff: false) —
-                    // остаётся чистый акцентный овал выбора.
+                    // Единственный бар приложения: овал просто плавно едет,
+                    // стекло живёт постоянно — без пересозданий при смене вкладок.
                     Capsule()
                         .fill(palette.accent.opacity(
                             appearance.glassEnabled ? (isPressing ? 0.22 : 0.12)
@@ -150,8 +166,8 @@ struct TabBar: View {
         DragGesture(minimumDistance: 0, coordinateSpace: .local)
             .onChanged { value in
                 guard barWidth > 0 else { return }
-                if !isPressing {
-                    isPressing = true
+                if !chrome.barPressing {
+                    chrome.barPressing = true
                     UIImpactFeedbackGenerator(style: .soft).impactOccurred()
                 }
                 let segment = barWidth / CGFloat(tabs.count)
@@ -159,7 +175,7 @@ struct TabBar: View {
                 // внутреннего padding бара, чтобы x=0 совпадал с первой вкладкой.
                 let adjustedX = value.location.x - 8
                 let pos = min(CGFloat(tabs.count - 1), max(0, adjustedX / segment))
-                livePosition = pos
+                chrome.barLivePosition = pos
                 let target = tabIndex(at: pos)
                 if tabs.indices.contains(target) {
                     if hapticTarget != target {
@@ -172,7 +188,7 @@ struct TabBar: View {
                 }
             }
             .onEnded { value in
-                isPressing = false
+                chrome.barPressing = false
                 hapticTarget = nil
                 let moved = abs(value.translation.width) + abs(value.translation.height)
                 
@@ -192,7 +208,7 @@ struct TabBar: View {
                     }
                 }
                 
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) { livePosition = nil }
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.86)) { chrome.barLivePosition = nil }
             }
     }
 
@@ -202,7 +218,7 @@ struct TabBar: View {
         return max(0, min(tabs.count - 1, bumped))
     }
 
-    private func item(_ t: HomeView.Tab) -> some View {
+    private func item(_ t: AppTab) -> some View {
         let selected = tab == t
         return VStack(spacing: 3) {
             ZStack(alignment: .topTrailing) {
@@ -229,16 +245,16 @@ struct TabBar: View {
         .contentShape(Rectangle())
     }
 
-    private func select(_ value: HomeView.Tab) {
+    private func select(_ value: AppTab) {
         guard tab != value else { return }
         UISelectionFeedbackGenerator().selectionChanged()
         withAnimation(.snappy(duration: 0.2, extraBounce: 0.02)) {
             tab = value
-            livePosition = nil
+            chrome.barLivePosition = nil
         }
     }
 
-    private func icon(for tab: HomeView.Tab) -> String {
+    private func icon(for tab: AppTab) -> String {
         switch tab {
         case .contacts: return "person.crop.circle"
         case .calls: return "phone.fill"
@@ -247,7 +263,7 @@ struct TabBar: View {
         }
     }
 
-    private func title(for tab: HomeView.Tab) -> String {
+    private func title(for tab: AppTab) -> String {
         switch tab {
         case .contacts: return "Контакты"
         case .calls: return "Звонки"
@@ -267,8 +283,9 @@ private struct CallsContent: View {
     let connected: Bool
     @Environment(\.palette) private var palette
 
+    // Без собственного NavigationStack — общий стек HomeView.
     var body: some View {
-        NavigationStack {
+        Group {
             ZStack {
                 palette.background.ignoresSafeArea()
                 if call.history.isEmpty {

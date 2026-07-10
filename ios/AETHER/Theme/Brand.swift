@@ -199,6 +199,9 @@ final class AppearanceSettings: ObservableObject {
     @Published var bubbleTails: Bool { didSet { defaults.set(bubbleTails, forKey: "bubbleTails") } }
     @Published var edgeDimEnabled: Bool { didSet { defaults.set(edgeDimEnabled, forKey: "edgeDimEnabled") } }
     @Published var edgeDimStrength: Double { didSet { defaults.set(edgeDimStrength, forKey: "edgeDimStrength") } }
+    /// Анимация смены вкладок: вкл/выкл и длительность (0.05–0.5 с).
+    @Published var tabFadeEnabled: Bool { didSet { defaults.set(tabFadeEnabled, forKey: "tabFadeEnabled") } }
+    @Published var tabFadeDuration: Double { didSet { defaults.set(tabFadeDuration, forKey: "tabFadeDuration") } }
 
     private let defaults: UserDefaults
 
@@ -217,6 +220,8 @@ final class AppearanceSettings: ObservableObject {
         bubbleTails = defaults.object(forKey: "bubbleTails") as? Bool ?? true
         edgeDimEnabled = defaults.object(forKey: "edgeDimEnabled") as? Bool ?? true
         edgeDimStrength = defaults.object(forKey: "edgeDimStrength") as? Double ?? 0.25
+        tabFadeEnabled = defaults.object(forKey: "tabFadeEnabled") as? Bool ?? true
+        tabFadeDuration = defaults.object(forKey: "tabFadeDuration") as? Double ?? 0.22
     }
 
     var palette: Palette { theme.palette }
