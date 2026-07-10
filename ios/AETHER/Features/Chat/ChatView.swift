@@ -505,6 +505,7 @@ struct ChatView: View {
                         case .message(let msg, let tail, let showSender):
                             MessageBubble(
                                 message: msg, isGroup: isGroup, channelStyle: isChannel,
+                                viewCount: isChannel ? vm.viewCounts[msg.id] : nil,
                                 showTail: tail, showSender: showSender,
                                 myId: vm.myId, readTick: palette.readTick,
                                 onQuoteTap: {
