@@ -11,6 +11,8 @@ struct MessageBubble: View {
     let isGroup: Bool
     /// Канал: посты всегда слева (стиль входящих), независимо от автора.
     var channelStyle: Bool = false
+    /// Просмотры поста (только каналы): глазик + число рядом со временем.
+    var viewCount: Int? = nil
     let showTail: Bool
     let showSender: Bool
     let myId: String
@@ -111,6 +113,12 @@ struct MessageBubble: View {
             .padding(.bottom, 2)
 
             HStack(spacing: 4) {
+                if channelStyle, let views = viewCount {
+                    Image(systemName: "eye.fill").font(.system(size: 9))
+                        .foregroundStyle(bubbleSecondary)
+                    Text(Self.compactCount(views))
+                        .font(.system(size: 10)).foregroundStyle(bubbleSecondary)
+                }
                 if message.edited {
                     Text("изм.").font(.system(size: 10)).foregroundStyle(bubbleSecondary)
                 }
@@ -124,6 +132,15 @@ struct MessageBubble: View {
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
         .modifier(BubbleContainer(outgoing: outgoing, showTail: showTail, palette: palette))
+    }
+
+    /// 1 200 → «1.2K», как в Telegram.
+    static func compactCount(_ n: Int) -> String {
+        switch n {
+        case ..<1000: return "\(n)"
+        case ..<1_000_000: return String(format: "%.1fK", Double(n) / 1000).replacingOccurrences(of: ".0K", with: "K")
+        default: return String(format: "%.1fM", Double(n) / 1_000_000).replacingOccurrences(of: ".0M", with: "M")
+        }
     }
 
     private func replyQuote(_ text: String) -> some View {

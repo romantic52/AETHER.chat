@@ -30,6 +30,8 @@ final class ChatViewModel: ObservableObject {
     @Published private(set) var timeline: [ChatTimelineRow] = []
     @Published private(set) var canLoadMore = true
     @Published private(set) var loading = false
+    /// Просмотры постов (только каналы): message_id → уникальные зрители.
+    @Published private(set) var viewCounts: [String: Int] = [:]
 
     private(set) var peerId = ""
     private(set) var isGroup = false
@@ -123,6 +125,7 @@ final class ChatViewModel: ObservableObject {
         // Первая загрузка — мгновенно, без анимации.
         if oldCount == 0 {
             rebuild()
+            refreshViews()
             return
         }
 
@@ -139,6 +142,7 @@ final class ChatViewModel: ObservableObject {
             withAnimation(AetherUI.sendAnimation) {
                 rebuild()
             }
+            refreshViews()
         } else if reactionsChanged {
             withAnimation(.spring(response: 0.32, dampingFraction: 0.82)) {
                 rebuild()
@@ -195,6 +199,18 @@ final class ChatViewModel: ObservableObject {
 
     func retry(_ message: ChatMessage) {
         messaging?.retryMessage(message, isGroup: isGroup)
+    }
+
+    /// Канал: отметить загруженные посты просмотренными и обновить счётчики.
+    func refreshViews() {
+        guard messaging?.groups.info(peerId)?.isChannel == true else { return }
+        let ids = messages.suffix(200).map(\.id)
+        guard !ids.isEmpty else { return }
+        Task { [weak self] in
+            let counts = await ChannelDirectory.markViews(ids)
+            guard !counts.isEmpty else { return }
+            await MainActor.run { self?.viewCounts.merge(counts) { _, new in new } }
+        }
     }
 
     func onAppear() async {

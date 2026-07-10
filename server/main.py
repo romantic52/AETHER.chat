@@ -259,6 +259,13 @@ def init_db() -> None:
                 acked_at TEXT NOT NULL,
                 PRIMARY KEY (message_id, user_id)
             );
+            -- Просмотры постов каналов: уникальный зритель на сообщение.
+            CREATE TABLE IF NOT EXISTS post_views (
+                message_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                viewed_at TEXT NOT NULL,
+                PRIMARY KEY (message_id, user_id)
+            );
             -- APNs-токены устройств: kind = apns (баннеры) | voip (звонки/CallKit).
             -- Токен уникален per-устройство; смена аккаунта на устройстве — перезапись.
             CREATE TABLE IF NOT EXISTS device_push_tokens (
@@ -807,6 +814,30 @@ def join_public_group(group_id: str, current_user: str = Depends(get_current_use
             (group_id.lower(), current_user.lower(), wrapped),
         )
     return {"ok": True}
+
+
+class PostViewsRequest(BaseModel):
+    message_ids: list[str] = Field(min_length=1, max_length=200)
+
+
+@app.post("/messages/views")
+def post_views(body: PostViewsRequest, current_user: str = Depends(get_current_user)) -> dict:
+    """Отметить просмотры постов и вернуть счётчики по этим id.
+    Идемпотентно: повторный просмотр того же пользователя не считается."""
+    now = _utc_now()
+    with db_conn() as cur:
+        cur.executemany(
+            """INSERT INTO post_views (message_id, user_id, viewed_at)
+               VALUES (%s, %s, %s) ON CONFLICT (message_id, user_id) DO NOTHING""",
+            [(mid, current_user.lower(), now) for mid in body.message_ids],
+        )
+        cur.execute(
+            """SELECT message_id, COUNT(*) AS n FROM post_views
+               WHERE message_id = ANY(%s) GROUP BY message_id""",
+            (body.message_ids,),
+        )
+        counts = {r["message_id"]: r["n"] for r in cur.fetchall()}
+    return {"views": counts}
 
 
 class RegisterDeviceRequest(BaseModel):

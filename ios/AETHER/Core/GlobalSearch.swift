@@ -45,6 +45,23 @@ enum ChannelDirectory {
         return await requestDetailed("groups/\(groupId)/public", method: "PUT", body: body)
     }
 
+    /// Просмотры постов канала: отмечает просмотренными и возвращает счётчики.
+    static func markViews(_ messageIds: [String]) async -> [String: Int] {
+        guard !messageIds.isEmpty,
+              let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
+              let url = URL(string: "\(CoreClient.baseURL)/messages/views") else { return [:] }
+        var req = URLRequest(url: url)
+        req.httpMethod = "POST"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["message_ids": messageIds])
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let views = obj["views"] as? [String: Int] else { return [:] }
+        return views
+    }
+
     /// Частичное обновление группы (name/description/avatar_file_id).
     static func updateGroup(_ groupId: String, fields: [String: Any]) async -> Bool {
         await request("groups/\(groupId)", method: "PUT", body: fields)
