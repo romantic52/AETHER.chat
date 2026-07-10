@@ -155,9 +155,11 @@ struct GroupProfileView: View {
 
     // MARK: - Круглые кнопки-действия
 
+    // Ряд действий — равные карточки во всю ширину с одинаковыми зазорами
+    // (как в Telegram), а не круглые кнопки, разлетевшиеся по пустой строке.
     private var actionsSection: some View {
         Section {
-            HStack(spacing: 0) {
+            HStack(spacing: 10) {
                 actionButton(icon: "bubble.left.fill", title: "Чат") { dismiss() }
                 if !isChannel {
                     actionButton(icon: "phone.fill", title: "Звонок") {
@@ -173,9 +175,8 @@ struct GroupProfileView: View {
                     Task { await messaging.setMuted(groupId, !isMuted) }
                 }
             }
-            .frame(maxWidth: .infinity)
-            .padding(.vertical, 8)
             .listRowBackground(Color.clear)
+            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
         }
     }
 
@@ -215,17 +216,22 @@ struct GroupProfileView: View {
         }
     }
 
-    private func actionButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
+    private func actionButton(icon: String, title: LocalizedStringKey, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 18))
+            VStack(spacing: 5) {
+                Image(systemName: icon).font(.system(size: 19, weight: .medium))
                     .foregroundStyle(palette.accent)
-                    .frame(width: 50, height: 50)
-                    .liquidGlass(Circle(), interactive: true)
-                Text(title).font(.caption).foregroundStyle(palette.textSecondary)
+                Text(title)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundStyle(palette.accent)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: 58)
+            .liquidGlass(RoundedRectangle(cornerRadius: 14, style: .continuous), interactive: true)
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
-        .frame(maxWidth: .infinity)
         .buttonStyle(.squish)
     }
 

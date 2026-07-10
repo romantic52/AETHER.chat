@@ -13,6 +13,21 @@ private struct SwipeBackEnabler: UIViewControllerRepresentable {
     final class Proxy: UIViewController, UIGestureRecognizerDelegate {
         private static let panName = "aetherFullScreenPop"
 
+        // Pan, который решает по ПЕРВЫМ миллиметрам движения: вправо-горизонтально —
+        // распознаётся, иначе мгновенно fail (скролл/свайп-ответ забирают жест).
+        // Скорость в shouldBegin ненадёжна (в начале жеста почти ноль) — отсюда
+        // были частые осечки.
+        final class RightPan: UIPanGestureRecognizer {
+            override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
+                super.touchesMoved(touches, with: event)
+                guard state == .possible || state == .began else { return }
+                let t = translation(in: view)
+                if abs(t.x) > 5 || abs(t.y) > 5 {
+                    if !(t.x > 0 && abs(t.x) > abs(t.y)) { state = .failed }
+                }
+            }
+        }
+
         override func didMove(toParent parent: UIViewController?) {
             super.didMove(toParent: parent)
             DispatchQueue.main.async { [weak self] in
@@ -25,7 +40,7 @@ private struct SwipeBackEnabler: UIViewControllerRepresentable {
                 // Полноэкранный pan добавляем на nav.view один раз.
                 let exists = nav.view.gestureRecognizers?.contains { $0.name == Self.panName } ?? false
                 guard !exists, let targets = edge.value(forKey: "targets") else { return }
-                let pan = UIPanGestureRecognizer()
+                let pan = RightPan()
                 pan.name = Self.panName
                 pan.maximumNumberOfTouches = 1
                 pan.setValue(targets, forKey: "targets")
@@ -45,12 +60,8 @@ private struct SwipeBackEnabler: UIViewControllerRepresentable {
         }
 
         func gestureRecognizerShouldBegin(_ g: UIGestureRecognizer) -> Bool {
-            guard let nav = findNavigationController(), nav.viewControllers.count > 1 else { return false }
-            guard let pan = g as? UIPanGestureRecognizer else { return true }   // системный edge
-            // Только явный горизонтальный жест вправо — не мешаем скроллу
-            // ленты и свайпу-ответу (он влево).
-            let v = pan.velocity(in: pan.view)
-            return v.x > 0 && abs(v.x) > abs(v.y) * 1.5
+            // Направление фильтрует сам RightPan по фактическому движению.
+            (findNavigationController()?.viewControllers.count ?? 0) > 1
         }
 
         // Вертикальный скролл ленты живёт одновременно и выигрывает у пана,
