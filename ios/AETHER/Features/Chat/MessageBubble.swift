@@ -188,18 +188,28 @@ struct MessageBubble: View {
 
     private var statusRow: some View {
         HStack(spacing: 3) {
+            if channelStyle, let views = viewCount {
+                Image(systemName: "eye.fill").font(.system(size: 9))
+                    .foregroundStyle(.white.opacity(0.85))
+                Text(Self.compactCount(views))
+                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.85))
+            }
             Text(timeString).font(.system(size: 10)).foregroundStyle(.white.opacity(0.85))
-            if outgoing { statusIcon }
+            // Поверх медиа плашка тёмная всегда — статусы белые, а не цветом
+            // темы (на светлых темах bubbleSecondary тёмный и «исчезал»).
+            if outgoing { statusIcon(secondary: .white.opacity(0.85)) }
         }
         .padding(.horizontal, 6).padding(.vertical, 2)
         .background(.black.opacity(0.28), in: Capsule())
     }
 
-    @ViewBuilder private var statusIcon: some View {
+    private var statusIcon: some View { statusIcon(secondary: bubbleSecondary) }
+
+    @ViewBuilder private func statusIcon(secondary: Color) -> some View {
         switch message.status {
-        case 0: Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(bubbleSecondary)
-        case 1: Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(bubbleSecondary)
-        case 2: doubleCheck(color: bubbleSecondary)
+        case 0: Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(secondary)
+        case 1: Image(systemName: "checkmark").font(.system(size: 10, weight: .bold)).foregroundStyle(secondary)
+        case 2: doubleCheck(color: secondary)
         case 3: doubleCheck(color: readTick)
         case -1: Image(systemName: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(palette.danger)
         default: EmptyView()
