@@ -23,6 +23,8 @@ struct FoundGroup: Identifiable, Equatable {
     let publicJoin: Bool
     /// @имя публичной группы/канала.
     let username: String
+    /// Аватар (file_id) — публичный.
+    let avatarFileId: String
     var id: String { groupId }
 }
 
@@ -41,6 +43,11 @@ enum ChannelDirectory {
         if let joinKeyB64 { body["join_key_b64"] = joinKeyB64 }
         if let username { body["username"] = username }
         return await requestDetailed("groups/\(groupId)/public", method: "PUT", body: body)
+    }
+
+    /// Частичное обновление группы (name/description/avatar_file_id).
+    static func updateGroup(_ groupId: String, fields: [String: Any]) async -> Bool {
+        await request("groups/\(groupId)", method: "PUT", body: fields)
     }
 
     private static func request(_ path: String, method: String, body: [String: Any]?) async -> Bool {
@@ -102,7 +109,8 @@ enum GlobalSearch {
                 description: (g["description"] as? String) ?? "",
                 isChannel: (g["is_channel"] as? Bool) ?? false,
                 publicJoin: (g["public_join"] as? Bool) ?? false,
-                username: (g["username"] as? String) ?? ""
+                username: (g["username"] as? String) ?? "",
+                avatarFileId: (g["avatar_file_id"] as? String) ?? ""
             ))
         }
         return out

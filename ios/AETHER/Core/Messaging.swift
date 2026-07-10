@@ -788,7 +788,7 @@ final class Messaging: ObservableObject {
     /// после перезапуска URL известен сразу, картинка мгновенно из дискового кеша.
     func avatarURL(_ peer: String) -> URL? {
         let id = peer.lowercased()
-        let fid = profiles[id]?.avatarFileId ?? avatarIds[id]
+        let fid = profiles[id]?.avatarFileId ?? groups.info(id)?.avatarFileId ?? avatarIds[id]
         guard let fid, !fid.isEmpty else { return nil }
         return URL(string: "\(CoreClient.baseURL)/avatars/\(fid)")
     }

@@ -66,6 +66,8 @@ struct ChatView: View {
 
     // Группа/канал.
     @State private var showGroupProfile = false
+    // Открытие группы обсуждения (комментарии под постом канала).
+    @State private var openDiscussion: String?
 
     // Локальное фото для контакта (см. AvatarStore) — только для 1:1.
     @State private var showAvatarMenu = false
@@ -203,6 +205,10 @@ struct ChatView: View {
         .animation(AetherUI.sendAnimation, value: circleActive)
         .toolbar(.hidden, for: .navigationBar)
         .swipeBackEnabled()
+        .navigationDestination(item: $openDiscussion) { gid in
+            ChatView(peerId: gid, isGroup: true)
+                .environmentObject(messaging)
+        }
         .safeAreaInset(edge: .top) { chatTopBar }
         .sheet(isPresented: $showGroupProfile) {
             if isGroup {
@@ -518,6 +524,28 @@ struct ChatView: View {
                                 onDelete: { vm.delete(msg) },
                                 onRetry: { vm.retry(msg) }
                             )
+                            // Комментарии: у канала с подвязанной группой обсуждения
+                            // под каждым постом — кнопка, открывающая обсуждение.
+                            .safeAreaInset(edge: .bottom, spacing: 0) {
+                                if isChannel, let linked = messaging.groups.info(peerId)?.linkedGroupId {
+                                    Button {
+                                        openDiscussion = linked.lowercased()
+                                    } label: {
+                                        HStack(spacing: 6) {
+                                            Image(systemName: "bubble.left.and.bubble.right")
+                                                .font(.system(size: 13, weight: .semibold))
+                                            Text("Комментарии")
+                                                .font(.system(size: 14, weight: .semibold))
+                                        }
+                                        .foregroundStyle(palette.accent)
+                                        .padding(.horizontal, 12).padding(.vertical, 6)
+                                        .liquidGlass(Capsule())
+                                    }
+                                    .buttonStyle(.squish)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.top, 4)
+                                }
+                            }
                             .id(msg.id)
                             .background {
                                 if highlightedId == msg.id {

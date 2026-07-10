@@ -14,6 +14,8 @@ struct GroupInfo: Identifiable, Equatable {
     var publicJoin: Bool = false
     /// @имя публичной группы/канала (общее пространство имён с пользователями).
     var username: String? = nil
+    /// Аватар группы/канала (file_id на сервере, публичный как у профилей).
+    var avatarFileId: String? = nil
     /// Моя роль в группе — приходит прямо в /groups/me, без отдельного запроса участников.
     var myRole: String
 
@@ -91,7 +93,8 @@ final class GroupsManager: ObservableObject {
             map[id] = GroupInfo(id: id, name: name, description: desc, isChannel: isChannel,
                                 linkedGroupId: linked, ownerId: owner?.lowercased(), memberCount: count,
                                 publicJoin: boolOf(g["public_join"]),
-                                username: g["username"] as? String, myRole: role)
+                                username: g["username"] as? String,
+                                avatarFileId: g["avatar_file_id"] as? String, myRole: role)
         }
         groups = map
         await messaging?.refreshChats()
@@ -144,6 +147,19 @@ final class GroupsManager: ObservableObject {
             groups[id] = info
         }
         return error
+    }
+
+    /// Владелец/админ: установить аватар группы/канала (публичный, как у профилей).
+    @discardableResult
+    func setGroupAvatar(groupId: String, data: Data, mime: String) async -> Bool {
+        let id = groupId.lowercased()
+        guard let fileId = try? await core.uploadAvatar(data: data, mime: mime) else { return false }
+        let ok = await ChannelDirectory.updateGroup(id, fields: ["avatar_file_id": fileId])
+        if ok, var info = groups[id] {
+            info.avatarFileId = fileId
+            groups[id] = info
+        }
+        return ok
     }
 
     // MARK: - Участники / управление
