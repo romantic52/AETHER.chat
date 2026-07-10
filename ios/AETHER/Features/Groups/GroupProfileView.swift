@@ -37,8 +37,10 @@ struct GroupProfileView: View {
                 List {
                     headerSection
                     actionsSection
+                    infoSection
                     if info?.myRole == "owner" { visibilitySection }
-                    if !isChannel { membersSection }
+                    // Подписчиков канала видят владелец/админы; участников группы — все.
+                    if !isChannel || isOwnerOrAdmin { membersSection }
                     dangerSection
                 }
                 .listStyle(.insetGrouped)
@@ -133,10 +135,10 @@ struct GroupProfileView: View {
                 Text(subtitleText)
                     .font(.subheadline).foregroundStyle(palette.textSecondary)
 
-                if let desc = info?.description, !desc.isEmpty {
-                    Text(desc).font(.footnote).foregroundStyle(palette.textSecondary)
-                        .multilineTextAlignment(.center)
-                        .padding(.horizontal, 20)
+                if let uname = info?.username, !uname.isEmpty {
+                    Text("@\(uname)")
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(palette.accent)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -162,14 +164,54 @@ struct GroupProfileView: View {
                         // Групповых звонков нет — заглушка на будущее.
                     }
                 }
-                if isOwnerOrAdmin && !isChannel {
+                if isOwnerOrAdmin {
                     actionButton(icon: "person.badge.plus", title: "Добавить") { showAddMember = true }
                 }
-                actionButton(icon: "bell.fill", title: "Звук") { }
+                // Рабочий тумблер звука (mute чата), иконка отражает состояние.
+                actionButton(icon: isMuted ? "bell.slash.fill" : "bell.fill",
+                             title: isMuted ? "Без звука" : "Звук") {
+                    Task { await messaging.setMuted(groupId, !isMuted) }
+                }
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 8)
             .listRowBackground(Color.clear)
+        }
+    }
+
+    private var isMuted: Bool {
+        messaging.chats.first { $0.peerId == groupId.lowercased() }?.muted ?? false
+    }
+
+    // Инфо-карточка: @имя (тап — копия) и описание отдельным блоком, как в Telegram.
+    @ViewBuilder private var infoSection: some View {
+        let username = info?.username ?? ""
+        let desc = info?.description ?? ""
+        if !username.isEmpty || !desc.isEmpty {
+            Section {
+                if !username.isEmpty {
+                    Button {
+                        UIPasteboard.general.string = "@\(username)"
+                        UINotificationFeedbackGenerator().notificationOccurred(.success)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("@\(username)")
+                                .foregroundStyle(palette.accent)
+                            Text("имя — нажми, чтобы скопировать")
+                                .font(.caption).foregroundStyle(palette.textSecondary)
+                        }
+                    }
+                    .listRowBackground(palette.surface)
+                }
+                if !desc.isEmpty {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(desc).foregroundStyle(palette.textPrimary)
+                        Text("описание")
+                            .font(.caption).foregroundStyle(palette.textSecondary)
+                    }
+                    .listRowBackground(palette.surface)
+                }
+            }
         }
     }
 
@@ -243,7 +285,8 @@ struct GroupProfileView: View {
         Section {
             if isOwnerOrAdmin {
                 Button { showAddMember = true } label: {
-                    Label("Добавить участника", systemImage: "person.badge.plus")
+                    Label(isChannel ? "Добавить подписчика" : "Добавить участника",
+                          systemImage: "person.badge.plus")
                 }
                 .listRowBackground(palette.surface)
             }
