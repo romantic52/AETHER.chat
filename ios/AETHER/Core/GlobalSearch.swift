@@ -19,7 +19,52 @@ struct FoundGroup: Identifiable, Equatable {
     let name: String
     let description: String
     let isChannel: Bool
+    /// Публичность: вступить может любой (сервер выдаст ключ).
+    let publicJoin: Bool
+    /// @имя публичной группы/канала.
+    let username: String
     var id: String { groupId }
+}
+
+// Публичные каналы: подписка и управление видимостью (владелец).
+enum ChannelDirectory {
+    /// Подписаться на публичный канал — сервер добавит участником и завернёт
+    /// ключ канала персональным конвертом (подхватится в GroupsManager.load()).
+    static func join(_ groupId: String) async -> Bool {
+        await request("groups/\(groupId)/join", method: "POST", body: nil)
+    }
+
+    /// Владелец: публичность (@username обязателен) или закрытие. Возвращает
+    /// nil при успехе, иначе — человекочитаемую ошибку сервера (имя занято, лимит 25).
+    static func setPublic(_ groupId: String, isPublic: Bool, joinKeyB64: String?, username: String?) async -> String? {
+        var body: [String: Any] = ["public": isPublic]
+        if let joinKeyB64 { body["join_key_b64"] = joinKeyB64 }
+        if let username { body["username"] = username }
+        return await requestDetailed("groups/\(groupId)/public", method: "PUT", body: body)
+    }
+
+    private static func request(_ path: String, method: String, body: [String: Any]?) async -> Bool {
+        await requestDetailed(path, method: method, body: body) == nil
+    }
+
+    /// nil = успех; строка = ошибка (detail из FastAPI либо генерик).
+    private static func requestDetailed(_ path: String, method: String, body: [String: Any]?) async -> String? {
+        guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
+              let url = URL(string: "\(CoreClient.baseURL)/\(path)") else { return "Нет сессии" }
+        var req = URLRequest(url: url)
+        req.httpMethod = method
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        if let body {
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        }
+        guard let (data, resp) = try? await URLSession.shared.data(for: req) else { return "Нет соединения" }
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if code == 200 { return nil }
+        if let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let detail = obj["detail"] as? String { return detail }
+        return "Ошибка сервера (\(code))"
+    }
 }
 
 enum GlobalSearch {
@@ -55,7 +100,9 @@ enum GlobalSearch {
                 groupId: id.lowercased(),
                 name: name,
                 description: (g["description"] as? String) ?? "",
-                isChannel: (g["is_channel"] as? Bool) ?? false
+                isChannel: (g["is_channel"] as? Bool) ?? false,
+                publicJoin: (g["public_join"] as? Bool) ?? false,
+                username: (g["username"] as? String) ?? ""
             ))
         }
         return out

@@ -17,7 +17,10 @@ struct RootView: View {
                 WelcomeView()
                     .transition(.opacity)
             case .ready:
+                // .id(myId): смена аккаунта пересоздаёт весь домашний экран
+                // (Messaging, чаты, вкладки) под новую личность.
                 HomeView()
+                    .id(session.myId)
                     .transition(.opacity)
             }
         }

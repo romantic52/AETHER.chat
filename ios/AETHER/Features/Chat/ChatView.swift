@@ -83,7 +83,10 @@ struct ChatView: View {
     private var title: String {
         if peerId == session.myId.lowercased() { return "Избранное" }
         let chatTitle = messaging.chats.first { $0.peerId == peerId }?.title ?? ""
-        return chatTitle.isEmpty ? peerId : chatTitle
+        if !chatTitle.isEmpty { return chatTitle }
+        // Чат ещё не создан локально (вход из поиска): имя группы/канала из инфо.
+        if let name = messaging.groups.info(peerId)?.name, !name.isEmpty { return name }
+        return peerId
     }
 
     private var subtitle: String {

@@ -9,6 +9,7 @@ struct ChatsListView: View {
     @State private var openedPeer: String?
     @State private var query = ""
     @State private var globalResults = GlobalSearch.Results()
+    @State private var joiningIds: Set<String> = []
     @State private var globalSearching = false
     @State private var globalTask: Task<Void, Never>?
     @State private var globalSearchGeneration = UUID()
@@ -85,9 +86,30 @@ struct ChatsListView: View {
             }
 
             ForEach(filteredGlobalGroups, id: \.groupId) { group in
-                Button { openedPeer = group.groupId.lowercased() } label: {
-                    globalGroupRow(group)
+                // Участник — открываем. Публичный канал — подписка в один тап
+                // (сервер выдаст ключ). Приватное — только по приглашению.
+                let gid = group.groupId.lowercased()
+                let member = messaging.groups.info(gid) != nil
+                let joinable = !member && group.publicJoin
+                Button {
+                    if member {
+                        openedPeer = gid
+                    } else if joinable {
+                        Task {
+                            guard !joiningIds.contains(gid) else { return }
+                            joiningIds.insert(gid)
+                            defer { joiningIds.remove(gid) }
+                            if await ChannelDirectory.join(gid) {
+                                await messaging.groups.load()
+                                openedPeer = gid
+                            }
+                        }
+                    }
+                } label: {
+                    globalGroupRow(group, member: member, joinable: joinable,
+                                   joining: joiningIds.contains(gid))
                 }
+                .disabled(!member && !joinable)
                 .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
                 .listRowBackground(Color.clear)
                 .listRowSeparatorTint(palette.divider)
@@ -315,7 +337,7 @@ struct ChatsListView: View {
         .contentShape(Rectangle())
     }
 
-    private func globalGroupRow(_ g: FoundGroup) -> some View {
+    private func globalGroupRow(_ g: FoundGroup, member: Bool, joinable: Bool, joining: Bool) -> some View {
         HStack(spacing: 12) {
             Avatar(id: g.groupId, name: g.name, size: AetherUI.listAvatar,
                    avatarURL: nil,
@@ -325,15 +347,29 @@ struct ChatsListView: View {
                     .font(.system(size: 17, weight: .semibold))
                     .foregroundStyle(palette.textPrimary)
                     .lineLimit(1)
-                Text(g.isChannel ? "Канал" : "Группа")
+                Text({
+                    let kind = g.isChannel ? "Канал" : "Группа"
+                    if !g.username.isEmpty { return "@\(g.username) · \(kind)" }
+                    return member ? kind : "\(kind) · по приглашению"
+                }())
                     .font(.system(size: 14))
                     .foregroundStyle(palette.textSecondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            if joining {
+                ProgressView().tint(palette.accent)
+            } else if joinable {
+                Text(g.isChannel ? "Подписаться" : "Вступить")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(palette.onAccent)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
+                    .background(palette.accent, in: Capsule())
+            }
         }
         .frame(minHeight: AetherUI.listRowHeight)
         .contentShape(Rectangle())
+        .opacity(member || joinable ? 1 : 0.55)
     }
 
     #if DEBUG

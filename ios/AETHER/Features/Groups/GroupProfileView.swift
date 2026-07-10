@@ -17,6 +17,10 @@ struct GroupProfileView: View {
     @State private var editDesc = ""
     @State private var confirmLeave = false
     @State private var confirmDelete = false
+    // Черновики публичности (владелец).
+    @State private var publicDraft = false
+    @State private var usernameDraft = ""
+    @State private var visibilityError: String?
 
     private var info: GroupInfo? { messaging.groups.info(groupId) }
     private var isChannel: Bool { info?.isChannel ?? false }
@@ -31,6 +35,7 @@ struct GroupProfileView: View {
                 List {
                     headerSection
                     actionsSection
+                    if info?.myRole == "owner" { visibilitySection }
                     if !isChannel { membersSection }
                     dangerSection
                 }
@@ -149,6 +154,56 @@ struct GroupProfileView: View {
         }
         .frame(maxWidth: .infinity)
         .buttonStyle(.squish)
+    }
+
+    // MARK: - Публичность (владелец): @username как в Telegram, лимит 25.
+
+    private var visibilitySection: some View {
+        Section {
+            Toggle(isOn: $publicDraft.animation()) {
+                Label(isChannel ? "Публичный канал" : "Публичная группа", systemImage: "globe")
+                    .foregroundStyle(palette.textPrimary)
+            }
+            .listRowBackground(palette.surface)
+            if publicDraft {
+                HStack {
+                    Text("@").foregroundStyle(palette.textSecondary)
+                    TextField("username", text: $usernameDraft)
+                        .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .foregroundStyle(palette.textPrimary)
+                }
+                .listRowBackground(palette.surface)
+            }
+            if visibilityDirty {
+                Button {
+                    Task {
+                        visibilityError = await messaging.groups.setGroupPublic(
+                            groupId: groupId, isPublic: publicDraft,
+                            username: publicDraft ? usernameDraft : nil)
+                        if visibilityError == nil { await reload() }
+                    }
+                } label: {
+                    Text("Сохранить").foregroundStyle(palette.accent)
+                }
+                .listRowBackground(palette.surface)
+            }
+            if let visibilityError {
+                Text(visibilityError).font(.footnote).foregroundStyle(palette.danger)
+                    .listRowBackground(Color.clear)
+            }
+        } footer: {
+            Text("Публичные видны в поиске по @имени, вступить может любой (лимит — 25 публичных на владельца). Частные — только по приглашению.")
+        }
+        .onAppear {
+            publicDraft = info?.publicJoin ?? false
+            usernameDraft = info?.username ?? ""
+        }
+    }
+
+    private var visibilityDirty: Bool {
+        publicDraft != (info?.publicJoin ?? false)
+            || (publicDraft && usernameDraft.lowercased() != (info?.username ?? ""))
     }
 
     // MARK: - Участники
