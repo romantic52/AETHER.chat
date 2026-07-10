@@ -56,6 +56,13 @@ struct AttachmentSheet: View {
     /// Отправить оригиналы файлом (без сжатия) — тумблер в панели отправки.
     @State private var asFile = false
 
+    // Предпросмотр по зажатию плитки: держишь — открыт, отпустил — закрылся;
+    // подержал дольше — «прилипает» (появляется крестик, палец можно убрать).
+    @State private var previewAsset: PHAsset?
+    @State private var previewImage: UIImage?
+    @State private var previewSticky = false
+    @State private var stickyTask: Task<Void, Never>?
+
     private let columns = [GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2)]
     private let maxSelection = 99
 
@@ -71,6 +78,7 @@ struct AttachmentSheet: View {
             if !library.selection.isEmpty { sendBar }
         }
         .background(palette.surface.ignoresSafeArea())
+        .overlay { holdPreviewOverlay }
         .task {
             await library.requestAndLoad()
             #if DEBUG
@@ -155,9 +163,94 @@ struct AttachmentSheet: View {
                             duration: asset.duration
                         )
                         .onTapGesture { library.toggle(asset, limit: maxSelection) }
+                        .gesture(
+                            LongPressGesture(minimumDuration: 0.3)
+                                .sequenced(before: DragGesture(minimumDistance: 0))
+                                .onChanged { value in
+                                    if case .second = value, previewAsset == nil {
+                                        beginPreview(asset)
+                                    }
+                                }
+                                .onEnded { _ in fingerLifted() }
+                        )
                     }
                 }
             }
+        }
+    }
+
+    // MARK: - Полноэкранный предпросмотр по зажатию
+
+    private func beginPreview(_ asset: PHAsset) {
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            previewAsset = asset
+            previewSticky = false
+        }
+        previewImage = nil
+        let options = PHImageRequestOptions()
+        options.deliveryMode = .highQualityFormat
+        options.isNetworkAccessAllowed = true
+        PHImageManager.default().requestImage(
+            for: asset, targetSize: CGSize(width: 1400, height: 1400),
+            contentMode: .aspectFit, options: options
+        ) { img, _ in
+            if let img { Task { @MainActor in self.previewImage = img } }
+        }
+        stickyTask?.cancel()
+        stickyTask = Task {
+            try? await Task.sleep(nanoseconds: 900_000_000)
+            guard !Task.isCancelled, previewAsset != nil else { return }
+            withAnimation(.easeOut(duration: 0.18)) { previewSticky = true }
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        }
+    }
+
+    private func fingerLifted() {
+        stickyTask?.cancel()
+        if !previewSticky { closePreview() }
+    }
+
+    private func closePreview() {
+        stickyTask?.cancel()
+        withAnimation(.easeOut(duration: 0.18)) {
+            previewAsset = nil
+            previewSticky = false
+        }
+        previewImage = nil
+    }
+
+    @ViewBuilder private var holdPreviewOverlay: some View {
+        if previewAsset != nil {
+            ZStack(alignment: .topTrailing) {
+                Color.black.opacity(0.96).ignoresSafeArea()
+                Group {
+                    if let previewImage {
+                        Image(uiImage: previewImage)
+                            .resizable().scaledToFit()
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .ignoresSafeArea()
+
+                if previewSticky {
+                    Button { closePreview() } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 15, weight: .heavy))
+                            .foregroundStyle(.white)
+                            .frame(width: 36, height: 36)
+                            .background(.black.opacity(0.65), in: Circle())
+                            .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1))
+                    }
+                    .buttonStyle(.squish)
+                    .padding(.top, 18).padding(.trailing, 18)
+                    .transition(.scale(scale: 0.6).combined(with: .opacity))
+                }
+            }
+            .transition(.opacity)
+            .zIndex(50)
         }
     }
 

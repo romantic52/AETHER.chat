@@ -98,6 +98,10 @@ final class GroupsManager: ObservableObject {
         }
         groups = map
         await messaging?.refreshChats()
+        // Список чатов наблюдает Messaging, а не вложенный GroupsManager —
+        // будим его явно, иначе аватарки/имена групп не подтянутся в строки,
+        // пока чаты сами не изменятся.
+        messaging?.objectWillChange.send()
     }
 
     // MARK: - Создание
@@ -158,6 +162,7 @@ final class GroupsManager: ObservableObject {
         if ok, var info = groups[id] {
             info.avatarFileId = fileId
             groups[id] = info
+            messaging?.objectWillChange.send()
         }
         return ok
     }
