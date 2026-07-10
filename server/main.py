@@ -29,7 +29,11 @@ from slowapi.errors import RateLimitExceeded
 
 from fastapi.staticfiles import StaticFiles
 
-import apns
+# Работает и как пакет server.main (uvicorn server.main:app), и из папки server/.
+try:
+    from server import apns
+except ImportError:
+    import apns
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -266,9 +270,31 @@ def init_db() -> None:
             """
         )
         
+        # Публичные каналы: public_join=1 — любой может подписаться; ключ канала
+        # хранится у сервера (осознанный трейдофф ТОЛЬКО для публичного контента,
+        # E2E личек/групп/приватных каналов не затронут) и выдаётся подписчику
+        # обычным конвертом. server_meta — ключи самого сервера.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS server_meta (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            );
+            """
+        )
+        for col, ddl in [("public_join", "INTEGER NOT NULL DEFAULT 0"),
+                         ("join_key_b64", "TEXT"),
+                         ("username", "TEXT")]:
+            cur.execute(
+                """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='groups' AND column_name=%s)""", (col,))
+            if not cur.fetchone()[0]:
+                cur.execute(f"ALTER TABLE groups ADD COLUMN {col} {ddl}")
+        cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_username ON groups(LOWER(username))")
+
         # Migrations — must use SAVEPOINTs in PostgreSQL
         # because a failed statement aborts the whole transaction.
-        
+
         # 1) Rename legacy column if it exists
         cur.execute("""
             SELECT EXISTS (
@@ -629,8 +655,10 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
             group_rows = []
         else:
             cur.execute(
-                "SELECT id, name, description, is_channel FROM groups WHERE LOWER(name) LIKE LOWER(%s) OR LOWER(id) LIKE LOWER(%s) LIMIT 20",
-                (search_term, search_term)
+                """SELECT id, name, description, is_channel, public_join, username FROM groups
+                   WHERE LOWER(name) LIKE LOWER(%s) OR LOWER(id) LIKE LOWER(%s)
+                      OR LOWER(COALESCE(username,'')) LIKE LOWER(%s) LIMIT 20""",
+                (search_term, search_term, search_term)
             )
             group_rows = cur.fetchall()
         
@@ -646,10 +674,136 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
             "id": r["id"].lower(),
             "name": r["name"],
             "description": r["description"],
-            "is_channel": bool(r["is_channel"])
+            "is_channel": bool(r["is_channel"]),
+            "public_join": bool(r["public_join"]),
+            "username": r["username"],
         })
         
     return {"users": users, "groups": groups}
+
+
+# --- Публичные каналы: серверная выдача ключа подписчику ---
+
+def _b64u_decode(s: str) -> bytes:
+    import base64
+    return base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
+
+
+def _b64u_encode(b: bytes) -> str:
+    import base64
+    return base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+
+
+def _server_keypair():
+    """Ключевая пара сервера для заворачивания ключей публичных каналов
+    (конверт формата seal_direct из ядра: NaCl Box + b64url)."""
+    from nacl.public import PrivateKey
+    with db_conn() as cur:
+        cur.execute("SELECT value FROM server_meta WHERE key = 'server_priv_b64'")
+        row = cur.fetchone()
+        if row:
+            priv = PrivateKey(_b64u_decode(row["value"]))
+        else:
+            priv = PrivateKey.generate()
+            cur.execute("INSERT INTO server_meta (key, value) VALUES ('server_priv_b64', %s)",
+                        (_b64u_encode(bytes(priv)),))
+    return priv
+
+
+def _wrap_key_for(user_pub_b64: str, key_b64: str) -> str:
+    """BoxEnvelope, совместимый с core::unwrap_group_key."""
+    from nacl.public import PublicKey, Box
+    import nacl.utils
+    priv = _server_keypair()
+    box = Box(priv, PublicKey(_b64u_decode(user_pub_b64)))
+    nonce = nacl.utils.random(Box.NONCE_SIZE)
+    ct = box.encrypt(key_b64.encode(), nonce).ciphertext
+    return json.dumps({
+        "sender_pubkey_b64": _b64u_encode(bytes(priv.public_key)),
+        "nonce_b64": _b64u_encode(nonce),
+        "ciphertext_b64": _b64u_encode(ct),
+    })
+
+
+import re as _re
+
+PUBLIC_GROUPS_PER_OWNER = 25
+GROUP_USERNAME_RE = _re.compile(r"^[a-z][a-z0-9_]{3,31}$")
+
+
+class ChannelPublicRequest(BaseModel):
+    public: bool
+    join_key_b64: Optional[str] = None
+    username: Optional[str] = None
+
+
+@app.put("/groups/{group_id}/public")
+def set_group_public(group_id: str, body: ChannelPublicRequest,
+                     current_user: str = Depends(get_current_user)) -> dict:
+    """Владелец включает/выключает публичность группы/канала (Telegram-модель):
+    публичность = @username (общее пространство имён с пользователями) + ключ
+    у сервера для самостоятельной подписки. Лимит на владельца — 25 публичных."""
+    with db_conn() as cur:
+        cur.execute("SELECT owner_id, is_channel FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+        g = cur.fetchone()
+        if not g:
+            raise HTTPException(404, "Group not found")
+        if g["owner_id"].lower() != current_user.lower():
+            raise HTTPException(403, "Only the owner can change visibility")
+        if body.public:
+            username = (body.username or "").lower().lstrip("@")
+            if not GROUP_USERNAME_RE.match(username):
+                raise HTTPException(400, "Username: 4–32 символа, латиница/цифры/_, начинается с буквы")
+            if not body.join_key_b64 or len(_b64u_decode(body.join_key_b64)) != 32:
+                raise HTTPException(400, "join_key_b64 (32 bytes, b64url) is required")
+            # Имя занято? Пространство имён общее: пользователи + группы/каналы.
+            cur.execute("SELECT 1 FROM users WHERE LOWER(COALESCE(username,'')) = %s", (username,))
+            if cur.fetchone():
+                raise HTTPException(409, "Это имя занято пользователем")
+            cur.execute("SELECT 1 FROM groups WHERE LOWER(COALESCE(username,'')) = %s AND LOWER(id) != LOWER(%s)",
+                        (username, group_id))
+            if cur.fetchone():
+                raise HTTPException(409, "Это имя уже занято")
+            # Лимит публичных на владельца.
+            cur.execute("""SELECT COUNT(*) AS n FROM groups
+                           WHERE LOWER(owner_id) = LOWER(%s) AND public_join = 1 AND LOWER(id) != LOWER(%s)""",
+                        (current_user, group_id))
+            if cur.fetchone()["n"] >= PUBLIC_GROUPS_PER_OWNER:
+                raise HTTPException(403,
+                    f"Лимит {PUBLIC_GROUPS_PER_OWNER} публичных групп и каналов. Удали или сделай приватным что-то из существующих")
+            cur.execute("""UPDATE groups SET public_join = 1, join_key_b64 = %s, username = %s
+                           WHERE LOWER(id) = LOWER(%s)""",
+                        (body.join_key_b64, username, group_id))
+        else:
+            cur.execute("""UPDATE groups SET public_join = 0, join_key_b64 = NULL, username = NULL
+                           WHERE LOWER(id) = LOWER(%s)""", (group_id,))
+    return {"ok": True}
+
+
+@app.post("/groups/{group_id}/join")
+def join_public_group(group_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    """Самостоятельное вступление в публичную группу/канал: сервер заворачивает
+    ключ в конверт для нового участника."""
+    with db_conn() as cur:
+        cur.execute("""SELECT is_channel, public_join, join_key_b64 FROM groups
+                       WHERE LOWER(id) = LOWER(%s)""", (group_id,))
+        g = cur.fetchone()
+        if not g:
+            raise HTTPException(404, "Group not found")
+        if not (g["public_join"] and g["join_key_b64"]):
+            raise HTTPException(403, "Group is invite-only")
+        cur.execute("SELECT public_key_b64 FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        u = cur.fetchone()
+        if not u or not u["public_key_b64"]:
+            raise HTTPException(400, "No public key on file")
+        wrapped = _wrap_key_for(u["public_key_b64"], g["join_key_b64"])
+        cur.execute(
+            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role)
+               VALUES (%s, %s, %s, 'member')
+               ON CONFLICT (group_id, user_id) DO NOTHING""",
+            (group_id.lower(), current_user.lower(), wrapped),
+        )
+    return {"ok": True}
 
 
 class RegisterDeviceRequest(BaseModel):
@@ -1111,7 +1265,7 @@ def leave_group(group_id: str, current_user: str = Depends(get_current_user)) ->
 def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role
+            """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.public_join, g.username, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role
                FROM groups g
                JOIN group_members gm ON LOWER(g.id) = LOWER(gm.group_id)
                WHERE LOWER(gm.user_id) = LOWER(%s)""",
@@ -1126,6 +1280,8 @@ def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
                 "description": r["description"],
                 "owner_id": r["owner_id"],
                 "is_channel": bool(r["is_channel"]),
+                "public_join": bool(r["public_join"]),
+                "username": r["username"],
                 "linked_group_id": r["linked_group_id"],
                 "created_at": r["created_at"],
                 "encrypted_key_b64": r["encrypted_key_b64"],

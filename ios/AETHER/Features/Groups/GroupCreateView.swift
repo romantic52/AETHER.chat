@@ -22,6 +22,7 @@ struct GroupCreateView: View {
     
     @State private var isPublic = false
     @State private var publicUsername = ""
+    @State private var showPeopleSearch = false
     @State private var avatarItem: PhotosPickerItem?
     @State private var avatarData: Data?
 
@@ -123,6 +124,8 @@ struct GroupCreateView: View {
             }
             .padding(16)
             
+            // Публичность (Telegram-модель): публичный = @username, виден в поиске,
+            // вступить может любой. Лимит — 25 публичных групп и каналов на владельца.
             Picker("Тип", selection: $isPublic) {
                 Text("Частный").tag(false)
                 Text("Публичный").tag(true)
@@ -130,24 +133,30 @@ struct GroupCreateView: View {
             .pickerStyle(.segmented)
             .padding(.horizontal, 16)
             .padding(.bottom, 8)
-            
+
             if isPublic {
                 HStack {
                     Text("@").foregroundStyle(palette.textSecondary)
                     TextField("username", text: $publicUsername)
                         .textInputAutocapitalization(.never)
+                        .autocorrectionDisabled()
+                        .foregroundStyle(palette.textPrimary)
                 }
                 .padding(12)
-                .background(palette.surface, in: RoundedRectangle(cornerRadius: 10))
+                .liquidGlass(cornerRadius: 12)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 4)
+            }
+            Text(isPublic
+                 ? (isChannel ? "Канал будет виден в поиске по @имени, подписаться может любой."
+                              : "Группа будет видна в поиске по @имени, вступить может любой.")
+                 : (isChannel ? "Подписчиков добавляют владелец и админы."
+                              : "Участников добавляют владелец и админы."))
+                .font(.caption)
+                .foregroundStyle(palette.textSecondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 12)
-            } else {
-                Text("Пригласительная ссылка будет создана автоматически")
-                    .font(.caption)
-                    .foregroundStyle(palette.textSecondary)
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 12)
-            }
 
             if !selected.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -158,27 +167,15 @@ struct GroupCreateView: View {
                 .padding(.bottom, 8)
             }
 
+            // Список контактов (люди, с которыми уже есть чат). Найти НОВОГО
+            // человека — плюс-кнопка в углу (открывает поиск людей).
             List {
                 if let error {
                     Text(error).font(.footnote).foregroundStyle(palette.danger).listRowBackground(Color.clear)
                 }
                 Section {
-                    ForEach(results, id: \.userId) { p in
-                        Button { toggle(p) } label: {
-                            HStack(spacing: 12) {
-                                Avatar(id: p.userId, name: p.displayName ?? p.username ?? p.userId, size: 42)
-                                VStack(alignment: .leading, spacing: 2) {
-                                    Text(p.displayName ?? p.username ?? p.userId).foregroundStyle(palette.textPrimary)
-                                    if let u = p.username, !u.isEmpty {
-                                        Text("@\(u)").font(.caption).foregroundStyle(palette.textSecondary)
-                                    }
-                                }
-                                Spacer()
-                                if selected.contains(where: { $0.userId == p.userId }) {
-                                    Image(systemName: "checkmark.circle.fill").foregroundStyle(palette.accent)
-                                }
-                            }
-                        }.listRowBackground(Color.clear)
+                    ForEach(localContacts, id: \.userId) { p in
+                        personRow(p)
                     }
                 } header: {
                     Text(isChannel ? "Подписчики (можно добавить позже)" : "Участники").foregroundStyle(palette.textSecondary)
@@ -186,9 +183,84 @@ struct GroupCreateView: View {
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
-            .safeAreaInset(edge: .top) { FloatingSearchBar(prompt: "Поиск по @username", text: $query) }
+        }
+        .overlay(alignment: .bottomTrailing) {
+            // Плюс: поиск людей по всему серверу (имя или @username).
+            Button { showPeopleSearch = true } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundStyle(palette.onAccent)
+                    .frame(width: 56, height: 56)
+                    .background(palette.accent, in: Circle())
+                    .shadow(color: .black.opacity(0.25), radius: 8, y: 4)
+            }
+            .buttonStyle(.squish)
+            .padding(.trailing, 20)
+            .padding(.bottom, 28)
+            .accessibilityLabel("Найти людей")
+        }
+        .sheet(isPresented: $showPeopleSearch) { peopleSearchSheet }
+    }
+
+    /// Контакты = собеседники существующих личных чатов.
+    private var localContacts: [Profile] {
+        messaging.chats
+            .filter { !$0.isGroup && $0.peerId != session.myId.lowercased() }
+            .map { chat in
+                messaging.profiles[chat.peerId] ?? Profile(
+                    userId: chat.peerId, username: nil,
+                    displayName: chat.title.isEmpty ? nil : chat.title,
+                    avatarFileId: nil, bio: nil, lastActive: nil, publicKeyB64: nil)
+            }
+    }
+
+    private func personRow(_ p: Profile) -> some View {
+        Button { toggle(p) } label: {
+            HStack(spacing: 12) {
+                Avatar(id: p.userId, name: p.displayName ?? p.username ?? p.userId, size: 42,
+                       avatarURL: messaging.avatarURL(p.userId))
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(p.displayName ?? p.username ?? p.userId).foregroundStyle(palette.textPrimary)
+                    if let u = p.username, !u.isEmpty {
+                        Text("@\(u)").font(.caption).foregroundStyle(palette.textSecondary)
+                    }
+                }
+                Spacer()
+                if selected.contains(where: { $0.userId == p.userId }) {
+                    Image(systemName: "checkmark.circle.fill").foregroundStyle(palette.accent)
+                }
+            }
+        }
+        .listRowBackground(Color.clear)
+    }
+
+    // Шторка поиска людей (для приглашения тех, с кем ещё нет чата).
+    private var peopleSearchSheet: some View {
+        NavigationStack {
+            ZStack {
+                palette.background.ignoresSafeArea()
+                List {
+                    ForEach(results, id: \.userId) { p in
+                        personRow(p)
+                    }
+                }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top) {
+                VStack(spacing: 0) {
+                    FloatingHeader(
+                        title: "Найти людей", large: false,
+                        trailing: AnyView(Button("Готово") { showPeopleSearch = false }
+                            .foregroundStyle(palette.accent))
+                    )
+                    FloatingSearchBar(prompt: "Имя или @username", text: $query)
+                }
+            }
             .onChange(of: query) { _, q in scheduleSearch(q) }
         }
+        .presentationDetents([.large])
     }
 
     private func chip(_ p: Profile) -> some View {
@@ -223,9 +295,25 @@ struct GroupCreateView: View {
         let nm = name.trimmingCharacters(in: .whitespaces)
         let members = selected.map { $0.userId }
         let channel = isChannel
+        let uname = publicUsername.trimmingCharacters(in: .whitespaces)
+            .lowercased().replacingOccurrences(of: "@", with: "")
+        if isPublic, uname.range(of: "^[a-z][a-z0-9_]{3,31}$", options: .regularExpression) == nil {
+            error = "@имя: 4–32 символа, латиница/цифры/_, начинается с буквы"
+            creating = false
+            return
+        }
         Task {
             do {
                 let id = try await messaging.groups.create(name: nm, isChannel: channel, memberIds: members)
+                if isPublic {
+                    if let err = await messaging.groups.setGroupPublic(groupId: id, isPublic: true, username: uname) {
+                        // Создано, но публичность не включилась (имя занято/лимит) —
+                        // показываем причину, публичность можно включить позже в профиле.
+                        self.error = "Создано как частный: \(err)"
+                        creating = false
+                        return
+                    }
+                }
                 creating = false
                 dismiss()
                 onCreated(id)

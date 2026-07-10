@@ -12,6 +12,7 @@ struct SettingsView: View {
             palette.background.ignoresSafeArea()
             List {
                 profileSection
+                accountsSection
                 privacySection
                 notificationsSection
                 appearanceSection
@@ -49,6 +50,51 @@ struct SettingsView: View {
             }
         }
         .listRowBackground(palette.surface)
+    }
+
+    // MARK: - Аккаунты (мультиаккаунт, до 5)
+
+    @State private var showAddAccount = false
+
+    private var accountsSection: some View {
+        Section {
+            ForEach(session.accounts, id: \.self) { id in
+                Button {
+                    guard id != session.myId.lowercased() else { return }
+                    Task { await session.switchAccount(to: id) }
+                } label: {
+                    HStack(spacing: 12) {
+                        Avatar(id: id, name: id, size: 34,
+                               avatarURL: id == session.myId.lowercased() ? session.myAvatarURL : nil)
+                        Text("@\(id)")
+                            .foregroundStyle(palette.textPrimary)
+                        Spacer()
+                        if id == session.myId.lowercased() {
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(palette.accent)
+                        }
+                    }
+                }
+                .listRowBackground(palette.surface)
+            }
+            if session.accounts.count < Session.maxAccounts {
+                Button { showAddAccount = true } label: {
+                    SettingsLabel("Добавить аккаунт", icon: "plus", color: .blue)
+                }
+                .listRowBackground(palette.surface)
+            }
+        } header: {
+            Text("Аккаунты")
+        } footer: {
+            Text("До \(Session.maxAccounts) аккаунтов на устройстве. Переписка и настройки каждого хранятся отдельно.")
+        }
+        .sheet(isPresented: $showAddAccount) {
+            // Тот же экран входа/регистрации; успешный вход добавляет аккаунт
+            // и сразу делает его активным (шторка закрывается по смене myId).
+            WelcomeView()
+                .environmentObject(session)
+                .onChange(of: session.myId) { _, _ in showAddAccount = false }
+        }
     }
 
     // MARK: - Приватность (Face ID / PIN)
