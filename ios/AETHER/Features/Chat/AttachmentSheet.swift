@@ -365,8 +365,13 @@ struct AttachmentThumb: View {
                 if let image { Image(uiImage: image).resizable().scaledToFill() }
                 else { Rectangle().fill(palette.surfaceElevated) }
             }
-            .clipped()
-            .overlay(order != nil ? Color.black.opacity(0.15) : Color.clear)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay {
+                if order != nil {
+                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                        .fill(Color.black.opacity(0.15))
+                }
+            }
             .overlay(alignment: .bottomLeading) {
                 if isVideo {
                     HStack(spacing: 2) {
