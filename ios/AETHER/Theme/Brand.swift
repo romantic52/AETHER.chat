@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 // 6 тем-палитр (паритет с Android). Графит — дефолт. Каждая палитра описывает
 // поверхности, акцент и текст; светлые (День/Сакура/Пастель) корректно инвертируют.
@@ -169,7 +170,7 @@ enum AetherUI {
     static let screenInset: CGFloat = 16
     static let listAvatar: CGFloat = 60
     static let listRowHeight: CGFloat = 76
-    static let listTextInset: CGFloat = 84
+    static let listTextInset: CGFloat = 88
     static let tabBarHeight: CGFloat = 49
     static let composerControl: CGFloat = 40
     static let composerInset: CGFloat = 7
@@ -271,5 +272,36 @@ extension EnvironmentValues {
     var palette: Palette {
         get { self[PaletteKey.self] }
         set { self[PaletteKey.self] = newValue }
+    }
+}
+
+// Пользовательские обои чата: один JPEG в Documents, применяется во всех чатах.
+// Наличие файла = обои включены; «Убрать» удаляет файл.
+@MainActor
+final class WallpaperStore: ObservableObject {
+    static let shared = WallpaperStore()
+    @Published private(set) var image: UIImage?
+
+    private var url: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("chat_wallpaper.jpg")
+    }
+
+    private init() {
+        if let data = try? Data(contentsOf: url) { image = UIImage(data: data) }
+    }
+
+    func set(_ data: Data) {
+        // Даунсэмплинг до экранного размера — не держать в памяти 12-МП оригинал.
+        let maxPixel = UIScreen.main.bounds.height * UIScreen.main.scale
+        guard let img = MediaStore.downsample(data: data, maxPixel: maxPixel),
+              let jpeg = img.jpegData(compressionQuality: 0.9) else { return }
+        try? jpeg.write(to: url)
+        image = UIImage(data: jpeg)
+    }
+
+    func clear() {
+        try? FileManager.default.removeItem(at: url)
+        image = nil
     }
 }

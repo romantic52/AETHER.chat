@@ -66,6 +66,7 @@ struct ChatView: View {
 
     // Группа/канал.
     @State private var showGroupProfile = false
+    @ObservedObject private var wallpaperStore = WallpaperStore.shared
 
     // Локальное фото для контакта (см. AvatarStore) — только для 1:1.
     @State private var showAvatarMenu = false
@@ -1307,9 +1308,23 @@ struct ChatView: View {
 
     @ViewBuilder private var wallpaper: some View {
         palette.background.ignoresSafeArea()
-        LinearGradient(colors: [palette.accent.opacity(0.04), .clear],
-                       startPoint: .top, endPoint: .bottom)
+        if let img = wallpaperStore.image {
+            // Пользовательские обои + вуаль читаемости (сильнее на тёмных темах).
+            GeometryReader { geo in
+                Image(uiImage: img)
+                    .resizable()
+                    .scaledToFill()
+                    .frame(width: geo.size.width, height: geo.size.height)
+                    .clipped()
+            }
             .ignoresSafeArea()
+            Color.black.opacity(appearance.theme.isDark ? 0.32 : 0.10)
+                .ignoresSafeArea()
+        } else {
+            LinearGradient(colors: [palette.accent.opacity(0.04), .clear],
+                           startPoint: .top, endPoint: .bottom)
+                .ignoresSafeArea()
+        }
     }
 
 }

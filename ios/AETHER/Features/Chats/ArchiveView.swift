@@ -77,7 +77,7 @@ struct ArchiveView: View {
                     online: messaging.isOnline(chat.peerId),
                     typing: messaging.typingPeers.contains(chat.peerId))
         }
-        .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
         .listRowBackground(Color.clear)
         .listRowSeparatorTint(palette.divider)
         .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
