@@ -79,7 +79,7 @@ struct MessageBubble: View {
                     }
                     MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
                 }
-                .overlay(alignment: .bottomTrailing) { statusRow.padding(4) }
+                .overlay(alignment: .bottomTrailing) { statusRow(scrim: true).padding(4) }
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     if let rid = p.replyToId, !rid.isEmpty {
@@ -89,7 +89,13 @@ struct MessageBubble: View {
                     MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
                 }
                 .modifier(BubbleContainer(outgoing: outgoing, showTail: showTail, palette: palette))
-                .overlay(alignment: .bottomTrailing) { statusRow.padding(6) }
+                // Тёмная подложка-капсула нужна только там, где под метой
+                // картинка (фото/видео). На голосовых и файлах пузырь и так
+                // цветной — чёрный овал там выглядел инородно.
+                .overlay(alignment: .bottomTrailing) {
+                    statusRow(scrim: p.mediaKind == .image || p.mediaKind == .video)
+                        .padding(6)
+                }
             }
         } else {
             textBubble
@@ -186,21 +192,20 @@ struct MessageBubble: View {
         .padding(outgoing ? .trailing : .leading, 8)
     }
 
-    private var statusRow: some View {
-        HStack(spacing: 3) {
+    /// scrim=true — мета поверх картинки: белый текст на тёмной капсуле.
+    /// scrim=false — на цветном пузыре (гс/файл): цвета темы, без подложки.
+    private func statusRow(scrim: Bool) -> some View {
+        let tint: Color = scrim ? .white.opacity(0.85) : bubbleSecondary
+        return HStack(spacing: 3) {
             if channelStyle, let views = viewCount {
-                Image(systemName: "eye.fill").font(.system(size: 9))
-                    .foregroundStyle(.white.opacity(0.85))
-                Text(Self.compactCount(views))
-                    .font(.system(size: 10)).foregroundStyle(.white.opacity(0.85))
+                Image(systemName: "eye.fill").font(.system(size: 9)).foregroundStyle(tint)
+                Text(Self.compactCount(views)).font(.system(size: 10)).foregroundStyle(tint)
             }
-            Text(timeString).font(.system(size: 10)).foregroundStyle(.white.opacity(0.85))
-            // Поверх медиа плашка тёмная всегда — статусы белые, а не цветом
-            // темы (на светлых темах bubbleSecondary тёмный и «исчезал»).
-            if outgoing { statusIcon(secondary: .white.opacity(0.85)) }
+            Text(timeString).font(.system(size: 10)).foregroundStyle(tint)
+            if outgoing { statusIcon(secondary: tint) }
         }
         .padding(.horizontal, 6).padding(.vertical, 2)
-        .background(.black.opacity(0.28), in: Capsule())
+        .background(scrim ? Color.black.opacity(0.28) : .clear, in: Capsule())
     }
 
     private var statusIcon: some View { statusIcon(secondary: bubbleSecondary) }
