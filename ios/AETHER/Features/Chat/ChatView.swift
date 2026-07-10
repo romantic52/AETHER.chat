@@ -145,9 +145,10 @@ struct ChatView: View {
                     ZStack {
                         // Градиент-ореол «на звук»: мягкое свечение вокруг кружка,
                         // дышит амплитудой во время записи.
-                        TimelineView(.animation) { timeline in
-                            let t = timeline.date.timeIntervalSinceReferenceDate
-                            let level = 0.55 + 0.45 * abs(sin(t * 2.4)) * abs(sin(t * 0.9 + 1.3))
+                        // Ореол на РЕАЛЬНУЮ громкость микрофона (RMS из audio-tap
+                        // камеры): говоришь — свечение растёт, тишина — минимум.
+                        TimelineView(.animation) { _ in
+                            let level = 0.25 + 0.75 * circleCam.audioLevel
                             RadialGradient(
                                 colors: [palette.accent.opacity(0.55 * level), palette.accent.opacity(0.18 * level), .clear],
                                 center: .center, startRadius: 130, endRadius: 210 + 26 * level
@@ -1131,7 +1132,11 @@ struct ChatView: View {
             } else {
                 defer { try? FileManager.default.removeItem(at: fileURL) }
                 circleCam.stop()
-                guard let data = try? Data(contentsOf: fileURL) else { return }
+                // 30-сек кружок — десятки МБ: читаем вне главного потока,
+                // иначе UI «зависает» на несколько секунд.
+                guard let data = await Task.detached(priority: .userInitiated, operation: {
+                    try? Data(contentsOf: fileURL)
+                }).value else { return }
                 vm.sendMedia(data: data, mime: "video/mp4", kind: "video_msg", fileName: nil, duration: total, replyTo: replyTo)
                 clearReplyAfterSend()
                 UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -1146,7 +1151,9 @@ struct ChatView: View {
         withAnimation(AetherUI.sendAnimation) { recordPhase = .idle }
         Task {
             defer { try? FileManager.default.removeItem(at: url) }
-            guard let data = try? Data(contentsOf: url) else { return }
+            guard let data = await Task.detached(priority: .userInitiated, operation: {
+                try? Data(contentsOf: url)
+            }).value else { return }
             vm.sendMedia(data: data, mime: "video/mp4", kind: "video_msg", fileName: nil, duration: circlePreviewDuration, replyTo: replyTo)
             clearReplyAfterSend()
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
