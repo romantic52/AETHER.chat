@@ -10,6 +10,10 @@ struct GroupInfo: Identifiable, Equatable {
     var linkedGroupId: String?
     var ownerId: String?
     var memberCount: Int
+    /// Публичность: вступить может любой через поиск (у публичных есть @username).
+    var publicJoin: Bool = false
+    /// @имя публичной группы/канала (общее пространство имён с пользователями).
+    var username: String? = nil
     /// Моя роль в группе — приходит прямо в /groups/me, без отдельного запроса участников.
     var myRole: String
 
@@ -85,7 +89,9 @@ final class GroupsManager: ObservableObject {
             }
 
             map[id] = GroupInfo(id: id, name: name, description: desc, isChannel: isChannel,
-                                linkedGroupId: linked, ownerId: owner?.lowercased(), memberCount: count, myRole: role)
+                                linkedGroupId: linked, ownerId: owner?.lowercased(), memberCount: count,
+                                publicJoin: boolOf(g["public_join"]),
+                                username: g["username"] as? String, myRole: role)
         }
         groups = map
         await messaging?.refreshChats()
@@ -116,6 +122,28 @@ final class GroupsManager: ObservableObject {
         await core.touchChat(peer: id, isGroup: true, title: name, lastText: "", lastTs: ts, incUnread: false)
         await load()
         return id
+    }
+
+    /// Владелец: публичность группы/канала (Telegram-модель: публичный = @username).
+    /// При включении сервер получает ключ, чтобы самостоятельно выдавать его
+    /// вступающим (контент публичного не секретен; E2E приватных не тронут).
+    /// Возвращает nil при успехе, иначе — текст ошибки (имя занято, лимит 25).
+    @discardableResult
+    func setGroupPublic(groupId: String, isPublic: Bool, username: String?) async -> String? {
+        let id = groupId.lowercased()
+        var keyB64: String? = nil
+        if isPublic {
+            guard let key = await core.groupKey(id) else { return "Ключ группы недоступен" }
+            keyB64 = key
+        }
+        let error = await ChannelDirectory.setPublic(id, isPublic: isPublic,
+                                                     joinKeyB64: keyB64, username: username)
+        if error == nil, var info = groups[id] {
+            info.publicJoin = isPublic
+            info.username = isPublic ? username?.lowercased() : nil
+            groups[id] = info
+        }
+        return error
     }
 
     // MARK: - Участники / управление

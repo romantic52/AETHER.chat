@@ -28,6 +28,13 @@ final class Session: ObservableObject {
     /// Токен текущей сессии в памяти (Keychain может быть недоступен на неподписанной сборке).
     private(set) var authToken: String = ""
 
+    /// Мультиаккаунт (до 5): id всех добавленных на устройстве аккаунтов.
+    /// Креды каждого — в Keychain под acct_<id>_*; активный дублируется
+    /// в legacy-ключах (kToken и т.д.), чтобы bootstrap/HTTP-хелперы не менялись.
+    @Published private(set) var accounts: [String] =
+        (UserDefaults.standard.stringArray(forKey: "savedAccounts") ?? [])
+    static let maxAccounts = 5
+
     let core = CoreClient()
 
     private var heartbeatTask: Task<Void, Never>?
@@ -47,6 +54,8 @@ final class Session: ObservableObject {
         await core.restoreSession(token: token, userId: userId, publicKey: pub, privateKey: priv)
         authToken = token
         myId = userId
+        // Миграция на мультиаккаунт: активный аккаунт попадает в реестр.
+        registerAccount(id: userId.lowercased(), token: token, publicKey: pub, privateKey: priv)
         phase = .ready
         startHeartbeat()
         Task { await loadMyProfile() }
@@ -73,17 +82,25 @@ final class Session: ObservableObject {
         await MainActor.run { PushRegistrar.requestRegistration() }
     }
 
+    /// Выход из ТЕКУЩЕГО аккаунта. Если на устройстве есть другие —
+    /// переключаемся на первый из них, иначе — онбординг.
     func logout() async {
         heartbeatTask?.cancel()
         // Снять APNs-токен, пока Bearer ещё жив — иначе пуши полетят бывшему аккаунту.
         await PushRegistrar.unregister()
         await core.logout()
+        let current = myId.lowercased()
+        dropAccount(current)
         for k in [Keychain.kToken, Keychain.kUserId, Keychain.kPublicKey, Keychain.kPrivateKey] {
             Keychain.remove(k)
         }
         authToken = ""
         myId = ""; myUsername = ""; myDisplayName = ""; myAvatarFileId = ""
-        phase = .onboarding
+        if let next = accounts.first {
+            await switchAccount(to: next)
+        } else {
+            phase = .onboarding
+        }
     }
 
     func setApplicationActive(_ active: Bool) {
@@ -98,6 +115,51 @@ final class Session: ObservableObject {
         Keychain.set(session.userId, for: Keychain.kUserId)
         Keychain.set(session.publicKeyB64, for: Keychain.kPublicKey)
         Keychain.set(privateKey, for: Keychain.kPrivateKey)
+        registerAccount(id: session.userId.lowercased(), token: session.token,
+                        publicKey: session.publicKeyB64, privateKey: privateKey)
+    }
+
+    // MARK: - Мультиаккаунт
+
+    private func registerAccount(id: String, token: String, publicKey: String, privateKey: String) {
+        Keychain.set(token, for: "acct_\(id)_token")
+        Keychain.set(publicKey, for: "acct_\(id)_pub")
+        Keychain.set(privateKey, for: "acct_\(id)_priv")
+        if !accounts.contains(id) {
+            accounts.append(id)
+            UserDefaults.standard.set(accounts, forKey: "savedAccounts")
+        }
+    }
+
+    private func dropAccount(_ id: String) {
+        for suffix in ["token", "pub", "priv"] { Keychain.remove("acct_\(id)_\(suffix)") }
+        accounts.removeAll { $0 == id }
+        UserDefaults.standard.set(accounts, forKey: "savedAccounts")
+    }
+
+    /// Переключиться на другой сохранённый аккаунт (креды уже на устройстве).
+    func switchAccount(to id: String) async {
+        let target = id.lowercased()
+        guard target != myId.lowercased(),
+              let token = Keychain.string(for: "acct_\(target)_token"),
+              let pub = Keychain.string(for: "acct_\(target)_pub"),
+              let priv = Keychain.string(for: "acct_\(target)_priv"),
+              !token.isEmpty else { return }
+        heartbeatTask?.cancel()
+        phase = .loading
+        myUsername = ""; myDisplayName = ""; myAvatarFileId = ""
+        // Активные (legacy) ключи — на новый аккаунт; per-account креды не трогаем.
+        authToken = token
+        Keychain.set(token, for: Keychain.kToken)
+        Keychain.set(target, for: Keychain.kUserId)
+        Keychain.set(pub, for: Keychain.kPublicKey)
+        Keychain.set(priv, for: Keychain.kPrivateKey)
+        await core.restoreSession(token: token, userId: target, publicKey: pub, privateKey: priv)
+        myId = target
+        phase = .ready
+        startHeartbeat()
+        Task { await loadMyProfile() }
+        PushRegistrar.requestRegistration()
     }
 
     // MARK: - Профиль
