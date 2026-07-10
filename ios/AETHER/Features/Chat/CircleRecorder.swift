@@ -226,13 +226,21 @@ struct CircleRecorderView: View {
 // Камера кружка через AVCaptureSession + MovieFileOutput.
 // Фронталка пишется зеркально (как видит себя пользователь); камеру можно переворачивать.
 @MainActor
-final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate {
+final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordingDelegate,
+                          AVCaptureAudioDataOutputSampleBufferDelegate {
     let session = AVCaptureSession()
     @Published var available = false
     @Published var isRecording = false
     @Published var elapsed: TimeInterval = 0
+    /// Реальная громкость микрофона 0…1 (сглаженный RMS) — для ореола-эквалайзера.
+    @Published var audioLevel: Double = 0
 
     private let output = AVCaptureMovieFileOutput()
+    private let audioTap = AVCaptureAudioDataOutput()
+    private let audioQueue = DispatchQueue(label: "circle.audio.meter")
+    /// Троттлинг публикации уровня (~15 Гц): без него каждый аудио-буфер
+    /// (50/с) прыгал на main actor и к концу длинной записи копил фриз.
+    private nonisolated(unsafe) var lastLevelPush = Date.distantPast
     private var timer: Timer?
     private var startedAt: Date?
     private var onFinish: ((URL) -> Void)?
@@ -250,7 +258,9 @@ final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordi
         let session = self.session
         let output = self.output
         let position = self.position
-        let result: AVCaptureDeviceInput? = await Task.detached(priority: .userInitiated) {
+        let audioTap = self.audioTap
+        let audioQueue = self.audioQueue
+        let result: AVCaptureDeviceInput? = await Task.detached(priority: .userInitiated) { [weak self] in
             guard let device = AVCaptureDevice.default(.builtInWideAngleCamera, for: .video, position: position),
                   let input = try? AVCaptureDeviceInput(device: device) else { return nil }
             session.beginConfiguration()
@@ -260,6 +270,13 @@ final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordi
                let micIn = try? AVCaptureDeviceInput(device: mic),
                session.canAddInput(micIn) { session.addInput(micIn) }
             if session.canAddOutput(output) { session.addOutput(output) }
+            // Аудио-метеринг для эквалайзера: отдельный tap на тот же микрофон.
+            // Только если сессия согласна держать его рядом с MovieFileOutput —
+            // иначе остаёмся без эквалайзера, но со звуком записи.
+            if let self, session.canAddOutput(audioTap) {
+                audioTap.setSampleBufferDelegate(self, queue: audioQueue)
+                session.addOutput(audioTap)
+            }
             session.commitConfiguration()
             // Зеркалим запись с фронталки — как в превью.
             if let connection = output.connection(with: .video), connection.isVideoMirroringSupported {
@@ -271,6 +288,50 @@ final class CircleCamera: NSObject, ObservableObject, AVCaptureFileOutputRecordi
         }.value
         videoInput = result
         available = result != nil
+    }
+
+    // RMS с микрофона → сглаженный уровень 0…1 (поддержка Int16 и Float32 PCM).
+    nonisolated func captureOutput(_ output: AVCaptureOutput,
+                                   didOutput sampleBuffer: CMSampleBuffer,
+                                   from connection: AVCaptureConnection) {
+        guard let block = CMSampleBufferGetDataBuffer(sampleBuffer),
+              let format = CMSampleBufferGetFormatDescription(sampleBuffer),
+              let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee else { return }
+        var length = 0
+        var raw: UnsafeMutablePointer<Int8>?
+        guard CMBlockBufferGetDataPointer(block, atOffset: 0, lengthAtOffsetOut: nil,
+                                          totalLengthOut: &length, dataPointerOut: &raw) == kCMBlockBufferNoErr,
+              let raw, length > 0 else { return }
+
+        var sum: Double = 0
+        var count = 0
+        if asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0 {
+            let n = length / MemoryLayout<Float32>.size
+            UnsafeRawPointer(raw).withMemoryRebound(to: Float32.self, capacity: n) { p in
+                var i = 0
+                while i < n { let v = Double(p[i]); sum += v * v; count += 1; i += 8 }
+            }
+        } else {
+            let n = length / MemoryLayout<Int16>.size
+            UnsafeRawPointer(raw).withMemoryRebound(to: Int16.self, capacity: n) { p in
+                var i = 0
+                while i < n { let v = Double(p[i]) / 32768; sum += v * v; count += 1; i += 8 }
+            }
+        }
+        guard count > 0 else { return }
+        let rms = (sum / Double(count)).squareRoot()
+        let db = 20 * log10(max(rms, 1e-5))               // −100…0 dBFS
+        let norm = max(0, min(1, (db + 50) / 44))          // рабочий диапазон речи
+        let now = Date()
+        guard now.timeIntervalSince(lastLevelPush) > 0.066 else { return }
+        lastLevelPush = now
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            // Атака быстрее спада — «дышит» как эквалайзер.
+            self.audioLevel = norm > self.audioLevel
+                ? self.audioLevel * 0.35 + norm * 0.65
+                : self.audioLevel * 0.82 + norm * 0.18
+        }
     }
 
     /// Переворот камеры (фронт ↔ тыл) — работает и во время записи.
