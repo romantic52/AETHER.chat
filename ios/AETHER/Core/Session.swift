@@ -69,10 +69,14 @@ final class Session: ObservableObject {
         phase = .ready
         startHeartbeat()
         Task { await loadMyProfile() }
+        // Перепривязать APNs-токен устройства к новому аккаунту.
+        await MainActor.run { PushRegistrar.requestRegistration() }
     }
 
     func logout() async {
         heartbeatTask?.cancel()
+        // Снять APNs-токен, пока Bearer ещё жив — иначе пуши полетят бывшему аккаунту.
+        await PushRegistrar.unregister()
         await core.logout()
         for k in [Keychain.kToken, Keychain.kUserId, Keychain.kPublicKey, Keychain.kPrivateKey] {
             Keychain.remove(k)

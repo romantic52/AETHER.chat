@@ -50,8 +50,7 @@ struct LockView: View {
 
                 Spacer()
 
-                pinPad
-
+                // Face ID — над цифрами, ближе к замку.
                 if lock.biometryAvailable {
                     Button {
                         Task { if await lock.tryBiometrics() { await performUnlock() } }
@@ -64,8 +63,10 @@ struct LockView: View {
                             .liquidGlass(Capsule())
                     }
                     .buttonStyle(.squish)
-                    .padding(.top, 18)
+                    .padding(.bottom, 20)
                 }
+
+                pinPad
 
                 Spacer().frame(height: 40)
             }

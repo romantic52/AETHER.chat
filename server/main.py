@@ -29,6 +29,8 @@ from slowapi.errors import RateLimitExceeded
 
 from fastapi.staticfiles import StaticFiles
 
+import apns
+
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
 class ConnectionManager:
@@ -252,6 +254,14 @@ def init_db() -> None:
                 user_id TEXT NOT NULL,
                 acked_at TEXT NOT NULL,
                 PRIMARY KEY (message_id, user_id)
+            );
+            -- APNs-токены устройств: kind = apns (баннеры) | voip (звонки/CallKit).
+            -- Токен уникален per-устройство; смена аккаунта на устройстве — перезапись.
+            CREATE TABLE IF NOT EXISTS device_push_tokens (
+                token TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'apns',
+                updated_at TEXT NOT NULL
             );
             """
         )
@@ -642,6 +652,60 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
     return {"users": users, "groups": groups}
 
 
+class RegisterDeviceRequest(BaseModel):
+    token: str = Field(min_length=8, max_length=512)
+    kind: str = Field(default="apns", pattern="^(apns|voip)$")
+
+
+@app.post("/devices/register")
+def register_device(body: RegisterDeviceRequest, current_user: str = Depends(get_current_user)) -> dict:
+    """APNs-токен устройства. Токен — ключ: смена аккаунта перезаписывает владельца."""
+    with db_conn() as cur:
+        cur.execute(
+            """INSERT INTO device_push_tokens (token, user_id, kind, updated_at)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (token) DO UPDATE
+               SET user_id = EXCLUDED.user_id, kind = EXCLUDED.kind, updated_at = EXCLUDED.updated_at""",
+            (body.token, current_user.lower(), body.kind, _utc_now()),
+        )
+    return {"ok": True, "apns_enabled": apns.configured()}
+
+
+@app.post("/devices/unregister")
+def unregister_device(body: RegisterDeviceRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("DELETE FROM device_push_tokens WHERE token = %s AND user_id = %s",
+                    (body.token, current_user.lower()))
+    return {"ok": True}
+
+
+def _drop_dead_token(token: str) -> None:
+    """APNs ответил 410 — устройство снесло приложение, токен мёртв."""
+    try:
+        with db_conn() as cur:
+            cur.execute("DELETE FROM device_push_tokens WHERE token = %s", (token,))
+    except Exception:
+        pass
+
+
+def _apns_notify_offline(user_ids: list[str], peer_id: str) -> None:
+    """Баннер-пуш тем получателям, у кого нет живого WS (приложение не в сети).
+    Без текста и имён — только факт нового сообщения + peer для deep-link."""
+    if not apns.configured():
+        return
+    offline = [u for u in user_ids if u not in manager.active_connections]
+    if not offline:
+        return
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT token FROM device_push_tokens WHERE kind = 'apns' AND user_id = ANY(%s)",
+            (offline,),
+        )
+        rows = cur.fetchall()
+    for row in rows:
+        apns.notify_message_bg(row["token"], peer_id, on_dead=_drop_dead_token)
+
+
 @app.post("/messages")
 async def send_message(body: SendMessageRequest, current_user: str = Depends(get_current_user)) -> dict:
     logger.info(f"send_message: sender={body.sender_id}, recipient={body.recipient_id}, current_user={current_user}")
@@ -742,8 +806,12 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 members = cur.fetchall()
             for member in members:
                 asyncio.create_task(manager.send_personal_message(push_event, member["user_id"].lower()))
+            # APNs офлайн-получателям группы: deep-link ведёт в саму группу.
+            _apns_notify_offline([m["user_id"].lower() for m in members], body.recipient_id.lower())
         else:
             asyncio.create_task(manager.send_personal_message(push_event, body.recipient_id.lower()))
+            # Личка: deep-link — чат отправителя.
+            _apns_notify_offline([body.recipient_id.lower()], body.sender_id.lower())
     except Exception as e:
         logger.warning(f"send_message: push notification failed (non-fatal): {e}")
 

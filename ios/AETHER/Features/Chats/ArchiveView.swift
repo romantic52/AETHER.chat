@@ -5,7 +5,6 @@ import SwiftUI
 struct ArchiveView: View {
     @EnvironmentObject var session: Session
     @EnvironmentObject var messaging: Messaging
-    @EnvironmentObject var chrome: ChromeState
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
 
@@ -50,10 +49,6 @@ struct ArchiveView: View {
         .navigationDestination(item: $openedPeer) { peer in
             ChatView(peerId: peer, isGroup: messaging.isGroup(peer))
                 .environmentObject(messaging)
-        }
-        // См. ChatsListView: мгновенный возврат таб-бара при выходе из чата.
-        .onChange(of: openedPeer) { _, peer in
-            if peer == nil { withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = false } }
         }
     }
 
