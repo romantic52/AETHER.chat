@@ -340,7 +340,8 @@ struct ChatsListView: View {
     private func globalGroupRow(_ g: FoundGroup, member: Bool, joinable: Bool, joining: Bool) -> some View {
         HStack(spacing: 12) {
             Avatar(id: g.groupId, name: g.name, size: AetherUI.listAvatar,
-                   avatarURL: nil,
+                   avatarURL: g.avatarFileId.isEmpty ? nil
+                       : URL(string: "\(CoreClient.baseURL)/avatars/\(g.avatarFileId)"),
                    online: false)
             VStack(alignment: .leading, spacing: 2) {
                 Text(g.name)
