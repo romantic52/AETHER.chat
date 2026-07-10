@@ -48,6 +48,8 @@ struct GroupProfileView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) {
+                // Шторка: у неё нет статус-бара, поэтому опускаем кнопки от
+                // скругления и держим одинаковые поля с обеих сторон.
                 FloatingHeader(
                     title: "",
                     large: false,
@@ -57,6 +59,7 @@ struct GroupProfileView: View {
                         showRenameSheet = true
                     }.foregroundStyle(palette.accent)) : nil
                 )
+                .padding(.top, 14)
             }
             .task { await reload() }
             .sheet(isPresented: $showAddMember) {
