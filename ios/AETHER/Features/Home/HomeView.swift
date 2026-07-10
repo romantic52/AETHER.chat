@@ -263,7 +263,7 @@ struct TabBar: View {
         }
     }
 
-    private func title(for tab: AppTab) -> String {
+    private func title(for tab: AppTab) -> LocalizedStringKey {
         switch tab {
         case .contacts: return "Контакты"
         case .calls: return "Звонки"
