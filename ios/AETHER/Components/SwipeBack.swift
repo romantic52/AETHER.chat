@@ -70,6 +70,14 @@ private struct SwipeBackEnabler: UIViewControllerRepresentable {
                                shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
             false
         }
+
+        // 100% экрана: жесты контента (свайп-ответ на пузыре, скролл медиа)
+        // обязаны дождаться провала нашего пана. Он проваливается за первые
+        // ~5pt любого не-вправо движения, так что контент почти не ждёт.
+        func gestureRecognizer(_ g: UIGestureRecognizer,
+                               shouldBeRequiredToFailBy other: UIGestureRecognizer) -> Bool {
+            g.name == Self.panName
+        }
     }
 
     func makeUIViewController(context: Context) -> Proxy { Proxy() }
