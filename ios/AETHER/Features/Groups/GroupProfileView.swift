@@ -49,7 +49,7 @@ struct GroupProfileView: View {
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) {
                 FloatingHeader(
-                    title: isChannel ? "Канал" : "Группа",
+                    title: "",
                     large: false,
                     leading: AnyView(Button("Закрыть") { dismiss() }.foregroundStyle(palette.accent)),
                     trailing: isOwnerOrAdmin ? AnyView(Button("Изменить") {
@@ -176,7 +176,7 @@ struct GroupProfileView: View {
                 }
             }
             .listRowBackground(Color.clear)
-            .listRowInsets(EdgeInsets(top: 4, leading: 0, bottom: 4, trailing: 0))
+            .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         }
     }
 
