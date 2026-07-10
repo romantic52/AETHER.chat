@@ -546,8 +546,9 @@ struct ChatRow: View {
                 Image(systemName: "bookmark.fill").foregroundStyle(.white).font(.system(size: 22))
             }.frame(width: AetherUI.listAvatar, height: AetherUI.listAvatar)
         } else {
+            // avatarURL и для групп: messaging.avatarURL смотрит и в groups.info.
             Avatar(id: chat.peerId, name: chat.title, size: AetherUI.listAvatar,
-                   avatarURL: chat.isGroup ? nil : messaging.avatarURL(chat.peerId),
+                   avatarURL: messaging.avatarURL(chat.peerId),
                    online: online && !chat.isGroup)
                 .onAppear { if !chat.isGroup { messaging.ensureProfile(chat.peerId) } }
         }
