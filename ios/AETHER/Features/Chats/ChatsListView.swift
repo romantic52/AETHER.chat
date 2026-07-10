@@ -8,6 +8,11 @@ struct ChatsListView: View {
 
     @State private var openedPeer: String?
     @State private var query = ""
+    @State private var globalResults = GlobalSearch.Results()
+    @State private var globalSearching = false
+    @State private var globalTask: Task<Void, Never>?
+    @State private var globalSearchGeneration = UUID()
+    @FocusState private var searchFocused: Bool
     @State private var newChatPresented = false
     @State private var newGroupPresented = false
     @State private var newChannelPresented = false
@@ -19,8 +24,17 @@ struct ChatsListView: View {
     private var visible: [Chat] {
         let base = messaging.chats.filter { !$0.archived }
         guard !query.isEmpty else { return base }
-        let q = query.lowercased()
-        return base.filter { $0.title.lowercased().contains(q) || $0.peerId.lowercased().contains(q) || $0.lastText.lowercased().contains(q) }
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let raw = q.hasPrefix("@") ? String(q.dropFirst()) : q
+        guard !raw.isEmpty else { return base }
+        return base.filter { chat in
+            chat.title.lowercased().contains(raw) ||
+            chat.peerId.lowercased().contains(raw) ||
+            chat.lastText.lowercased().contains(raw) ||
+            (messaging.profiles[chat.peerId]?.username?.lowercased().contains(raw) ?? false) ||
+            (messaging.profiles[chat.peerId]?.displayName?.lowercased().contains(raw) ?? false) ||
+            (messaging.groups.info(chat.peerId)?.name.lowercased().contains(raw) ?? false)
+        }
     }
     // Закрепы — в порядке закрепления: каждый новый выше предыдущих.
     private var pinned: [Chat] {
@@ -29,25 +43,100 @@ struct ChatsListView: View {
     }
     private var regular: [Chat] { visible.filter { !$0.pinned } }
 
+    @ViewBuilder
+    private var searchSections: some View {
+        if !visible.isEmpty {
+            ForEach(pinned, id: \.peerId) { row($0) }
+                .onDelete { delete($0, in: pinned) }
+            ForEach(regular, id: \.peerId) { row($0) }
+                .onDelete { delete($0, in: regular) }
+        }
+
+        if globalSearching {
+            HStack { Spacer(); ProgressView().tint(palette.accent); Spacer() }
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+        }
+
+        let filteredGlobalUsers = globalResults.users.filter { u in
+            u.userId.lowercased() != session.myId.lowercased() &&
+            !messaging.chats.contains(where: { $0.peerId == u.userId.lowercased() })
+        }
+        let filteredGlobalGroups = globalResults.groups.filter { g in
+            !messaging.chats.contains(where: { $0.peerId == g.groupId.lowercased() })
+        }
+
+        if !filteredGlobalUsers.isEmpty || !filteredGlobalGroups.isEmpty {
+            Text("Найдено в сети")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(palette.textSecondary)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 2, trailing: 16))
+
+            ForEach(filteredGlobalUsers, id: \.userId) { profile in
+                Button { openedPeer = profile.userId.lowercased() } label: {
+                    globalUserRow(profile)
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(palette.divider)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+            }
+
+            ForEach(filteredGlobalGroups, id: \.groupId) { group in
+                Button { openedPeer = group.groupId.lowercased() } label: {
+                    globalGroupRow(group)
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 10, bottom: 0, trailing: 12))
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(palette.divider)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+            }
+        }
+
+        if !globalSearching && visible.isEmpty && filteredGlobalUsers.isEmpty && filteredGlobalGroups.isEmpty {
+            VStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 36, weight: .thin))
+                    .foregroundStyle(palette.textSecondary)
+                Text("Ничего не найдено")
+                    .font(.subheadline)
+                    .foregroundStyle(palette.textSecondary)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.top, 40)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
+        }
+    }
+
+    // Без собственного NavigationStack: все вкладки живут в ЕДИНОМ стеке
+    // HomeView — пуши (чат, архив) накрывают и контент, и общий таб-бар.
     var body: some View {
-        NavigationStack {
+        Group {
             ZStack {
                 palette.background.ignoresSafeArea()
 
                 List {
-                    if !archived.isEmpty {
-                        archiveRow
+                    if query.isEmpty {
+                        if !archived.isEmpty {
+                            archiveRow
+                        }
+                        ForEach(pinned, id: \.peerId) { row($0) }
+                            .onDelete { delete($0, in: pinned) }
+                        ForEach(regular, id: \.peerId) { row($0) }
+                            .onDelete { delete($0, in: regular) }
+                    } else {
+                        searchSections
                     }
-                    ForEach(pinned, id: \.peerId) { row($0) }
-                        .onDelete { delete($0, in: pinned) }
-                    ForEach(regular, id: \.peerId) { row($0) }
-                        .onDelete { delete($0, in: regular) }
                     Color.clear.frame(height: 112).listRowSeparator(.hidden).listRowBackground(Color.clear)
                 }
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
+                .scrollDismissesKeyboard(.interactively)
                 .environment(\.editMode, $editMode)
-                .overlay { if messaging.chats.isEmpty { emptyState } }
+                .overlay { if messaging.chats.isEmpty && query.isEmpty { emptyState } }
                 .safeAreaInset(edge: .top) {
                     VStack(spacing: 0) {
                         customHeader
@@ -60,14 +149,11 @@ struct ChatsListView: View {
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
+            .onChange(of: query) { _, q in scheduleGlobalSearch(q) }
             .navigationDestination(item: $openedPeer) { peer in
                 ChatView(peerId: peer, isGroup: messaging.isGroup(peer))
                     .environmentObject(messaging)
-            }
-            // Возврат таб-бара сразу при выходе из чата: onDisappear пушнутого
-            // экрана на iOS 27 срабатывает с большим лагом, item-биндинг — мгновенно.
-            .onChange(of: openedPeer) { _, peer in
-                if peer == nil { withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = false } }
             }
             .navigationDestination(isPresented: $showArchive) {
                 ArchiveView()
@@ -147,18 +233,107 @@ struct ChatsListView: View {
 
     private var customSearchBar: some View {
         HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(palette.textSecondary)
-                .font(.system(size: 16))
-            TextField("Поиск", text: $query)
-                .foregroundStyle(palette.textPrimary)
-                .tint(palette.accent)
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(palette.textSecondary)
+                    .font(.system(size: 16))
+                TextField("Поиск", text: $query)
+                    .foregroundStyle(palette.textPrimary)
+                    .tint(palette.accent)
+                    .focused($searchFocused)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .submitLabel(.search)
+                if !query.isEmpty {
+                    Button { query = "" } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .liquidGlass(Capsule())
+
+            if searchFocused || !query.isEmpty {
+                Button("Отмена") {
+                    query = ""
+                    searchFocused = false
+                    globalResults = GlobalSearch.Results()
+                    globalSearching = false
+                    globalTask?.cancel()
+                }
+                .font(.system(size: 15, weight: .medium))
+                .foregroundStyle(palette.accent)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-        .liquidGlass(Capsule())
+        .animation(.easeInOut(duration: 0.2), value: searchFocused)
+        .animation(.easeInOut(duration: 0.2), value: query.isEmpty)
         .padding(.horizontal, 16)
         .padding(.bottom, 12)
+    }
+
+    // MARK: - Серверный поиск
+
+    private func scheduleGlobalSearch(_ q: String) {
+        globalTask?.cancel()
+        globalSearchGeneration = UUID()
+        let generation = globalSearchGeneration
+        let trimmed = q.trimmingCharacters(in: .whitespaces)
+        let raw = trimmed.hasPrefix("@") ? String(trimmed.dropFirst()) : trimmed
+        guard raw.count >= 2 else { globalResults = GlobalSearch.Results(); globalSearching = false; return }
+        globalTask = Task {
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard !Task.isCancelled else { return }
+            globalSearching = true
+            let found = await GlobalSearch.search(raw)
+            guard !Task.isCancelled, generation == globalSearchGeneration else { return }
+            globalResults = found
+            globalSearching = false
+        }
+    }
+
+    private func globalUserRow(_ p: FoundUser) -> some View {
+        HStack(spacing: 12) {
+            Avatar(id: p.userId, name: p.title, size: AetherUI.listAvatar,
+                   avatarURL: p.avatarFileId.isEmpty ? nil : URL(string: "\(CoreClient.baseURL)/avatars/\(p.avatarFileId)"),
+                   online: messaging.isOnline(p.userId))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(p.title)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                Text(p.subtitle)
+                    .font(.system(size: 14))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .frame(minHeight: AetherUI.listRowHeight)
+        .contentShape(Rectangle())
+    }
+
+    private func globalGroupRow(_ g: FoundGroup) -> some View {
+        HStack(spacing: 12) {
+            Avatar(id: g.groupId, name: g.name, size: AetherUI.listAvatar,
+                   avatarURL: nil,
+                   online: false)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(g.name)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .lineLimit(1)
+                Text(g.isChannel ? "Канал" : "Группа")
+                    .font(.system(size: 14))
+                    .foregroundStyle(palette.textSecondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+        }
+        .frame(minHeight: AetherUI.listRowHeight)
+        .contentShape(Rectangle())
     }
 
     #if DEBUG

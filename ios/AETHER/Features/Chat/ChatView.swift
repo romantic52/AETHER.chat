@@ -11,7 +11,6 @@ struct ChatView: View {
     @EnvironmentObject var session: Session
     @EnvironmentObject var messaging: Messaging
     @EnvironmentObject var appearance: AppearanceSettings
-    @EnvironmentObject var chrome: ChromeState
     @Environment(\.palette) private var palette
     @Environment(\.dismiss) private var dismiss
 
@@ -252,12 +251,10 @@ struct ChatView: View {
             }
             #endif
         }
-        .onAppear { chrome.tabBarHidden = true }
         .onChange(of: circleCam.elapsed) { _, t in
             if circleRecordedBefore + t >= 60, circleCam.isRecording, !circleSwitching { finishCircle(preview: true) }
         }
         .onDisappear {
-            chrome.tabBarHidden = false
             vm.onDisappear()
             armTask?.cancel()
             if recordPhase != .idle {
@@ -379,14 +376,6 @@ struct ChatView: View {
                 }
             }
         }
-    }
-
-    private func setTabBarHidden(_ hidden: Bool) {
-        // Плавный fade на месте — без слайда и без disablesAnimations (прежде
-        // выключали анимацию, чтобы бар не «наезжал» снизу вместе с push-переходом
-        // NavigationStack; теперь скрытие — только прозрачностью на фиксированной
-        // позиции, поэтому явный easeOut даёт чистое растворение без «отлипания»).
-        withAnimation(.easeOut(duration: 0.22)) { chrome.tabBarHidden = hidden }
     }
 
     private func handleFiles(_ result: Result<[URL], Error>) {

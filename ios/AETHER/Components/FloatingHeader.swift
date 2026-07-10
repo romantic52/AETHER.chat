@@ -73,6 +73,9 @@ struct FloatingSearchBar: View {
             TextField(prompt, text: $text)
                 .foregroundStyle(palette.textPrimary)
                 .tint(palette.accent)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
             if !text.isEmpty {
                 Button { text = "" } label: {
                     Image(systemName: "xmark.circle.fill").foregroundStyle(palette.textSecondary)

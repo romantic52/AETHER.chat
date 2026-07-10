@@ -20,7 +20,7 @@ struct WelcomeView: View {
             ScrollView {
                 VStack(spacing: 28) {
                     Spacer(minLength: 8)
-                    AetherLogo(size: 88)
+                    AetherLogo(size: 104)
                         .scaleEffect(appeared ? 1 : 0.82)
                         .opacity(appeared ? 1 : 0)
                         .offset(y: appeared ? 0 : 8)

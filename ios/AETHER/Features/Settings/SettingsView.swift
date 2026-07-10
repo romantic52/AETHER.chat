@@ -6,29 +6,28 @@ struct SettingsView: View {
     @EnvironmentObject var appearance: AppearanceSettings
     @Environment(\.palette) private var palette
 
+    // Без собственного NavigationStack — общий стек HomeView (см. ChatsListView).
     var body: some View {
-        NavigationStack {
-            ZStack {
-                palette.background.ignoresSafeArea()
-                List {
-                    profileSection
-                    privacySection
-                    notificationsSection
-                    appearanceSection
-                    glassSection
-                    bubbleSection
-                    navigationSection
-                    reactionSection
-                    storageSection
-                    accountSection
-                }
-                .listStyle(.insetGrouped)
-                .scrollContentBackground(.hidden)
+        ZStack {
+            palette.background.ignoresSafeArea()
+            List {
+                profileSection
+                privacySection
+                notificationsSection
+                appearanceSection
+                glassSection
+                bubbleSection
+                navigationSection
+                reactionSection
+                storageSection
+                accountSection
             }
-            .toolbar(.hidden, for: .navigationBar)
-            .safeAreaInset(edge: .top) { FloatingHeader(title: "Настройки") }
+            .listStyle(.insetGrouped)
+            .scrollContentBackground(.hidden)
             .safeAreaPadding(.bottom, 100)
         }
+        .toolbar(.hidden, for: .navigationBar)
+        .safeAreaInset(edge: .top) { FloatingHeader(title: "Настройки") }
     }
 
     private var profileSection: some View {
@@ -305,10 +304,30 @@ struct SettingsView: View {
     }
 
     private var navigationSection: some View {
-        Section("Навигация") {
+        Section {
             Toggle(isOn: $appearance.switchTabOnRelease) {
                 SettingsLabel("Переключать при отпускании", icon: "hand.tap.fill", color: .green)
             }
+            Toggle(isOn: $appearance.tabFadeEnabled.animation()) {
+                SettingsLabel("Анимация смены вкладок", icon: "sparkles", color: .purple)
+            }
+            if appearance.tabFadeEnabled {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        SettingsLabel("Длительность", icon: "timer", color: .orange)
+                        Spacer()
+                        Text(String(format: "%.2f с", appearance.tabFadeDuration))
+                            .font(.system(size: 15, design: .monospaced))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                    Slider(value: $appearance.tabFadeDuration, in: 0.05...0.5, step: 0.05)
+                        .tint(palette.accent)
+                }
+            }
+        } header: {
+            Text("Навигация")
+        } footer: {
+            Text("Анимация смены вкладок — плавное растворение контента при переключении. Выключи, если нужен мгновенный отклик.")
         }
         .listRowBackground(palette.surface)
     }
