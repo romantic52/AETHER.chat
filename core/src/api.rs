@@ -48,6 +48,14 @@ fn raw_json<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> 
     Ok(v.to_string())
 }
 
+/// Prekey-bundle пира для установки Olm-сессии (identity + один one-time key).
+#[derive(uniffi::Record)]
+pub struct PrekeyBundle {
+    pub identity_key_b64: String,
+    pub one_time_key_id: String,
+    pub one_time_key_b64: String,
+}
+
 #[derive(uniffi::Object)]
 pub struct ApiClient {
     base: String,
@@ -223,6 +231,34 @@ impl ApiClient {
     pub fn update_public_key(&self, public_key_b64: String) -> Result<(), CoreError> {
         self.put("/users/me/public-key", serde_json::json!({ "public_key_b64": public_key_b64 }))
             .map(|_| ())
+    }
+
+    // --- Prekey-директория (Double Ratchet / Olm) ---
+
+    /// Опубликовать Olm identity + пачку one-time keys (JSON {key_id: pub_b64}).
+    pub fn upload_keys(&self, identity_key_b64: String, one_time_keys_json: String) -> Result<(), CoreError> {
+        let otks: serde_json::Value = serde_json::from_str(&one_time_keys_json).map_err(CoreError::bad)?;
+        self.put("/keys/upload", serde_json::json!({
+            "identity_key_b64": identity_key_b64,
+            "one_time_keys": otks,
+        }))
+        .map(|_| ())
+    }
+
+    /// Сколько наших one-time keys ещё лежит на сервере (для пополнения).
+    pub fn keys_count(&self) -> Result<u32, CoreError> {
+        let v = self.get("/keys/count")?;
+        Ok(v["count"].as_u64().unwrap_or(0) as u32)
+    }
+
+    /// Забрать prekey-bundle пира (identity + один OTK, сервер его удаляет).
+    pub fn claim_keys(&self, user_id: String) -> Result<PrekeyBundle, CoreError> {
+        let v = self.post(&format!("/keys/claim/{user_id}"), serde_json::json!({}))?;
+        Ok(PrekeyBundle {
+            identity_key_b64: v["identity_key_b64"].as_str().unwrap_or_default().to_string(),
+            one_time_key_id: v["one_time_key"]["key_id"].as_str().unwrap_or_default().to_string(),
+            one_time_key_b64: v["one_time_key"]["key_b64"].as_str().unwrap_or_default().to_string(),
+        })
     }
 
     pub fn update_profile(

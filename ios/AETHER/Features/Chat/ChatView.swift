@@ -291,6 +291,9 @@ struct ChatView: View {
             )
             .presentationDetents([.fraction(0.62), .large])
             .presentationDragIndicator(.hidden)
+            // Скролл сетки фото имеет приоритет над ресайзом шторки: тянешь фото —
+            // листается контент, а не дёргается детент.
+            .presentationContentInteraction(.scrolls)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraCaptureView { picked in sendPicked([picked]) }

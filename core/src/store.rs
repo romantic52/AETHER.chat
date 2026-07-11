@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS pins (
     first_seen INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS olm_sessions (
+    peer_id TEXT PRIMARY KEY,
+    session_json TEXT NOT NULL,
+    updated_ts INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 fn row_to_msg(row: &rusqlite::Row) -> rusqlite::Result<StoredMessage> {
@@ -505,6 +510,24 @@ impl CoreStore {
     pub fn meta_set(&self, key: String, value: String) -> Result<(), CoreError> {
         self.conn.lock().unwrap()
             .execute("INSERT OR REPLACE INTO meta (k,v) VALUES (?1,?2)", params![key, value])?;
+        Ok(())
+    }
+
+    /// Olm-сессия (Double Ratchet) с пиром: pickle-JSON. Одна сессия на пира —
+    /// при входящем prekey перезаписываем на новую (см. ratchet-интеграцию).
+    /// ponytail: одна сессия/пир; при одновременной инициации с двух сторон
+    /// возможна пересборка — апгрейд до мультисессий, если станет мешать.
+    pub fn olm_session_get(&self, peer_id: String) -> Result<Option<String>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row("SELECT session_json FROM olm_sessions WHERE peer_id=?1",
+                       params![peer_id.to_lowercase()], |r| r.get(0)).optional()?)
+    }
+    pub fn olm_session_set(&self, peer_id: String, session_json: String) -> Result<(), CoreError> {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        self.conn.lock().unwrap().execute(
+            "INSERT OR REPLACE INTO olm_sessions (peer_id, session_json, updated_ts) VALUES (?1,?2,?3)",
+            params![peer_id.to_lowercase(), session_json, ts])?;
         Ok(())
     }
 }

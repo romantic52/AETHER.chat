@@ -140,6 +140,7 @@ final class Messaging: ObservableObject {
         shouldRun = true
         reconnectAttempt = 0
         startupTask = Task {
+            await core.ensureOlmKeys()   // опубликовать/пополнить prekeys для Double Ratchet
             await refreshChats()
             await groups.load()
             await flushOutgoing()
