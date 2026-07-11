@@ -529,13 +529,21 @@ struct UserProfileView: View {
                 VStack(spacing: 24) {
                     Avatar(id: userId, name: profile?.displayName ?? userId, size: 100,
                            avatarURL: messaging.avatarURL(userId))
-                        .onAppear { messaging.ensureProfile(userId) }
+                        .onAppear {
+                            messaging.ensureProfile(userId)
+                            messaging.refreshStatusEmoji(userId)
+                        }
                         .padding(.top, 24)
                     
                     VStack(spacing: 4) {
-                        Text(profile?.displayName ?? userId)
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(palette.textPrimary)
+                        HStack(spacing: 6) {
+                            Text(profile?.displayName ?? userId)
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(palette.textPrimary)
+                            if let status = messaging.statusEmoji(userId) {
+                                Text(status).font(.system(size: 22))
+                            }
+                        }
                         
                         if let u = profile?.username, !u.isEmpty {
                             Text("@\(u)")

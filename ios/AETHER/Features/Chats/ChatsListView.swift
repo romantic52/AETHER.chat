@@ -502,7 +502,9 @@ struct ChatRow: View {
 
     private var isSaved: Bool { chat.peerId == myId.lowercased() }
     private var title: String {
-        if isSaved { return "Избранное" }
+        if isSaved { return String(localized: "Избранное") }
+        // 1:1 — имя из профиля (display name), а не застывший title чата.
+        if !chat.isGroup { return messaging.displayName(chat.peerId, fallback: chat.title) }
         return chat.title.isEmpty ? chat.peerId : chat.title
     }
 
