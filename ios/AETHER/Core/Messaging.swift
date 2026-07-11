@@ -488,6 +488,7 @@ final class Messaging: ObservableObject {
 
     func openChat(_ peerId: String, isGroup: Bool) async {
         activePeer = peerId
+        if !isGroup { refreshStatusEmoji(peerId) }
         prefetchMedia(for: peerId)
         await core.clearUnread(peerId)
         await refreshChats()
@@ -800,7 +801,23 @@ final class Messaging: ObservableObject {
         return (s?.isEmpty ?? true) ? nil : s
     }
 
+    /// Отображаемое имя собеседника: display name из профиля, иначе title чата.
+    func displayName(_ peer: String, fallback: String) -> String {
+        let id = peer.lowercased()
+        if let dn = profiles[id]?.displayName, !dn.isEmpty { return dn }
+        return fallback.isEmpty ? id : fallback
+    }
+
+    /// Принудительно обновить статус (вход в чат/профиль — без ожидания кэша).
+    func refreshStatusEmoji(_ peer: String) {
+        let id = peer.lowercased()
+        guard !id.isEmpty, !id.hasPrefix("grp_"), !id.hasPrefix("group_"),
+              !id.hasPrefix("chn_"), !id.hasPrefix("channel_") else { return }
+        Task { statusEmojis[id] = await ProfileHTTP.statusEmoji(id) ?? "" }
+    }
+
     private var profileRequests: Set<String> = []
+    private var statusRequests: Set<String> = []
 
     /// Догрузить профиль для строки списка, если его ещё нет в кэше.
     /// Групповые id пропускаем — у групп нет пользовательского профиля.
@@ -809,14 +826,15 @@ final class Messaging: ObservableObject {
         guard !id.isEmpty,
               !id.hasPrefix("group_"), !id.hasPrefix("channel_"),
               !id.hasPrefix("grp_"), !id.hasPrefix("chn_") else { return }
+        // Статус тянем НЕЗАВИСИМО от кэша профиля: профиль мог загрузиться
+        // раньше (для presence), а статус — новое поле.
+        if statusEmojis[id] == nil, !statusRequests.contains(id) {
+            statusRequests.insert(id)
+            Task { statusEmojis[id] = await ProfileHTTP.statusEmoji(id) ?? "" }
+        }
         guard profiles[id] == nil, !profileRequests.contains(id) else { return }
         profileRequests.insert(id)
-        Task {
-            await loadProfile(id)
-            if let status = await ProfileHTTP.statusEmoji(id) {
-                statusEmojis[id] = status
-            }
-        }
+        Task { await loadProfile(id) }
     }
 
     func isOnline(_ peer: String) -> Bool {
