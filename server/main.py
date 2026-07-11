@@ -274,6 +274,15 @@ def init_db() -> None:
                 kind TEXT NOT NULL DEFAULT 'apns',
                 updated_at TEXT NOT NULL
             );
+            -- Prekey-директория для Double Ratchet (Olm/X3DH). Сервер только
+            -- раздаёт публичные one-time keys, приватных не видит. Каждый OTK
+            -- одноразовый: при claim удаляется, чтобы обеспечить forward secrecy.
+            CREATE TABLE IF NOT EXISTS one_time_keys (
+                user_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                key_b64 TEXT NOT NULL,
+                PRIMARY KEY (user_id, key_id)
+            );
             """
         )
         
@@ -293,6 +302,12 @@ def init_db() -> None:
                        WHERE table_name='users' AND column_name='status_emoji')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN status_emoji TEXT")
+
+        # Olm identity-ключ (curve25519) для Double Ratchet — публичный, отдаётся в prekey-bundle.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='users' AND column_name='olm_identity_key')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN olm_identity_key TEXT")
 
         for col, ddl in [("public_join", "INTEGER NOT NULL DEFAULT 0"),
                          ("join_key_b64", "TEXT"),
@@ -458,6 +473,12 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=8)
 
 
+class UploadKeysRequest(BaseModel):
+    identity_key_b64: str
+    # {key_id: key_b64}
+    one_time_keys: dict
+
+
 class SendMessageRequest(BaseModel):
     sender_id: str
     recipient_id: str
@@ -577,6 +598,51 @@ def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_cu
     with db_conn() as cur:
         cur.execute("UPDATE users SET public_key_b64 = %s WHERE LOWER(user_id) = LOWER(%s)", (body.public_key_b64, current_user))
     return {"ok": True, "user_id": current_user}
+
+
+# --- Prekey-директория для Double Ratchet (Olm/X3DH) ---
+
+@app.put("/keys/upload")
+def upload_keys(body: UploadKeysRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
+                    (body.identity_key_b64, current_user))
+        for key_id, key_b64 in body.one_time_keys.items():
+            cur.execute(
+                "INSERT INTO one_time_keys (user_id, key_id, key_b64) VALUES (%s, %s, %s) "
+                "ON CONFLICT (user_id, key_id) DO NOTHING",
+                (current_user.lower(), str(key_id), str(key_b64)))
+    return {"ok": True}
+
+
+@app.get("/keys/count")
+def keys_count(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
+        n = cur.fetchone()["n"]
+    return {"count": n}
+
+
+# Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
+# удаляется (одноразовость → forward secrecy). Атомарно, чтобы двум клиентам не
+# достался один и тот же OTK.
+@app.post("/keys/claim/{user_id}")
+def claim_keys(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,))
+        row = cur.fetchone()
+        if row is None or not row["olm_identity_key"]:
+            raise HTTPException(404, "No Olm identity for user")
+        cur.execute(
+            "DELETE FROM one_time_keys WHERE ctid IN "
+            "(SELECT ctid FROM one_time_keys WHERE user_id = %s LIMIT 1) "
+            "RETURNING key_id, key_b64",
+            (user_id.lower(),))
+        otk = cur.fetchone()
+    if otk is None:
+        raise HTTPException(409, "No one-time keys available")
+    return {"user_id": user_id.lower(), "identity_key_b64": row["olm_identity_key"],
+            "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"]}}
 
 
 @app.put("/users/me/profile")
@@ -913,13 +979,20 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
         logger.warning(f"send_message: sender mismatch {body.sender_id} vs {current_user}")
         raise HTTPException(403, "Cannot send messages as another user")
 
-    required = {"nonce_b64", "ciphertext_b64"}
-    if not required.issubset(body.envelope.keys()):
-        logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
-        raise HTTPException(400, f"Invalid envelope: missing keys. Got: {list(body.envelope.keys())}")
-    if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
-        logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
-        raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
+    # Double Ratchet (Olm) 1:1 — свой формат конверта; сервер только релеит.
+    if body.envelope.get("ratchet"):
+        ratchet_required = {"olm_identity", "type", "body_b64"}
+        if not ratchet_required.issubset(body.envelope.keys()):
+            logger.warning(f"send_message: bad ratchet envelope. Got: {list(body.envelope.keys())}")
+            raise HTTPException(400, f"Invalid ratchet envelope. Got: {list(body.envelope.keys())}")
+    else:
+        required = {"nonce_b64", "ciphertext_b64"}
+        if not required.issubset(body.envelope.keys()):
+            logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
+            raise HTTPException(400, f"Invalid envelope: missing keys. Got: {list(body.envelope.keys())}")
+        if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
+            logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
+            raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
     if "plaintext" in body.envelope or "text" in body.envelope:
         raise HTTPException(400, "Plaintext not allowed on server")
 

@@ -70,6 +70,7 @@ final class Session: ObservableObject {
         myId = session.userId
         phase = .ready
         startHeartbeat()
+        Task { await core.ensureOlmKeys() }   // выложить prekeys сразу (не ждать start())
     }
 
     func login(userId: String, password: String) async throws {
@@ -79,6 +80,7 @@ final class Session: ObservableObject {
         phase = .ready
         startHeartbeat()
         Task { await loadMyProfile() }
+        Task { await core.ensureOlmKeys() }   // выложить prekeys сразу (не ждать start())
         // Перепривязать APNs-токен устройства к новому аккаунту.
         await MainActor.run { PushRegistrar.requestRegistration() }
     }
@@ -160,6 +162,10 @@ final class Session: ObservableObject {
         phase = .ready
         startHeartbeat()
         Task { await loadMyProfile() }
+        // Переключение аккаунта не перезапускает Messaging.start() (guard !shouldRun),
+        // поэтому prekeys нового аккаунта надо выложить явно — иначе ему нельзя
+        // написать (Double Ratchet требует prekey-бандл получателя).
+        Task { await core.ensureOlmKeys() }
         PushRegistrar.requestRegistration()
     }
 

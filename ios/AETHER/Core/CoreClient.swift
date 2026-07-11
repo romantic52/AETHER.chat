@@ -16,6 +16,8 @@ actor CoreClient {
     private(set) var myId: String = ""
     private(set) var myPublicKey: String = ""
     private var myPrivateKey: String = ""
+    /// Кэш Olm identity-ключа (curve25519) текущего аккаунта.
+    private var myOlmIdentity: String = ""
 
     init() {
         self.api = ApiClient(baseUrl: CoreClient.baseURL)
@@ -78,16 +80,18 @@ actor CoreClient {
 
         var key = storedDbKey()
         if key == nil, dbExists {
-            // База есть, ключа «нет» — почти наверняка Keychain ещё недоступен.
+            // База есть, ключа «нет» — при холодном старте почти наверняка Keychain
+            // ещё заперт: ждём его (10с ретраев). Если после этого ключа всё равно
+            // нет — это НЕ временная блокировка (на логине Keychain разблокирован),
+            // а реальная потеря ключа (переустановка/смена keychain-группы). Тогда
+            // НЕ крашимся вечным лупом: старую БД откладываем в бэкап (ниже по
+            // corrupt-пути) и стартуем свежую с новым ключом.
             for _ in 0..<20 where key == nil {
                 Thread.sleep(forTimeInterval: 0.5)
                 key = storedDbKey()
             }
-            guard key != nil else {
-                fatalError("AETHER: ключ шифрования БД недоступен — отказываюсь пересоздавать базу с историей")
-            }
         }
-        let effectiveKey = key ?? makeAndStoreDbKey()   // nil здесь = первый запуск
+        let effectiveKey = key ?? makeAndStoreDbKey()   // nil здесь = первый запуск ИЛИ ключ утерян
 
         if let store = try? CoreStore.open(path: path, encryptionKeyB64: effectiveKey) { return store }
         // Валидный ключ, но база не открылась — настоящее повреждение.
@@ -119,6 +123,7 @@ actor CoreClient {
         if myId != id {
             selectStore(for: id)
             peerKeyCache.removeAll(keepingCapacity: true)
+            myOlmIdentity = ""   // у нового аккаунта свой Olm-аккаунт в его store
         }
         self.myId = id
         self.myPublicKey = publicKey
@@ -215,29 +220,67 @@ actor CoreClient {
     /// Мой публичный ключ (для отпечатка на TOFU-экране).
     func myPublicKeyB64() -> String { myPublicKey }
 
-    // MARK: - Отправка
+    // MARK: - Olm / Double Ratchet (1:1)
 
-    /// Запечатать личное сообщение и отправить. wirePayload — готовый JSON (см. WireBuilder).
-    func sendDirect(to peerId: String, wirePayload: String, clientId: String? = nil) throws -> String {
-        let (peerKey, _) = try publicKey(for: peerId)
-        let envelope = try sealDirect(
-            plaintextJson: wirePayload,
-            recipientPubB64: peerKey,
-            senderPubB64: myPublicKey,
-            senderPrivB64: myPrivateKey
-        )
-        return try api.sendMessage(recipientId: peerId, envelopeJson: envelope, clientId: clientId)
+    /// Pickle Olm-аккаунта (identity + one-time keys). Создаётся при первом обращении.
+    private func olmAccount() throws -> String {
+        if let pickle = try? store.metaGet(key: "olm_account"), !pickle.isEmpty {
+            return pickle
+        }
+        let pickle = try olmAccountNew()
+        try store.metaSet(key: "olm_account", value: pickle)
+        return pickle
     }
 
-    /// Отправить копию самому себе (мультидевайс-синк) — тем же личным конвертом на свой id.
-    func sendToSelf(wirePayload: String) throws -> String {
-        let envelope = try sealDirect(
-            plaintextJson: wirePayload,
-            recipientPubB64: myPublicKey,
-            senderPubB64: myPublicKey,
-            senderPrivB64: myPrivateKey
-        )
-        return try api.sendMessage(recipientId: myId, envelopeJson: envelope, clientId: nil)
+    private func myOlmIdentityKey() throws -> String {
+        if !myOlmIdentity.isEmpty { return myOlmIdentity }
+        myOlmIdentity = try olmAccountIdentity(accountPickle: olmAccount())
+        return myOlmIdentity
+    }
+
+    /// Опубликовать/пополнить prekeys на сервере. Идемпотентно: заливает identity
+    /// и генерит новые OTK, когда на сервере их мало. Дёргается при старте и после
+    /// расхода OTK на входящей prekey-сессии.
+    func ensureOlmKeys() {
+        do {
+            let acct = try olmAccount()
+            let count = (try? api.keysCount()) ?? 0
+            guard count < 20 else { return }
+            let published = try olmAccountGenerateOtks(accountPickle: acct, count: 40)
+            try store.metaSet(key: "olm_account", value: published.accountPickle)
+            myOlmIdentity = published.identityKeyB64
+            try api.uploadKeys(identityKeyB64: published.identityKeyB64,
+                               oneTimeKeysJson: published.oneTimeKeysJson)
+        } catch {
+            // Не критично для UI: повторится при следующем старте/приёме.
+        }
+    }
+
+    /// Ratchet-конверт 1:1: {ratchet, olm_identity, type, body_b64}.
+    private func ratchetEnvelope(type: UInt32, body: String) throws -> String {
+        let obj: [String: Any] = ["ratchet": "1", "olm_identity": try myOlmIdentityKey(),
+                                  "type": Int(type), "body_b64": body]
+        let data = try JSONSerialization.data(withJSONObject: obj)
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    // MARK: - Отправка
+
+    /// Запечатать личное сообщение Double Ratchet'ом и отправить. При первом
+    /// сообщении устанавливает Olm-сессию по prekey-бандлу пира (X3DH).
+    func sendDirect(to peerId: String, wirePayload: String, clientId: String? = nil) throws -> String {
+        let id = peerId.lowercased()
+        var sessionPickle = try store.olmSessionGet(peerId: id)
+        if sessionPickle == nil {
+            let bundle = try api.claimKeys(userId: id)
+            sessionPickle = try olmCreateOutbound(accountPickle: olmAccount(),
+                                                  theirIdentityB64: bundle.identityKeyB64,
+                                                  theirOneTimeKeyB64: bundle.oneTimeKeyB64)
+        }
+        let enc = try olmEncrypt(sessionPickle: sessionPickle!, plaintext: wirePayload)
+        try store.olmSessionSet(peerId: id, sessionJson: enc.sessionPickle)
+        let envelope = try ratchetEnvelope(type: enc.messageType, body: enc.bodyB64)
+        return try api.sendMessage(recipientId: peerId, envelopeJson: envelope, clientId: clientId)
     }
 
     func sendGroup(groupId: String, groupKey: String, wirePayload: String) throws -> String {
@@ -253,15 +296,49 @@ actor CoreClient {
 
     func ack(_ ids: [String]) throws { try api.ackMessages(messageIds: ids) }
 
-    /// Вскрыть конверт входящего. Для групп ключ берётся из локального стораджа.
+    /// Вскрыть конверт входящего. 1:1 — Double Ratchet (Olm); группы — общий
+    /// симметричный ключ из локального стораджа (crypto_box-обёртка).
     func open(item: InboxItem) throws -> Opened {
         let env = item.envelope
-        var groupKey: String? = nil
-        // Групповые адресуются на recipient_id = group_id.
-        if let gk = try? store.getGroupKey(groupId: item.recipientId.lowercased()) {
-            groupKey = gk
+        // Ratchet-конверт 1:1?
+        if let data = env.data(using: .utf8),
+           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           (obj["ratchet"] as? String) == "1" {
+            return try ratchetOpen(item: item, obj: obj)
         }
+        // Групповое: адресуется на recipient_id = group_id.
+        let groupKey = (try? store.getGroupKey(groupId: item.recipientId.lowercased())) ?? nil
         return try openEnvelope(envelopeJson: env, myPrivB64: myPrivateKey, groupKeyB64: groupKey)
+    }
+
+    private func ratchetOpen(item: InboxItem, obj: [String: Any]) throws -> Opened {
+        let senderIdentity = obj["olm_identity"] as? String ?? ""
+        let type = UInt32(obj["type"] as? Int ?? 1)
+        let body = obj["body_b64"] as? String ?? ""
+        let peer = item.senderId.lowercased()
+
+        // Есть сессия — пробуем ею. prekey (type 0) при живой сессии — обычное дело
+        // (пир ещё не увидел наш ответ), сессия его тоже расшифрует.
+        if let session = try? store.olmSessionGet(peerId: peer) {
+            if let dec = try? olmDecrypt(sessionPickle: session, messageType: type, bodyB64: body) {
+                try store.olmSessionSet(peerId: peer, sessionJson: dec.sessionPickle)
+                return Opened(senderPubB64: senderIdentity, plaintext: dec.plaintext, isGroup: false)
+            }
+            // Не расшифровалось существующей сессией: только prekey может завести новую.
+            if type != 0 {
+                throw CoreError.Crypto(msg: "ratchet: normal-сообщение не расшифровалось сессией")
+            }
+        }
+        // Нет сессии (или расхождение) + prekey → установить входящую (расходует OTK).
+        guard type == 0 else {
+            throw CoreError.Crypto(msg: "ratchet: нет сессии для normal-сообщения")
+        }
+        let inb = try olmCreateInbound(accountPickle: olmAccount(),
+                                       theirIdentityB64: senderIdentity, bodyB64: body)
+        try store.metaSet(key: "olm_account", value: inb.accountPickle)   // OTK списан
+        try store.olmSessionSet(peerId: peer, sessionJson: inb.sessionPickle)
+        ensureOlmKeys()   // пополнить OTK на сервере
+        return Opened(senderPubB64: senderIdentity, plaintext: inb.plaintext, isGroup: false)
     }
 
     // MARK: - Медиа
