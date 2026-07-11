@@ -16,6 +16,7 @@ final class Session: ObservableObject {
     @Published var myUsername: String = ""
     @Published var myDisplayName: String = ""
     @Published var myAvatarFileId: String = ""
+    @Published var myStatusEmoji: String = ""
 
     var myAvatarURL: URL? {
         guard !myAvatarFileId.isEmpty else { return nil }
@@ -171,6 +172,12 @@ final class Session: ObservableObject {
             myDisplayName = p.displayName ?? ""
             myAvatarFileId = p.avatarFileId ?? ""
         }
+        if let status = await ProfileHTTP.statusEmoji(myId) { myStatusEmoji = status }
+    }
+
+    /// Эмодзи-статус рядом с ником; пустая строка — снять.
+    func setMyStatusEmoji(_ emoji: String) async {
+        if await ProfileHTTP.setStatusEmoji(emoji) { myStatusEmoji = emoji }
     }
 
     /// Загружает фото на сервер и привязывает его к своему профилю. `nil` data — удалить
