@@ -86,6 +86,9 @@ final class Messaging: ObservableObject {
     /// Менеджер E2E-групп и каналов.
     let groups = GroupsManager()
 
+    /// Групповые звонки (mesh, аудио).
+    let groupCalls = GroupCallManager()
+
     init() {
         calls.sendSignal = { [weak self] type, recipient, extra in
             guard let self, let ws = self.ws, ws.isActive() else { return false }
@@ -99,6 +102,19 @@ final class Messaging: ObservableObject {
             }
         }
         calls.signalingAvailable = { [weak self] in self?.ws?.isActive() == true }
+        groupCalls.sendSignal = { [weak self] type, recipient, extra in
+            guard let self, let ws = self.ws, ws.isActive() else { return false }
+            let json = (try? JSONSerialization.data(withJSONObject: extra))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            do {
+                try ws.sendWebrtcSignal(signalType: type, recipientId: recipient, extraJson: json)
+                return true
+            } catch {
+                return false
+            }
+        }
+        groupCalls.isBusyElsewhere = { [weak self] in self?.calls.isBusy ?? false }
+        groupCalls.myId = { [weak self] in self?.myId ?? "" }
     }
 
     /// Привязать к сессии (после логина/бутстрапа). Идемпотентно.
@@ -249,7 +265,14 @@ final class Messaging: ObservableObject {
             typingPeers.remove(sender)
         case "new_message": Task { await pollInbox() }
         case "webrtc_offer", "webrtc_answer", "webrtc_ice", "webrtc_hangup", "webrtc_busy":
-            calls.handleSignal(type: type, sender: sender, payload: obj)
+            // SDP/ICE группового звонка помечены group_call — в свой менеджер.
+            if (obj["group_call"] as? Bool) == true || (obj["group_call"] as? Int) == 1 {
+                groupCalls.handleSignal(type: type, sender: sender, payload: obj)
+            } else {
+                calls.handleSignal(type: type, sender: sender, payload: obj)
+            }
+        case "group_call_start", "group_call_join", "group_call_leave":
+            groupCalls.handleSignal(type: type, sender: sender, payload: obj)
         default: break
         }
     }

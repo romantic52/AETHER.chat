@@ -166,7 +166,8 @@ struct GroupProfileView: View {
                 actionButton(icon: "bubble.left.fill", title: "Чат") { dismiss() }
                 if !isChannel {
                     actionButton(icon: "phone.fill", title: "Звонок") {
-                        // Групповых звонков нет — заглушка на будущее.
+                        messaging.groupCalls.start(groupId: groupId)
+                        dismiss()
                     }
                 }
                 if isOwnerOrAdmin {

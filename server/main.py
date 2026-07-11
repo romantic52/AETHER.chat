@@ -1062,6 +1062,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         # Append sender_id to the message so the recipient knows who is calling
                         msg["sender_id"] = user_id
                         asyncio.create_task(manager.send_personal_message(msg, recipient_id.lower()))
+                # Групповые звонки (mesh): start/join/leave рассылаются всем
+                # участникам группы, направленный SDP/ICE идёт обычными webrtc_*.
+                # Медиа сервер не видит — только сигналинг, как и в 1:1.
+                elif msg.get("type") in ["group_call_start", "group_call_join", "group_call_leave"]:
+                    gid = (msg.get("group_id") or "").lower()
+                    if gid:
+                        with db_conn() as cur:
+                            cur.execute(
+                                """SELECT user_id FROM group_members
+                                   WHERE LOWER(group_id) = LOWER(%s)""", (gid,))
+                            members = [r["user_id"].lower() for r in cur.fetchall()]
+                        if user_id in members:
+                            msg["sender_id"] = user_id
+                            for member in members:
+                                if member != user_id:
+                                    asyncio.create_task(manager.send_personal_message(msg, member))
             except Exception:
                 pass
     except WebSocketDisconnect:
