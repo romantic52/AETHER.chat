@@ -401,15 +401,18 @@ struct AddMemberView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) {
+                // Шторка без чёлки-safe-area: опускаем шапку от скруглённого верха.
                 VStack(spacing: 0) {
                     FloatingHeader(
-                        title: "Добавить участника",
+                        title: (messaging.groups.info(groupId)?.isChannel ?? false)
+                            ? "Добавить подписчика" : "Добавить участника",
                         large: false,
                         leading: AnyView(Button("Отмена") { dismiss() }.foregroundStyle(palette.accent)),
                         withBackground: false
                     )
-                    FloatingSearchBar(prompt: "Поиск по @username", text: $query)
+                    FloatingSearchBar(prompt: "Имя или @username", text: $query)
                 }
+                .padding(.top, 14)
                 .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
             }
         }
