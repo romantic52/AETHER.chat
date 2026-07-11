@@ -289,6 +289,11 @@ def init_db() -> None:
             );
             """
         )
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='users' AND column_name='status_emoji')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN status_emoji TEXT")
+
         for col, ddl in [("public_join", "INTEGER NOT NULL DEFAULT 0"),
                          ("join_key_b64", "TEXT"),
                          ("username", "TEXT"),
@@ -469,6 +474,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     avatar_file_id: Optional[str] = None
     bio: Optional[str] = None
+    status_emoji: Optional[str] = Field(default=None, max_length=16)
 
 class CreateGroupRequest(BaseModel):
     id: str = Field(min_length=2, max_length=64)
@@ -587,6 +593,10 @@ def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_c
             "UPDATE users SET username = COALESCE(%s, username), display_name = COALESCE(%s, display_name), avatar_file_id = COALESCE(%s, avatar_file_id), bio = COALESCE(%s, bio) WHERE LOWER(user_id) = LOWER(%s)",
             (body.username, body.display_name, body.avatar_file_id, body.bio, current_user)
         )
+        # Эмодзи-статус: пустая строка снимает статус (поэтому без COALESCE).
+        if body.status_emoji is not None:
+            cur.execute("UPDATE users SET status_emoji = %s WHERE LOWER(user_id) = LOWER(%s)",
+                        (body.status_emoji or None, current_user))
     return {"ok": True}
 
 
@@ -595,7 +605,7 @@ def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_c
 def get_user_profile(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            "SELECT user_id, public_key_b64, username, display_name, avatar_file_id, bio, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
+            "SELECT user_id, public_key_b64, username, display_name, avatar_file_id, bio, status_emoji, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
         )
         row = cur.fetchone()
     if not row:
@@ -636,7 +646,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         if handle_only:
             cur.execute(
-                """SELECT user_id, username, display_name, avatar_file_id FROM users
+                """SELECT user_id, username, display_name, avatar_file_id, status_emoji FROM users
                    WHERE LOWER(COALESCE(username, '')) LIKE LOWER(%s)
                    ORDER BY (LOWER(COALESCE(username, '')) = %s) DESC,
                             (LOWER(COALESCE(username, '')) LIKE LOWER(%s)) DESC,
@@ -646,7 +656,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
             )
         else:
             cur.execute(
-                """SELECT user_id, username, display_name, avatar_file_id FROM users
+                """SELECT user_id, username, display_name, avatar_file_id, status_emoji FROM users
                    WHERE LOWER(user_id) LIKE LOWER(%s)
                       OR LOWER(COALESCE(username, '')) LIKE LOWER(%s)
                       OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)

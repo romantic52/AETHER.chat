@@ -465,8 +465,13 @@ struct ChatView: View {
                     showAvatarMenu = true
                 }
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
+                HStack(spacing: 4) {
+                    Text(title).font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    if !isGroup, !isSaved, let status = messaging.statusEmoji(peerId) {
+                        Text(status).font(.system(size: 13))
+                    }
+                }
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 12))

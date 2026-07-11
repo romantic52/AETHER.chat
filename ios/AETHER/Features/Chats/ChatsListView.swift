@@ -515,6 +515,9 @@ struct ChatRow: View {
                         .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(palette.textPrimary)
                         .lineLimit(1)
+                    if !chat.isGroup, !isSaved, let status = messaging.statusEmoji(chat.peerId) {
+                        Text(status).font(.system(size: 14))
+                    }
                     if chat.muted {
                         Image(systemName: "speaker.slash.fill")
                             .font(.system(size: 12)).foregroundStyle(palette.textSecondary)

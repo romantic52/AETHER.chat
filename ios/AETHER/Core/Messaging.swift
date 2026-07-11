@@ -50,6 +50,8 @@ final class Messaging: ObservableObject {
     @Published var totalUnread: Int64 = 0
     @Published var typingPeers: Set<String> = []
     @Published var profiles: [String: Profile] = [:]
+    /// Эмодзи-статусы (рядом с ником, как в Telegram). Ключ — user_id.
+    @Published var statusEmojis: [String: String] = [:]
     @Published private(set) var realtimeConnected = false
 
     private weak var session: Session?
@@ -793,6 +795,11 @@ final class Messaging: ObservableObject {
         return URL(string: "\(CoreClient.baseURL)/avatars/\(fid)")
     }
 
+    func statusEmoji(_ peer: String) -> String? {
+        let s = statusEmojis[peer.lowercased()]
+        return (s?.isEmpty ?? true) ? nil : s
+    }
+
     private var profileRequests: Set<String> = []
 
     /// Догрузить профиль для строки списка, если его ещё нет в кэше.
@@ -804,7 +811,12 @@ final class Messaging: ObservableObject {
               !id.hasPrefix("grp_"), !id.hasPrefix("chn_") else { return }
         guard profiles[id] == nil, !profileRequests.contains(id) else { return }
         profileRequests.insert(id)
-        Task { await loadProfile(id) }
+        Task {
+            await loadProfile(id)
+            if let status = await ProfileHTTP.statusEmoji(id) {
+                statusEmojis[id] = status
+            }
+        }
     }
 
     func isOnline(_ peer: String) -> Bool {
