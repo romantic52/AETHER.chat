@@ -97,9 +97,35 @@ private fun daylight() = AppPalette(
     )
 )
 
+private fun telegramNight() = AppPalette(
+    "telegram_night", "Telegram Night", true,
+    darkColorScheme(
+        primary = Color(0xFF64B5EF), onPrimary = Color(0xFF07131C),
+        secondary = Color(0xFF7EB8DA), onSecondary = Color(0xFF07131C),
+        tertiary = Color(0xFF2B5278), onTertiary = Color(0xFFFFFFFF),
+        background = Color(0xFF0E1621), onBackground = Color(0xFFF2F5F7),
+        surface = Color(0xFF17212B), onSurface = Color(0xFFF2F5F7),
+        surfaceVariant = Color(0xFF182533), onSurfaceVariant = Color(0xFF8E9BA7),
+        outline = Color(0xFF3A4B5C)
+    )
+)
+
+private fun telegramDay() = AppPalette(
+    "telegram_day", "Telegram Day", false,
+    lightColorScheme(
+        primary = Color(0xFF3390EC), onPrimary = Color.White,
+        secondary = Color(0xFF5D7991), onSecondary = Color.White,
+        tertiary = Color(0xFFE5F3FF), onTertiary = Color(0xFF17212B),
+        background = Color(0xFFFFFFFF), onBackground = Color(0xFF17212B),
+        surface = Color(0xFFFFFFFF), onSurface = Color(0xFF17212B),
+        surfaceVariant = Color(0xFFF1F4F6), onSurfaceVariant = Color(0xFF707B85),
+        outline = Color(0xFFD5DDE3)
+    )
+)
+
 object ThemePalettes {
     val all: List<AppPalette> = listOf(
-        graphite(), rosepine(), sakura(), mono(), pastel(), daylight()
+        telegramNight(), telegramDay(), graphite(), mono(), sakura(), rosepine(), pastel(), daylight()
     )
 
     fun byKey(key: String): AppPalette = all.firstOrNull { it.key == key } ?: all.first()

@@ -32,10 +32,13 @@ import androidx.compose.material.icons.filled.Image
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Security
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.foundation.border
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.material3.*
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -48,6 +51,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -56,6 +60,7 @@ import org.groktest.securemessenger.AetherService
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -64,8 +69,13 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.animateFloat
@@ -76,15 +86,21 @@ import androidx.compose.runtime.key
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.AetherEdge
+import org.groktest.securemessenger.ui.theme.AetherEdgeDim
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.aetherCircle
 import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
+import org.groktest.securemessenger.ui.components.GlassBackground
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     peerId: String,
     peerDisplayName: String = peerId,
+    chatType: Int = 0,
     messagesFlow: kotlinx.coroutines.flow.Flow<List<MessageEntity>>,
     onBack: () -> Unit,
     onAudioCall: () -> Unit,
@@ -113,8 +129,8 @@ fun ChatScreen(
     forwardChatsFlow: kotlinx.coroutines.flow.Flow<List<org.groktest.securemessenger.data.ChatEntity>> = kotlinx.coroutines.flow.flowOf(emptyList()),
     // P6: открыть экран «Цифры безопасности» (null — кнопка скрыта, например для каналов)
     onOpenSafety: (() -> Unit)? = null,
-    // Статус собеседника: ISO last_active (для «был(а) в сети») — null если недоступно
-    fetchPeerLastActive: suspend () -> String? = { null },
+    // last_active + эмодзи-статус одним запросом профиля.
+    fetchPeerPresence: suspend () -> Pair<String?, String?>? = { null },
     // Кол-во участников группы/канала для подзаголовка шапки (null — недоступно)
     fetchMemberCount: suspend () -> Int? = { null },
     // Открыть профиль собеседника (тап по шапке)
@@ -127,6 +143,7 @@ fun ChatScreen(
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val appearance = LocalThemeSettings.current
 
     var replyingTo by remember { mutableStateOf<MessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
@@ -135,15 +152,20 @@ fun ChatScreen(
     val forwardChats by forwardChatsFlow.collectAsState(initial = emptyList())
     var typingFromPeer by remember { mutableStateOf(false) }
     var lastTypingSent by remember { mutableStateOf(0L) }
+    var headerMenuOpen by remember { mutableStateOf(false) }
+    val isChannelChat = chatType == 2
+    val isGroupChat = chatType == 1
+    val isPersonalChat = !isChannelChat && !isGroupChat
 
     // Статус «был(а) в сети» — опрашиваем профиль собеседника (только личные чаты)
-    var peerStatus by remember { mutableStateOf("") }
-    LaunchedEffect(peerId) {
-        val personal = !peerId.startsWith("channel_", ignoreCase = true) &&
-            !peerId.startsWith("group_", ignoreCase = true)
-        if (!personal) return@LaunchedEffect
+    var peerStatus by remember(peerId) { mutableStateOf("") }
+    var peerStatusEmoji by remember(peerId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(peerId, chatType) {
+        if (!isPersonalChat) return@LaunchedEffect
         while (true) {
-            peerStatus = formatLastSeen(try { fetchPeerLastActive() } catch (e: Exception) { null })
+            val presence = try { fetchPeerPresence() } catch (_: Exception) { null }
+            peerStatus = formatLastSeen(presence?.first)
+            peerStatusEmoji = presence?.second
             kotlinx.coroutines.delay(30_000)
         }
     }
@@ -174,16 +196,52 @@ fun ChatScreen(
         }
     }
 
-    var didInitialScroll by remember { mutableStateOf(false) }
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            val target = messages.size - 1
+    var didInitialScroll by remember(peerId) { mutableStateOf(false) }
+    var followLatest by remember(peerId) { mutableStateOf(true) }
+    var knownLastMessageId by remember(peerId) { mutableStateOf<String?>(null) }
+    val currentLastMessageId = messages.lastOrNull()?.msgId
+    val arrivingMessageId = currentLastMessageId?.takeIf {
+        knownLastMessageId != null && it != knownLastMessageId
+    }
+    val showJump by remember { derivedStateOf { listState.canScrollForward } }
+    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+
+    suspend fun snapToLatest() {
+        if (messages.isEmpty()) return
+        listState.scrollToItem(messages.lastIndex)
+        listState.scrollBy(Float.MAX_VALUE)
+    }
+
+    LaunchedEffect(listState.isScrollInProgress) {
+        if (didInitialScroll && !listState.isScrollInProgress) {
+            followLatest = !listState.canScrollForward
+        }
+    }
+
+    LaunchedEffect(currentLastMessageId) {
+        if (currentLastMessageId != null) {
+            val target = messages.lastIndex
             if (!didInitialScroll) {
-                listState.scrollToItem(target)        // мгновенно при открытии чата
+                withFrameNanos { }
+                snapToLatest()
+                followLatest = true
+                kotlinx.coroutines.delay(350)
+                snapToLatest()
                 didInitialScroll = true
-            } else {
-                listState.animateScrollToItem(target) // плавно только для новых сообщений
+            } else if (followLatest || messages.last().isOut) {
+                if (appearance.animationSpeed.value <= 0.01f) snapToLatest()
+                else {
+                    listState.animateScrollToItem(target)
+                    listState.scrollBy(Float.MAX_VALUE)
+                }
             }
+        }
+        knownLastMessageId = currentLastMessageId
+    }
+
+    LaunchedEffect(imeBottom) {
+        if (didInitialScroll && followLatest && messages.isNotEmpty()) {
+            snapToLatest()
         }
     }
 
@@ -500,111 +558,156 @@ fun ChatScreen(
         }
     }
 
+    GlassBackground {
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
+            .background(Color.Transparent)
     ) {
         Scaffold(
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
             topBar = {
-                // Своя плашка фиксированной высоты — всё честно по центру, ничего не «торчит».
-                val isChannelChat = peerId.startsWith("channel_", ignoreCase = true)
-                val isGroupChat = peerId.startsWith("group_", ignoreCase = true)
-                val isPersonalChat = !isChannelChat && !isGroupChat
-                Surface(
-                    color = Color.Transparent,
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
-                    modifier = Modifier.fillMaxWidth()
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(appearance.edgeDimLength.value.dp)
+                        .zIndex(2f)
                 ) {
+                    AetherEdgeDim(AetherEdge.Top, Modifier.matchParentSize())
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .statusBarsPadding()
-                            .height(56.dp)
-                            .padding(start = 4.dp, end = 4.dp),
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        IconButton(onClick = onBack) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier
+                                .size(48.dp)
+                                .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                        ) {
                             Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
-                        // Аватар-инициал (имени чата), цвет стабилен по peerId
-                        Box(
-                            modifier = Modifier.size(38.dp).clip(CircleShape).background(peerColor(peerId))
-                                .clickable { onOpenProfile() },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text(
-                                peerDisplayName.trim().firstOrNull()?.uppercase() ?: "?",
-                                color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold
-                            )
-                        }
                         Spacer(Modifier.width(10.dp))
-                        Column(modifier = Modifier.weight(1f).clickable { onOpenProfile() }) {
-                            Text(
-                                peerDisplayName,
-                                fontSize = 16.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = MaterialTheme.colorScheme.onBackground,
-                                maxLines = 1,
-                                overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                            )
-                            val isTyping = typingFromPeer && !isChannelChat
-                            if (isTyping) {
-                                // «печатает» с живыми точками, как в Telegram
-                                var dots by remember { mutableStateOf(1) }
-                                LaunchedEffect(Unit) {
-                                    while (true) { kotlinx.coroutines.delay(400); dots = (dots % 3) + 1 }
-                                }
-                                Text(
-                                    "печатает" + ".".repeat(dots),
-                                    fontSize = 12.sp,
-                                    color = MaterialTheme.colorScheme.primary,
-                                    maxLines = 1
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(48.dp)
+                                .aetherIsland(
+                                    shape = RoundedCornerShape(24.dp),
+                                    fillAlpha = AetherStyle.ControlFillAlpha,
+                                    strokeAlpha = AetherStyle.ControlStrokeAlpha
                                 )
-                            } else {
-                                // Кол-во участников/подписчиков для шапки группы/канала
-                                val memberCount by produceState<Int?>(initialValue = null, peerId) {
-                                    if (isChannelChat || isGroupChat) {
-                                        value = try { withContext(Dispatchers.IO) { fetchMemberCount() } } catch (e: Exception) { null }
+                                .padding(start = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(36.dp)
+                                    .clip(CircleShape)
+                                    .background(peerColor(peerId))
+                                    .clickable { onOpenProfile() },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    peerDisplayName.trim().firstOrNull()?.uppercase() ?: "?",
+                                    color = Color.White,
+                                    fontSize = 15.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            Spacer(Modifier.width(9.dp))
+                            Column(modifier = Modifier.weight(1f).clickable { onOpenProfile() }) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Text(
+                                        peerDisplayName,
+                                        modifier = Modifier.weight(1f, fill = false),
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = MaterialTheme.colorScheme.onBackground,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
+                                    if (isPersonalChat && !peerStatusEmoji.isNullOrBlank()) {
+                                        Spacer(Modifier.width(4.dp))
+                                        Text(peerStatusEmoji!!, fontSize = 14.sp, maxLines = 1)
                                     }
                                 }
-                                val (subtitle, subColor) = when {
-                                    isChannelChat -> (memberCount?.let { "$it подписчиков" } ?: "Канал") to MaterialTheme.colorScheme.onSurfaceVariant
-                                    isGroupChat -> (memberCount?.let { "$it участников" } ?: "Группа") to MaterialTheme.colorScheme.onSurfaceVariant
-                                    else -> peerStatus.ifBlank { "был(а) недавно" } to
-                                        (if (peerStatus == "в сети") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                val isTyping = typingFromPeer && !isChannelChat
+                                if (isTyping) {
+                                    var dots by remember { mutableStateOf(1) }
+                                    LaunchedEffect(Unit) {
+                                        while (true) { kotlinx.coroutines.delay(400); dots = (dots % 3) + 1 }
+                                    }
+                                    Text(
+                                        "печатает" + ".".repeat(dots),
+                                        fontSize = 12.sp,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        maxLines = 1
+                                    )
+                                } else {
+                                    val memberCount by produceState<Int?>(initialValue = null, peerId) {
+                                        if (isChannelChat || isGroupChat) {
+                                            value = try { withContext(Dispatchers.IO) { fetchMemberCount() } } catch (e: Exception) { null }
+                                        }
+                                    }
+                                    val (subtitle, subColor) = when {
+                                        isChannelChat -> (memberCount?.let { "$it подписчиков" } ?: "Канал") to MaterialTheme.colorScheme.onSurfaceVariant
+                                        isGroupChat -> (memberCount?.let { "$it участников" } ?: "Группа") to MaterialTheme.colorScheme.onSurfaceVariant
+                                        else -> peerStatus.ifBlank { "был(а) недавно" } to
+                                            (if (peerStatus == "в сети") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                    Text(
+                                        subtitle,
+                                        fontSize = 12.sp,
+                                        color = subColor,
+                                        maxLines = 1,
+                                        overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
+                                    )
                                 }
-                                Text(
-                                    subtitle,
-                                    fontSize = 12.sp,
-                                    color = subColor,
-                                    maxLines = 1,
-                                    overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
-                                )
                             }
-                        }
-                        if (isPersonalChat) {
-                            IconButton(onClick = onAudioCall) {
-                                Icon(Icons.Default.Phone, contentDescription = "Аудиозвонок", tint = MaterialTheme.colorScheme.primary)
+                            if (isPersonalChat) {
+                                IconButton(onClick = onAudioCall, modifier = Modifier.size(38.dp)) {
+                                    Icon(Icons.Default.Phone, contentDescription = "Аудиозвонок", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                }
+                                IconButton(onClick = onVideoCall, modifier = Modifier.size(38.dp)) {
+                                    Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                }
                             }
-                            IconButton(onClick = onVideoCall) {
-                                Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = MaterialTheme.colorScheme.primary)
+                            Box {
+                                IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(38.dp)) {
+                                    Icon(Icons.Default.MoreVert, contentDescription = "Меню чата", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                DropdownMenu(expanded = headerMenuOpen, onDismissRequest = { headerMenuOpen = false }) {
+                                    DropdownMenuItem(
+                                        text = { Text(if (isPersonalChat) "Профиль" else "Информация") },
+                                        leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                                        onClick = { headerMenuOpen = false; onOpenProfile() }
+                                    )
+                                    if (isPersonalChat && onOpenSafety != null) {
+                                        DropdownMenuItem(
+                                            text = { Text("Цифры безопасности") },
+                                            leadingIcon = { Icon(Icons.Default.Security, contentDescription = null) },
+                                            onClick = { headerMenuOpen = false; onOpenSafety() }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
                 }
             },
             bottomBar = {
-                Surface(
-                    color = Color.Transparent,
-                    shadowElevation = 0.dp,
-                    tonalElevation = 0.dp,
+                Box(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .heightIn(min = appearance.edgeDimLength.value.dp)
                         .imePadding()
+                        .zIndex(2f),
+                    contentAlignment = Alignment.BottomCenter
                 ) {
+                  AetherEdgeDim(AetherEdge.Bottom, Modifier.matchParentSize())
                   // (#A6) Канал для не-админа — read-only: плашка вместо поля ввода
                   val canPost by produceState(initialValue = true, peerId) {
                       value = try { withContext(Dispatchers.IO) { checkCanPost() } } catch (e: Exception) { true }
@@ -672,7 +775,7 @@ fun ChatScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 8.dp)
                             .navigationBarsPadding(),
-                        verticalAlignment = Alignment.Bottom
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
                         val previewFile = voicePreviewFile
                         if (previewFile != null) {
@@ -695,7 +798,7 @@ fun ChatScreen(
                         Box(
                             modifier = Modifier
                                 .size(AetherStyle.ControlSize)
-                                .aetherCircle(fillAlpha = 1f, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                                .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
                                 .clickable(enabled = attachEnabled) {
                                     val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
                                         arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
@@ -769,24 +872,25 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .padding(horizontal = 8.dp)
-                                    .border(
-                                        AetherStyle.Stroke,
-                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.46f),
-                                        RoundedCornerShape(AetherStyle.PillRadius)
+                                    .height(AetherStyle.ControlSize)
+                                    .aetherIsland(
+                                        shape = RoundedCornerShape(AetherStyle.PillRadius),
+                                        fillAlpha = AetherStyle.ControlFillAlpha,
+                                        strokeAlpha = 0.46f
                                     ),
                                 placeholder = { Text("Написать сообщение...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                                 maxLines = 4,
                                 enabled = !isSending,
                                 shape = RoundedCornerShape(AetherStyle.PillRadius),
-                                colors = aetherTextFieldColors(containerAlpha = 1f)
+                                colors = aetherTextFieldColors(containerAlpha = 0f)
                             )
                         }
                         } // else (нет превью)
 
                         val sendActive = (inputText.isNotBlank() || isRecordingVoice || voicePreviewFile != null) && !isSending
                         val sendBg by animateColorAsState(
-                            targetValue = if (sendActive) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
-                            animationSpec = tween(200),
+                            targetValue = if (sendActive) MaterialTheme.colorScheme.primary else aetherSurface(AetherStyle.ControlFillAlpha),
+                            animationSpec = tween(org.groktest.securemessenger.ui.theme.LocalThemeSettings.current.motionDuration(200)),
                             label = "sendBg"
                         )
                         // Лёгкая пульсация кнопки во время незалоченной записи (живее, как в TG).
@@ -952,10 +1056,40 @@ fun ChatScreen(
                     }
                   }
                   } // else canPost (#A6)
+
+                  AnimatedVisibility(
+                      visible = showJump,
+                      enter = fadeIn(tween(appearance.motionDuration(220))),
+                      exit = fadeOut(tween(appearance.motionDuration(180))),
+                      modifier = Modifier
+                          .align(Alignment.BottomEnd)
+                          .navigationBarsPadding()
+                          .padding(end = 12.dp, bottom = AetherStyle.ControlSize + 16.dp)
+                  ) {
+                      Surface(
+                          shape = CircleShape,
+                          color = MaterialTheme.colorScheme.surface,
+                          shadowElevation = 4.dp,
+                          modifier = Modifier.size(46.dp).clickable {
+                              coroutineScope.launch {
+                                  listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0))
+                                  listState.scrollBy(Float.MAX_VALUE)
+                              }
+                          }
+                      ) {
+                          Box(contentAlignment = Alignment.Center) {
+                              Icon(
+                                  Icons.Filled.KeyboardArrowDown,
+                                  contentDescription = "Вниз",
+                                  tint = MaterialTheme.colorScheme.onSurfaceVariant
+                              )
+                          }
+                      }
+                  }
                 }
             },
             containerColor = Color.Transparent
-        ) { padding ->
+        ) { _ ->
             // (#A3) Честная индикация: легаси-канал без сквозного шифрования
             val notE2e by produceState(initialValue = false, peerId) {
                 value = try { withContext(Dispatchers.IO) { checkNotE2e() } } catch (e: Exception) { false }
@@ -963,9 +1097,9 @@ fun ChatScreen(
             // Телеграм-обои: тонкий узор из точек в тон темы (субтильно, под Aether).
             Column(modifier = Modifier
                 .fillMaxSize()
-                .padding(top = padding.calculateTopPadding())
             ) {
                 if (notE2e) {
+                    Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
                     Surface(
                         color = MaterialTheme.colorScheme.errorContainer,
                         modifier = Modifier.fillMaxWidth()
@@ -983,7 +1117,12 @@ fun ChatScreen(
                 LazyColumn(
                     state = listState,
                     modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 10.dp)
+                    contentPadding = PaddingValues(
+                        start = 8.dp,
+                        top = if (notE2e) 8.dp else AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
+                        end = 8.dp,
+                        bottom = appearance.edgeDimLength.value.dp + AetherStyle.ScreenVertical
+                    )
                 ) {
                     itemsIndexed(messages, key = { _, m -> m.msgId }) { index, msg ->
                         // Группировка как в Telegram: разделители дат, тесная группа
@@ -997,67 +1136,72 @@ fun ChatScreen(
                         val showTail = next == null || next.isOut != msg.isOut ||
                             !isSameDay(next.timestamp, msg.timestamp) || (next.timestamp - msg.timestamp) >= gap
 
-                        // animateItemPlacement — плавный сдвиг при вставке нового
-                        // сообщения / изменении статуса (как лента Telegram).
-                        Column(modifier = Modifier.animateItemPlacement(tween(220))) {
+                        Column(modifier = Modifier.animateItemPlacement(tween(appearance.motionDuration(260)))) {
                             if (showDate) DateSeparator(msg.timestamp)
                             Spacer(Modifier.height(if (groupedWithPrev) 2.dp else 8.dp))
-                            MessageBubble(
-                                msg = msg,
-                                showTail = showTail,
-                                isChannelPost = peerId.startsWith("channel_", ignoreCase = true),
-                                onDownloadMedia = onDownloadMedia,
-                                onDeleteMessage = { mid, deleteEverywhere ->
-                                    coroutineScope.launch {
-                                        val err = withContext(Dispatchers.IO) {
-                                            onDeleteMessage(mid, deleteEverywhere)
+                            val bubble: @Composable () -> Unit = {
+                                MessageBubble(
+                                    msg = msg,
+                                    showTail = showTail,
+                                    isChannelPost = isChannelChat,
+                                    onDownloadMedia = onDownloadMedia,
+                                    onDeleteMessage = { mid, deleteEverywhere ->
+                                        coroutineScope.launch {
+                                            val err = withContext(Dispatchers.IO) {
+                                                onDeleteMessage(mid, deleteEverywhere)
+                                            }
+                                            if (err != null) {
+                                                snackbarHostState.showSnackbar(
+                                                    "Ошибка удаления: ${err.message}",
+                                                    duration = SnackbarDuration.Long
+                                                )
+                                            }
                                         }
-                                        if (err != null) {
-                                            snackbarHostState.showSnackbar(
-                                                "Ошибка удаления: ${err.message}",
-                                                duration = SnackbarDuration.Long
-                                            )
-                                        }
-                                    }
-                                },
-                                myId = myId,
-                                onReact = onReact,
-                                onRetry = onRetryMessage,
-                                onReply = { replyingTo = it },
-                                onEdit = {
-                                    replyingTo = null
-                                    editingMessage = it
-                                    inputText = it.text
-                                },
-                                onForward = { forwardingMessage = it },
-                                onOpenDiscussion = onOpenDiscussion
-                            )
+                                    },
+                                    myId = myId,
+                                    onReact = onReact,
+                                    onRetry = onRetryMessage,
+                                    onReply = { replyingTo = it },
+                                    onEdit = {
+                                        replyingTo = null
+                                        editingMessage = it
+                                        inputText = it.text
+                                    },
+                                    onForward = { forwardingMessage = it },
+                                    onOpenDiscussion = onOpenDiscussion
+                                )
+                            }
+                            val animateArrival = remember(msg.msgId) {
+                                msg.msgId == arrivingMessageId && appearance.animationSpeed.value > 0.01f
+                            }
+                            if (animateArrival) {
+                                var visible by remember(msg.msgId) { mutableStateOf(false) }
+                                LaunchedEffect(msg.msgId) {
+                                    withFrameNanos { }
+                                    visible = true
+                                }
+                                val duration = appearance.motionDuration(if (isChannelChat) 440 else 340)
+                                androidx.compose.animation.AnimatedVisibility(
+                                    visible = visible,
+                                    enter = androidx.compose.animation.fadeIn(tween(appearance.motionDuration(220))) +
+                                        androidx.compose.animation.slideInVertically(
+                                            animationSpec = tween(duration, easing = FastOutSlowInEasing),
+                                            initialOffsetY = {
+                                                (it * 0.18f * appearance.motionIntensity.value).toInt().coerceAtMost(72)
+                                            }
+                                        ),
+                                    exit = androidx.compose.animation.fadeOut(tween(appearance.motionDuration(160)))
+                                ) {
+                                    bubble()
+                                }
+                            } else {
+                                bubble()
+                            }
                         }
                     }
                 }
             }
-            // Кнопка «вниз» — появляется, когда список прокручен вверх (как в Telegram)
-            val showJump by remember { androidx.compose.runtime.derivedStateOf { listState.canScrollForward } }
-            androidx.compose.animation.AnimatedVisibility(
-                visible = showJump,
-                enter = androidx.compose.animation.fadeIn(),
-                exit = androidx.compose.animation.fadeOut(),
-                modifier = Modifier.align(Alignment.BottomEnd).padding(end = 12.dp, bottom = 12.dp)
-            ) {
-                Surface(
-                    shape = CircleShape,
-                    color = MaterialTheme.colorScheme.surface,
-                    shadowElevation = 4.dp,
-                    modifier = Modifier.size(46.dp).clickable {
-                        coroutineScope.launch { listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0)) }
-                    }
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Вниз", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                }
-            }
-            } // Box (список + кнопка вниз)
+            } // Box (список)
             } // Column (#A3)
         }
 
@@ -1408,6 +1552,7 @@ fun ChatScreen(
             }
         }
     }
+    }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1431,7 +1576,8 @@ fun MessageBubble(
     // В канале посты выровнены одинаково (слева) — как лента, без «моих справа».
     val alignEnd = isOut && !isChannelPost
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
-    val quickReaction = org.groktest.securemessenger.ui.theme.LocalThemeSettings.current.quickReaction.value
+    val appearance = org.groktest.securemessenger.ui.theme.LocalThemeSettings.current
+    val quickReaction = appearance.quickReaction.value
     // Моя текущая реакция на это сообщение (для toggle «снять» и подсветки в пикере)
     val myReaction = remember(msg.reactions, myId) {
         try {
@@ -1451,18 +1597,45 @@ fun MessageBubble(
     var menuOpen by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
+    val bubbleInteraction = remember(msg.msgId) { MutableInteractionSource() }
+    var reactionBurstTrigger by remember(msg.msgId) { mutableIntStateOf(0) }
+    var reactionBurstEmoji by remember(msg.msgId) { mutableStateOf(quickReaction) }
+    val reactionBurst = remember(msg.msgId) { Animatable(1f) }
+
+    LaunchedEffect(reactionBurstTrigger, appearance.animationSpeed.value, appearance.reactionEffects.value) {
+        if (reactionBurstTrigger == 0 || !appearance.reactionEffects.value || appearance.animationSpeed.value <= 0.01f) {
+            reactionBurst.snapTo(1f)
+            return@LaunchedEffect
+        }
+        reactionBurst.snapTo(0f)
+        reactionBurst.animateTo(
+            1f,
+            tween(appearance.motionDuration(560), easing = FastOutSlowInEasing)
+        )
+    }
+
+    fun react(emoji: String, remove: Boolean) {
+        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+        if (!remove && appearance.reactionEffects.value && appearance.animationSpeed.value > 0.01f) {
+            reactionBurstEmoji = emoji
+            reactionBurstTrigger++
+        }
+        onReact(msg.msgId, if (remove) "" else emoji)
+    }
 
     // (#A5) remember: JSON парсится один раз, а не при каждой рекомпозиции пузыря
     val kind = mediaJson?.let { mediaKindForDisplay(it) } ?: ""
     val mediaText = mediaJson?.toString() ?: msg.text
-    val isDetachedMedia = kind == "image" || kind == "file" || kind == "video_note"
+    val isDetachedMedia = kind == "image" || kind == "video" || kind == "video_note"
     val bubbleColor by animateColorAsState(
         targetValue = if (isDetachedMedia) {
             Color.Transparent
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (alignEnd) 0.82f else 0.72f)
+            MaterialTheme.colorScheme.surfaceVariant.copy(
+                alpha = (if (alignEnd) 0.82f else 0.72f) * (1f - appearance.surfaceTransparency.value)
+            )
         },
-        animationSpec = tween(220),
+        animationSpec = tween(appearance.motionDuration(220)),
         label = "messageBubbleColor"
     )
     val bubbleBorderColor by animateColorAsState(
@@ -1471,7 +1644,7 @@ fun MessageBubble(
         } else {
             MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
         },
-        animationSpec = tween(220),
+        animationSpec = tween(appearance.motionDuration(220)),
         label = "messageBubbleBorder"
     )
     val textColor = when {
@@ -1507,7 +1680,15 @@ fun MessageBubble(
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             if (swipeOffset.value > swipeThresholdPx) onReply(msg)
-                            coroutineScope.launch { swipeOffset.animateTo(0f) }
+                            coroutineScope.launch {
+                                swipeOffset.animateTo(
+                                    0f,
+                                    if (appearance.animationSpeed.value <= 0.01f) snap() else spring(
+                                        dampingRatio = 0.82f,
+                                        stiffness = 420f * appearance.animationSpeed.value
+                                    )
+                                )
+                            }
                         },
                         onHorizontalDrag = { change, dragAmount ->
                             // Поглощаем жест, чтобы не сработал свайп-назад (SwipeToBackWrapper)
@@ -1521,8 +1702,8 @@ fun MessageBubble(
         ) {
         // «Хвост» (срезанный угол) только у последнего сообщения в группе —
         // сгруппированные сообщения одного автора скруглены одинаково.
-        val r = 22.dp
-        val bubbleShape = if (!showTail) RoundedCornerShape(r) else RoundedCornerShape(
+        val r = appearance.bubbleRadius.value.dp
+        val bubbleShape = if (!showTail || !appearance.bubbleTails.value) RoundedCornerShape(r) else RoundedCornerShape(
             topStart = r,
             topEnd = r,
             bottomStart = if (alignEnd) r else 8.dp,
@@ -1538,12 +1719,13 @@ fun MessageBubble(
                     else Modifier.border(1.dp, bubbleBorderColor, bubbleShape)
                 )
                 .combinedClickable(
+                    interactionSource = bubbleInteraction,
+                    indication = null,
                     onClick = {},
                     // Двойной тап — быстрая реакция (по умолчанию ❤️, настраивается);
                     // повторный двойной тап снимает её.
                     onDoubleClick = {
-                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                        onReact(msg.msgId, if (myReaction == quickReaction) "" else quickReaction)
+                        react(quickReaction, myReaction == quickReaction)
                     },
                     onLongClick = {
                         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -1583,8 +1765,8 @@ fun MessageBubble(
                     Text(
                         text = msg.text,
                         color = textColor,
-                        fontSize = 16.sp,
-                        lineHeight = 22.sp
+                        fontSize = appearance.messageTextSize.value.sp,
+                        lineHeight = (appearance.messageTextSize.value + 6).sp
                     )
                 } else {
                     val json = mediaJson
@@ -1596,10 +1778,21 @@ fun MessageBubble(
                             onDownloadMedia = onDownloadMedia,
                             onLongClick = { menuOpen = true }
                         )
+                    } else if (kind == "video") {
+                        VideoMessage(
+                            jsonText = mediaText,
+                            onDownloadMedia = onDownloadMedia
+                        )
                     } else if (kind == "voice") {
+                        val wireDuration = json?.optDouble("duration", 0.0) ?: 0.0
+                        val durationMs = if (wireDuration in 0.001..600.0) {
+                            (wireDuration * 1000).toLong()
+                        } else {
+                            wireDuration.toLong()
+                        }
                         VoiceMessagePlayer(
                             jsonText = mediaText,
-                            durationMs = json?.optLong("duration", 0L) ?: 0L,
+                            durationMs = durationMs,
                             tint = textColor,
                             onDownloadMedia = onDownloadMedia
                         )
@@ -1712,12 +1905,23 @@ fun MessageBubble(
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                         counts.forEach { emoji ->
                             key(emoji) {
-                                // Pop-появление реакции (пружинка), как в Telegram
-                                val scale = remember { Animatable(0.5f) }
-                                LaunchedEffect(Unit) {
-                                    scale.animateTo(1f, spring(dampingRatio = 0.42f, stiffness = 520f))
+                                val scale = remember(msg.msgId, emoji) { Animatable(1f) }
+                                LaunchedEffect(msg.reactions, appearance.animationSpeed.value, appearance.reactionEffects.value) {
+                                    if (appearance.reactionEffects.value && appearance.animationSpeed.value > 0.01f) {
+                                        scale.snapTo(0.58f)
+                                        scale.animateTo(
+                                            1f,
+                                            spring(
+                                                dampingRatio = (0.72f - appearance.motionIntensity.value * 0.16f).coerceIn(0.42f, 0.72f),
+                                                stiffness = 520f * appearance.animationSpeed.value
+                                            )
+                                        )
+                                    } else {
+                                        scale.snapTo(1f)
+                                    }
                                 }
                                 val mineChip = myReaction == emoji
+                                val count = reactionsMap.values.count { it == emoji }
                                 Box(
                                     modifier = Modifier
                                         .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
@@ -1725,12 +1929,14 @@ fun MessageBubble(
                                         // Моя реакция чуть ярче; тап по чипу — поставить/снять
                                         .background(if (mineChip) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else chipBg)
                                         .clickable {
-                                            haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                            onReact(msg.msgId, if (mineChip) "" else emoji)
+                                            react(emoji, mineChip)
                                         }
                                         .padding(horizontal = 8.dp, vertical = 3.dp)
                                 ) {
-                                    Text(emoji, fontSize = 13.sp, color = textColor)
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                        Text(emoji, fontSize = 13.sp, color = textColor)
+                                        if (count > 1) Text(count.toString(), fontSize = 11.sp, color = textColor.copy(alpha = 0.75f))
+                                    }
                                 }
                             }
                         }
@@ -1739,7 +1945,7 @@ fun MessageBubble(
                 run {
                     Spacer(Modifier.height(2.dp))
                     Row(
-                        modifier = Modifier.fillMaxWidth(),
+                        modifier = Modifier.align(Alignment.End),
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -1787,6 +1993,52 @@ fun MessageBubble(
                 }
             }
         }
+        if (reactionBurst.value < 0.999f) {
+            val progress = reactionBurst.value
+            val mainScale = if (progress < 0.28f) {
+                0.45f + (progress / 0.28f) * 1.05f
+            } else {
+                1.5f - ((progress - 0.28f) / 0.72f) * 0.5f
+            }
+            val fade = if (progress < 0.64f) 1f else (1f - (progress - 0.64f) / 0.36f).coerceIn(0f, 1f)
+            val radius = with(androidx.compose.ui.platform.LocalDensity.current) {
+                appearance.motionDistance(42f).dp.toPx()
+            }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .size(112.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                repeat(6) { index ->
+                    val angle = index * 1.0472f - 1.5708f
+                    Text(
+                        reactionBurstEmoji,
+                        fontSize = 12.sp,
+                        modifier = Modifier.graphicsLayer {
+                            translationX = (kotlin.math.cos(angle.toDouble()) * radius * progress).toFloat()
+                            translationY = (kotlin.math.sin(angle.toDouble()) * radius * progress).toFloat()
+                            alpha = fade * (1f - progress * 0.45f)
+                            val particleScale = 0.45f + (1f - progress) * 0.45f
+                            scaleX = particleScale
+                            scaleY = particleScale
+                            rotationZ = index * 24f * progress
+                        }
+                    )
+                }
+                Text(
+                    reactionBurstEmoji,
+                    fontSize = 34.sp,
+                    modifier = Modifier.graphicsLayer {
+                        scaleX = mainScale
+                        scaleY = mainScale
+                        alpha = fade
+                        translationY = -radius * 0.7f * progress
+                        rotationZ = -7f + 14f * progress
+                    }
+                )
+            }
+        }
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             Row(
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -1795,7 +2047,14 @@ fun MessageBubble(
                 listOf("❤️", "👍", "🔥", "😂", "😮", "😢").forEach { e ->
                     val interaction = remember { MutableInteractionSource() }
                     val pressed by interaction.collectIsPressedAsState()
-                    val sc by animateFloatAsState(if (pressed) 1.4f else 1f, spring(), label = "emojiScale")
+                    val sc by animateFloatAsState(
+                        targetValue = if (pressed) 1.4f else 1f,
+                        animationSpec = if (appearance.animationSpeed.value <= 0.01f) snap() else spring(
+                            dampingRatio = 0.55f,
+                            stiffness = 520f * appearance.animationSpeed.value
+                        ),
+                        label = "emojiScale"
+                    )
                     val mine = myReaction == e
                     Box(
                         modifier = Modifier
@@ -1804,8 +2063,8 @@ fun MessageBubble(
                             // Подсветка моей выбранной реакции — повторный тап её снимает
                             .background(if (mine) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.Transparent)
                             .clickable(interactionSource = interaction, indication = null) {
-                                haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                onReact(msg.msgId, if (mine) "" else e); menuOpen = false
+                                react(e, mine)
+                                menuOpen = false
                             }
                             .padding(horizontal = 6.dp, vertical = 2.dp),
                         contentAlignment = Alignment.Center
@@ -2037,6 +2296,9 @@ private fun normalizeMediaPayloadForDisplay(obj: org.json.JSONObject, fallbackKi
     if (!obj.has("kind") || obj.optString("kind").isBlank()) {
         obj.put("kind", fallbackKind ?: mediaKindForDisplay(obj))
     }
+    if (obj.optString("kind") in setOf("video_msg", "circle")) {
+        obj.put("kind", "video_note")
+    }
     return obj
 }
 
@@ -2110,12 +2372,12 @@ internal fun formatLastSeen(iso: String?): String {
     return when {
         diff < 75_000L -> "в сети"
         diff < 3_600_000L -> "был(а) ${diff / 60_000L} мин назад"
-        isSameDay(ts, now) -> "был(а) в " + formatMsgTime(ts)
+        isSameDay(ts, now) -> "был(а) сегодня в " + formatMsgTime(ts)
         else -> {
             val yesterday = java.util.Calendar.getInstance()
                 .apply { add(java.util.Calendar.DAY_OF_YEAR, -1) }.timeInMillis
             if (isSameDay(ts, yesterday)) "был(а) вчера в " + formatMsgTime(ts)
-            else "был(а) " + java.text.SimpleDateFormat("d MMM", java.util.Locale("ru")).format(java.util.Date(ts))
+            else "был(а) " + java.text.SimpleDateFormat("dd.MM.yyyy", java.util.Locale("ru")).format(java.util.Date(ts))
         }
     }
 }
@@ -2129,12 +2391,15 @@ private fun DateSeparator(ts: Long) {
     ) {
         Text(
             text = formatDateSep(ts),
-            color = Color.White.copy(alpha = 0.9f),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             modifier = Modifier
-                .clip(RoundedCornerShape(12.dp))
-                .background(Color.Black.copy(alpha = 0.30f))
+                .aetherIsland(
+                    shape = RoundedCornerShape(12.dp),
+                    fillAlpha = 0.9f,
+                    strokeAlpha = 0.5f
+                )
                 .padding(horizontal = 10.dp, vertical = 4.dp)
         )
     }

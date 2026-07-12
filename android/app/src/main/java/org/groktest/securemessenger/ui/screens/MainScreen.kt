@@ -3,6 +3,8 @@ package org.groktest.securemessenger.ui.screens
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -38,6 +40,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -48,8 +51,12 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.data.ChatListEntry
+import org.groktest.securemessenger.data.messagePreview
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherEdge
+import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.aetherCircle
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
@@ -92,26 +99,38 @@ fun MainScreen(
     val pagerState = rememberPagerState(initialPage = 2, pageCount = { tabs.size })
     val coroutineScope = rememberCoroutineScope()
     val chats by chatListFlow.collectAsState(initial = emptyList())
+    val appearance = LocalThemeSettings.current
     var dockDragCenterPx by remember { mutableFloatStateOf(Float.NaN) }
     var dockSettlingPosition by remember { mutableFloatStateOf(Float.NaN) }
     var dockScrollJob by remember { mutableStateOf<Job?>(null) }
 
     GlassBackground {
-        Scaffold(
-            containerColor = Color.Transparent,
-            bottomBar = {
+        Box(modifier = Modifier.fillMaxSize()) {
+            val dock: @Composable BoxScope.() -> Unit = {
                 Box(
                     modifier = Modifier
+                        .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .navigationBarsPadding()
-                        .padding(start = AetherStyle.DockHorizontal, end = AetherStyle.DockHorizontal, bottom = AetherStyle.DockBottom)
-                        .height(AetherStyle.DockHeight)
-                        .aetherIsland(
-                            shape = RoundedCornerShape(AetherStyle.DockRadius),
-                            fillAlpha = AetherStyle.DockFillAlpha,
-                            strokeAlpha = AetherStyle.DockStrokeAlpha
-                        )
+                        .zIndex(10f)
+                        .height(appearance.edgeDimLength.value.dp)
                 ) {
+                    AetherEdgeDim(
+                        edge = AetherEdge.Bottom,
+                        modifier = Modifier.matchParentSize()
+                    )
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .navigationBarsPadding()
+                            .padding(start = AetherStyle.DockHorizontal, end = AetherStyle.DockHorizontal, bottom = AetherStyle.DockBottom)
+                            .fillMaxWidth()
+                            .height(AetherStyle.DockHeight)
+                            .aetherIsland(
+                                shape = RoundedCornerShape(AetherStyle.DockRadius),
+                                fillAlpha = AetherStyle.DockFillAlpha,
+                                strokeAlpha = AetherStyle.DockStrokeAlpha
+                            )
+                    ) {
                     BoxWithConstraints(
                         modifier = Modifier
                             .fillMaxSize()
@@ -133,14 +152,18 @@ fun MainScreen(
                             targetValue = dragPosition
                                 ?: dockSettlingPosition.takeIf { isDockSettling }
                                 ?: pagerPosition,
-                            animationSpec = tween(
-                                durationMillis = when {
-                                    isDockDragging -> 0
-                                    isDockSettling -> 280
-                                    else -> 90
-                                },
-                                easing = FastOutSlowInEasing
-                            ),
+                            animationSpec = when {
+                                appearance.animationSpeed.value <= 0.01f || isDockDragging -> snap()
+                                isDockSettling -> spring(
+                                    dampingRatio = (0.94f - appearance.motionIntensity.value * 0.12f).coerceIn(0.72f, 0.94f),
+                                    stiffness = 360f * appearance.animationSpeed.value.coerceAtLeast(0.2f)
+                                )
+                                pagerState.isScrollInProgress -> snap()
+                                else -> spring(
+                                    dampingRatio = 0.88f,
+                                    stiffness = 460f * appearance.animationSpeed.value.coerceAtLeast(0.2f)
+                                )
+                            },
                             label = "dockIndicatorPosition"
                         )
                         val selectedVisualPage = indicatorPosition.roundToInt().coerceIn(0, tabs.lastIndex)
@@ -186,7 +209,7 @@ fun MainScreen(
                                             dockScrollJob = coroutineScope.launch {
                                                 pagerState.animateScrollToPage(
                                                     target,
-                                                    animationSpec = tween(320, easing = FastOutSlowInEasing)
+                                                    animationSpec = tween(appearance.motionDuration(320), easing = FastOutSlowInEasing)
                                                 )
                                                 dockSettlingPosition = Float.NaN
                                             }
@@ -205,12 +228,15 @@ fun MainScreen(
                                 val selected = selectedVisualPage == index
                                 val color by animateColorAsState(
                                     targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    animationSpec = tween(240),
+                                    animationSpec = tween(appearance.motionDuration(240)),
                                     label = "mainTabColor"
                                 )
                                 val scale by animateFloatAsState(
                                     targetValue = if (selected) 1.08f else 1f,
-                                    animationSpec = tween(220, easing = FastOutSlowInEasing),
+                                    animationSpec = if (appearance.animationSpeed.value <= 0.01f) snap() else spring(
+                                        dampingRatio = (0.78f - appearance.motionIntensity.value * 0.16f).coerceIn(0.48f, 0.78f),
+                                        stiffness = 420f * appearance.animationSpeed.value
+                                    ),
                                     label = "mainTabScale"
                                 )
                                 val tabGesture = if (index == 3) {
@@ -221,7 +247,7 @@ fun MainScreen(
                                                 dockSettlingPosition = index.toFloat()
                                                 dockScrollJob?.cancel()
                                                 dockScrollJob = coroutineScope.launch {
-                                                    pagerState.animateScrollToPage(index, animationSpec = tween(320, easing = FastOutSlowInEasing))
+                                                    pagerState.animateScrollToPage(index, animationSpec = tween(appearance.motionDuration(320), easing = FastOutSlowInEasing))
                                                     dockSettlingPosition = Float.NaN
                                                 }
                                             },
@@ -240,7 +266,7 @@ fun MainScreen(
                                         dockSettlingPosition = index.toFloat()
                                         dockScrollJob?.cancel()
                                         dockScrollJob = coroutineScope.launch {
-                                            pagerState.animateScrollToPage(index, animationSpec = tween(320, easing = FastOutSlowInEasing))
+                                            pagerState.animateScrollToPage(index, animationSpec = tween(appearance.motionDuration(320), easing = FastOutSlowInEasing))
                                             dockSettlingPosition = Float.NaN
                                         }
                                     }
@@ -265,22 +291,24 @@ fun MainScreen(
                             }
                         }
                     }
+                    }
                 }
             }
-        ) { _ ->
             HorizontalPager(
                 state = pagerState,
-                modifier = Modifier
-                    .fillMaxSize()
+                beyondBoundsPageCount = tabs.lastIndex,
+                modifier = Modifier.fillMaxSize()
             ) { page ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                ) {
                 when (page) {
                     0 -> ContactsTab(
                         api = api,
                         chats = chats,
                         onUserSelected = onChatSelected,
-                        onNewContact = onNewChat,
-                        onCreateGroup = { onCreateGroupClick(false) },
-                        onCreateChannel = { onCreateGroupClick(true) }
+                        onNewContact = onNewChat
                     )
                     1 -> CallsTab(
                         chats = chats,
@@ -289,7 +317,7 @@ fun MainScreen(
                         onVideoCall = onStartVideoCall,
                         onFindPeople = {
                             coroutineScope.launch {
-                                pagerState.animateScrollToPage(0, animationSpec = tween(260, easing = FastOutSlowInEasing))
+                                pagerState.animateScrollToPage(0, animationSpec = tween(appearance.motionDuration(260), easing = FastOutSlowInEasing))
                             }
                         }
                     )
@@ -302,9 +330,11 @@ fun MainScreen(
                         onProfileClick = {},
                         onSettingsClick = {},
                         onSearchClick = onNavigateToSearch,
+                        onCreateGroup = { onCreateGroupClick(false) },
+                        onCreateChannel = { onCreateGroupClick(true) },
                         onCallsClick = {
                             coroutineScope.launch {
-                                pagerState.animateScrollToPage(1, animationSpec = tween(280, easing = FastOutSlowInEasing))
+                                pagerState.animateScrollToPage(1, animationSpec = tween(appearance.motionDuration(280), easing = FastOutSlowInEasing))
                             }
                         },
                         onAction = onAction
@@ -314,7 +344,7 @@ fun MainScreen(
                         myId = myId,
                         onBack = {
                             coroutineScope.launch {
-                                pagerState.animateScrollToPage(2, animationSpec = tween(280, easing = FastOutSlowInEasing))
+                                pagerState.animateScrollToPage(2, animationSpec = tween(appearance.motionDuration(280), easing = FastOutSlowInEasing))
                             }
                         },
                         onNavigateToProfile = onNavigateToProfileSettings,
@@ -322,12 +352,14 @@ fun MainScreen(
                         onNavigateToPrivacy = onNavigateToPrivacySettings,
                         onNavigateToAbout = onNavigateToAboutApp,
                         onNavigateToCustomization = onNavigateToCustomization,
-                        onCreateGroup = { onCreateGroupClick(false) },
-                        onCreateChannel = { onCreateGroupClick(true) },
-                        onSavedMessages = { onChatSelected(myId) }
+                        onSavedMessages = { onChatSelected(myId) },
+                        onLogout = onLogout,
+                        showBack = false
                     )
                 }
+                }
             }
+            dock()
         }
     }
 }
@@ -337,10 +369,9 @@ private fun ContactsTab(
     api: RelayApi,
     chats: List<ChatListEntry>,
     onUserSelected: (String) -> Unit,
-    onNewContact: () -> Unit,
-    onCreateGroup: () -> Unit,
-    onCreateChannel: (String) -> Unit
+    onNewContact: () -> Unit
 ) {
+    val edgeDimHeight = LocalThemeSettings.current.edgeDimLength.value.dp
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<RelayApi.UserSearchResult>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
@@ -364,35 +395,16 @@ private fun ContactsTab(
         }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .padding(horizontal = AetherStyle.ScreenHorizontal, vertical = AetherStyle.ScreenVertical)
-    ) {
-        Text("Контакты", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            DockActionPill(
-                title = "Найти",
-                icon = Icons.Default.Search,
-                modifier = Modifier.weight(1f),
-                onClick = onNewContact
-            )
-            DockActionPill(
-                title = "Группа",
-                icon = Icons.Default.Person,
-                modifier = Modifier.weight(1f),
-                onClick = onCreateGroup
-            )
-            DockActionPill(
-                title = "Канал",
-                icon = Icons.Default.Email,
-                modifier = Modifier.weight(1f),
-                onClick = { onCreateChannel("") }
-            )
-        }
-        Spacer(Modifier.height(12.dp))
+    Box(modifier = Modifier.fillMaxSize()) {
+        AetherEdgeDim(AetherEdge.Top, Modifier.fillMaxWidth().height(edgeDimHeight))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = AetherStyle.ScreenHorizontal, vertical = AetherStyle.ScreenVertical)
+        ) {
+        Text("Контакты", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+        Spacer(Modifier.height(10.dp))
         AetherSearchField(
             value = query,
             onValueChange = {
@@ -415,15 +427,18 @@ private fun ContactsTab(
         val recentContacts = remember(chats) { chats.filter { it.chat.type == 0 } }
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = PaddingValues(
+                top = 8.dp,
+                bottom = edgeDimHeight
+            )
         ) {
             if (query.length >= 2) {
                 if (results.isEmpty() && !isLoading) {
                     item {
                         EmptyTabState(
                             title = "Ничего не найдено",
-                            action = "Создать канал",
-                            onAction = { onCreateChannel(query) }
+                            action = "Новый поиск",
+                            onAction = onNewContact
                         )
                     }
                 } else {
@@ -444,13 +459,14 @@ private fun ContactsTab(
                     items(recentContacts, key = { it.chat.peerId }) { entry ->
                         ChatPersonRow(
                             name = entry.chat.name,
-                            subtitle = entry.lastText ?: "Открыть чат",
+                            subtitle = messagePreview(entry.lastText, "Открыть чат"),
                             avatarFileId = entry.chat.avatarFileId,
                             onClick = { onUserSelected(entry.chat.peerId) }
                         )
                     }
                 }
             }
+        }
         }
     }
 }
@@ -463,39 +479,24 @@ private fun CallsTab(
     onVideoCall: (String) -> Unit,
     onFindPeople: () -> Unit
 ) {
+    val edgeDimHeight = LocalThemeSettings.current.edgeDimLength.value.dp
     val people = remember(chats) { chats.filter { it.chat.type == 0 } }
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .statusBarsPadding()
-            .padding(horizontal = AetherStyle.ScreenHorizontal, vertical = AetherStyle.ScreenVertical)
-    ) {
-        Text("Звонки", fontSize = 30.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
-        Spacer(Modifier.height(12.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-            DockActionPill(
-                title = "Контакты",
-                icon = Icons.Default.Person,
-                modifier = Modifier.weight(1f),
-                onClick = onFindPeople
-            )
-            DockActionPill(
-                title = "Аудио",
-                icon = Icons.Default.Phone,
-                modifier = Modifier.weight(1f),
-                onClick = { people.firstOrNull()?.let { onAudioCall(it.chat.peerId) } ?: onFindPeople() }
-            )
-            DockActionPill(
-                title = "Видео",
-                icon = Icons.Default.Videocam,
-                modifier = Modifier.weight(1f),
-                onClick = { people.firstOrNull()?.let { onVideoCall(it.chat.peerId) } ?: onFindPeople() }
-            )
-        }
+    Box(modifier = Modifier.fillMaxSize()) {
+        AetherEdgeDim(AetherEdge.Top, Modifier.fillMaxWidth().height(edgeDimHeight))
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .statusBarsPadding()
+                .padding(horizontal = AetherStyle.ScreenHorizontal, vertical = AetherStyle.ScreenVertical)
+        ) {
+        Text("Звонки", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(10.dp))
         LazyColumn(
             modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(vertical = 8.dp)
+            contentPadding = PaddingValues(
+                top = 8.dp,
+                bottom = edgeDimHeight
+            )
         ) {
             if (people.isEmpty()) {
                 item {
@@ -516,39 +517,7 @@ private fun CallsTab(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun DockActionPill(
-    title: String,
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    modifier: Modifier = Modifier,
-    onClick: () -> Unit
-) {
-    Row(
-        modifier = modifier
-            .height(46.dp)
-            .aetherIsland(
-                shape = RoundedCornerShape(AetherStyle.PillRadius),
-                fillAlpha = AetherStyle.IslandFillAlpha,
-                strokeAlpha = 0.48f
-            )
-            .clickable { onClick() }
-            .padding(horizontal = 10.dp),
-        horizontalArrangement = Arrangement.Center,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(19.dp))
-        Spacer(Modifier.width(6.dp))
-        Text(
-            title,
-            color = MaterialTheme.colorScheme.onBackground,
-            fontSize = 13.sp,
-            fontWeight = FontWeight.SemiBold,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis
-        )
+        }
     }
 }
 
@@ -573,7 +542,7 @@ private fun AetherSearchField(
                 strokeAlpha = 0.42f
             ),
         shape = RoundedCornerShape(AetherStyle.FieldRadius),
-        colors = aetherTextFieldColors()
+        colors = aetherTextFieldColors(containerAlpha = 0f)
     )
 }
 
@@ -597,13 +566,8 @@ private fun ChatPersonRow(
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .aetherIsland(
-                shape = RoundedCornerShape(AetherStyle.RowRadius),
-                fillAlpha = AetherStyle.SoftIslandFillAlpha,
-                strokeAlpha = AetherStyle.SoftStrokeAlpha
-            )
             .clickable { onClick() }
-            .padding(horizontal = 10.dp, vertical = 10.dp),
+            .padding(horizontal = 4.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AetherAvatar(name = name, avatarFileId = avatarFileId, size = 54.dp)
@@ -640,20 +604,15 @@ private fun CallRow(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .aetherIsland(
-                shape = RoundedCornerShape(AetherStyle.IslandRadius),
-                fillAlpha = AetherStyle.SoftIslandFillAlpha,
-                strokeAlpha = AetherStyle.SoftStrokeAlpha
-            )
             .clickable { onOpenChat() }
-            .padding(horizontal = 10.dp, vertical = 10.dp),
+            .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         AetherAvatar(name = entry.chat.name, avatarFileId = entry.chat.avatarFileId, size = 54.dp)
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(entry.chat.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("Быстрый звонок", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Аудио или видео", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         RoundActionButton(icon = Icons.Default.Phone, contentDescription = "Аудиозвонок", onClick = onAudioCall)
         Spacer(Modifier.width(8.dp))

@@ -4,6 +4,7 @@ import android.content.Context
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import kotlin.math.roundToInt
 
 class ThemeSettings(context: Context) {
     private val prefs = context.getSharedPreferences("theme_settings", Context.MODE_PRIVATE)
@@ -23,6 +24,16 @@ class ThemeSettings(context: Context) {
     // --- Жидкое стекло (настоящий backdrop-blur) ---
     var liquidGlassEnabled = mutableStateOf(prefs.getBoolean("liquid_glass", false))
     var glassTransparency = mutableStateOf(prefs.getFloat("glass_transparency", 0.5f)) // 0=матовое, 1=прозрачное
+    var surfaceTransparency = mutableStateOf(prefs.getFloat("surface_transparency", 0.22f))
+    var edgeDimEnabled = mutableStateOf(prefs.getBoolean("edge_dim_enabled", true))
+    var edgeDimStrength = mutableStateOf(prefs.getFloat("edge_dim_strength", 1f))
+    var edgeDimLength = mutableStateOf(prefs.getFloat("edge_dim_length", 144f).coerceIn(112f, 240f))
+    var animationSpeed = mutableStateOf(prefs.getFloat("animation_speed", 1f))
+    var motionIntensity = mutableStateOf(prefs.getFloat("motion_intensity", 1f))
+    var reactionEffects = mutableStateOf(prefs.getBoolean("reaction_effects", true))
+    var bubbleRadius = mutableStateOf(prefs.getFloat("bubble_radius", 22f))
+    var bubbleTails = mutableStateOf(prefs.getBoolean("bubble_tails", true))
+    var messageTextSize = mutableStateOf(prefs.getFloat("message_text_size", 16f))
     // --- Уведомления (читаются и в AetherService напрямую из этих же prefs) ---
     var notifSound = mutableStateOf(prefs.getBoolean("notif_sound", true))
     var notifVibration = mutableStateOf(prefs.getBoolean("notif_vibration", true))
@@ -84,6 +95,63 @@ class ThemeSettings(context: Context) {
     fun setGlassTransparency(v: Float) {
         glassTransparency.value = v
         prefs.edit().putFloat("glass_transparency", v).apply()
+    }
+
+    fun setSurfaceTransparency(v: Float) {
+        surfaceTransparency.value = v.coerceIn(0f, 1f)
+        prefs.edit().putFloat("surface_transparency", surfaceTransparency.value).apply()
+    }
+
+    fun setEdgeDimEnabled(v: Boolean) {
+        edgeDimEnabled.value = v
+        prefs.edit().putBoolean("edge_dim_enabled", v).apply()
+    }
+
+    fun setEdgeDimStrength(v: Float) {
+        edgeDimStrength.value = v.coerceIn(0f, 1f)
+        prefs.edit().putFloat("edge_dim_strength", edgeDimStrength.value).apply()
+    }
+
+    fun setEdgeDimLength(v: Float) {
+        edgeDimLength.value = v.coerceIn(112f, 240f)
+        prefs.edit().putFloat("edge_dim_length", edgeDimLength.value).apply()
+    }
+
+    fun setAnimationSpeed(v: Float) {
+        animationSpeed.value = v.coerceIn(0f, 2f)
+        prefs.edit().putFloat("animation_speed", animationSpeed.value).apply()
+    }
+
+    fun setMotionIntensity(v: Float) {
+        motionIntensity.value = v.coerceIn(0f, 1.5f)
+        prefs.edit().putFloat("motion_intensity", motionIntensity.value).apply()
+    }
+
+    fun setReactionEffects(v: Boolean) {
+        reactionEffects.value = v
+        prefs.edit().putBoolean("reaction_effects", v).apply()
+    }
+
+    fun motionDuration(baseMillis: Int): Int {
+        val speed = animationSpeed.value
+        return if (speed <= 0.01f) 0 else (baseMillis / speed).roundToInt().coerceAtLeast(1)
+    }
+
+    fun motionDistance(base: Float): Float = base * motionIntensity.value
+
+    fun setBubbleRadius(v: Float) {
+        bubbleRadius.value = v.coerceIn(8f, 30f)
+        prefs.edit().putFloat("bubble_radius", bubbleRadius.value).apply()
+    }
+
+    fun setBubbleTails(v: Boolean) {
+        bubbleTails.value = v
+        prefs.edit().putBoolean("bubble_tails", v).apply()
+    }
+
+    fun setMessageTextSize(v: Float) {
+        messageTextSize.value = v.coerceIn(14f, 20f)
+        prefs.edit().putFloat("message_text_size", messageTextSize.value).apply()
     }
 
     fun setNotifSound(v: Boolean) { notifSound.value = v; prefs.edit().putBoolean("notif_sound", v).apply() }

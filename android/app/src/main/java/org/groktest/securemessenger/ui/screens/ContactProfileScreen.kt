@@ -23,6 +23,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
@@ -53,6 +54,7 @@ fun ContactProfileScreen(
     var bio by remember { mutableStateOf("") }
     var avatarFileId by remember { mutableStateOf<String?>(null) }
     var lastActive by remember { mutableStateOf<String?>(null) }
+    var statusEmoji by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(peerId) {
         try {
@@ -62,6 +64,7 @@ fun ContactProfileScreen(
             bio = p.bio ?: ""
             avatarFileId = p.avatarFileId
             lastActive = p.lastActive
+            statusEmoji = p.statusEmoji
         } catch (e: Exception) {
             // профиль может быть недоступен — покажем минимум по peerId
         } finally {
@@ -121,7 +124,25 @@ fun ContactProfileScreen(
                 }
 
                 Spacer(Modifier.height(14.dp))
-                Text(title, fontSize = 23.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 32.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        title,
+                        modifier = Modifier.weight(1f, fill = false),
+                        fontSize = 23.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (!statusEmoji.isNullOrBlank()) {
+                        Spacer(Modifier.width(6.dp))
+                        Text(statusEmoji!!, fontSize = 21.sp, maxLines = 1)
+                    }
+                }
                 if (username.isNotBlank()) {
                     Spacer(Modifier.height(2.dp))
                     Text("@$username", fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)

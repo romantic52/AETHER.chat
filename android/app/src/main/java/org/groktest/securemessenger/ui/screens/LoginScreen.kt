@@ -24,6 +24,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
+import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.crypto.E2ECrypto
 import org.groktest.securemessenger.data.SecurePrefs
 import org.groktest.securemessenger.data.SessionPrefs
@@ -35,7 +36,7 @@ fun LoginScreen(
     savedSession: SessionPrefs.Session?,
     onLoginSuccess: (String, E2ECrypto.KeyPair, RelayApi, String, Boolean) -> Unit
 ) {
-    var server by remember { mutableStateOf("https://your-server.example.com") } // Point this at your deployed backend
+    var server by remember { mutableStateOf(ServerConfig.DEFAULT_BASE_URL) }
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var isRegister by remember { mutableStateOf(false) }
@@ -50,19 +51,21 @@ fun LoginScreen(
     // Авто-вход по сохранённому токену сессии (пароль на устройстве не хранится).
     LaunchedEffect(savedSession) {
         if (savedSession != null) {
-            server = savedSession.server
-            username = savedSession.username
+            val sessionServer = ServerConfig.normalizeBaseUrl(savedSession.server)
+            val sessionUsername = savedSession.username.trim().lowercase()
+            server = sessionServer
+            username = sessionUsername
             try {
-                val api = RelayApi(savedSession.server)
+                val api = RelayApi(sessionServer)
                 api.token = savedSession.token
                 val tokenValid = withContext(Dispatchers.IO) { api.heartbeat() }
                 val kp = withContext(Dispatchers.IO) {
                     SecurePrefs(context, savedSession.username).loadKeys()
                 }
                 if (tokenValid && kp != null) {
-                    val prefs = "${savedSession.server}|${savedSession.username}"
+                    val prefs = "$sessionServer|$sessionUsername"
                     withContext(Dispatchers.Main) {
-                        onLoginSuccess(prefs, kp, api, savedSession.username, true)
+                        onLoginSuccess(prefs, kp, api, sessionUsername, true)
                     }
                 } else {
                     error = if (!tokenValid) "Сессия истекла — войдите заново"
@@ -178,36 +181,51 @@ fun LoginScreen(
                     onClick = {
                         coroutineScope.launch {
                             error = null
-                            // P3.8: валидация длины пароля (дублирует серверную)
-                            if (password.length < 8) {
+                            val normalizedServer = ServerConfig.normalizeBaseUrl(server)
+                            val normalizedUsername = username.trim().lowercase()
+                            if (!normalizedServer.startsWith("http://") &&
+                                !normalizedServer.startsWith("https://")) {
+                                error = "Адрес сервера должен начинаться с http:// или https://"
+                                return@launch
+                            }
+                            if (normalizedUsername.length !in 2..64) {
+                                error = "Имя пользователя должно содержать от 2 до 64 символов"
+                                return@launch
+                            }
+                            if (isRegister && password.length < 8) {
                                 error = "Пароль должен быть не короче 8 символов"
                                 return@launch
                             }
+                            if (!isRegister && password.isEmpty()) {
+                                error = "Введите пароль"
+                                return@launch
+                            }
                             try {
-                                val api = RelayApi(server)
+                                server = normalizedServer
+                                username = normalizedUsername
+                                val api = RelayApi(normalizedServer)
                                 if (isRegister) {
                                     val pubkey = crypto.generateKeyPair()
                                     val encPriv = crypto.encryptPrivateKey(pubkey.privateB64, password)
 
                                     withContext(Dispatchers.IO) {
-                                        api.register(username, pubkey.publicB64, encPriv, password)
-                                        api.login(username, password) // получаем токен сессии
-                                        SecurePrefs(context, username).saveKeys(pubkey)
+                                        api.register(normalizedUsername, pubkey.publicB64, encPriv, password)
+                                        SecurePrefs(context, normalizedUsername).saveKeys(pubkey)
                                     }
 
-                                    val prefs = "${server}|${username}"
+                                    val prefs = "$normalizedServer|$normalizedUsername"
                                     withContext(Dispatchers.Main) {
-                                        onLoginSuccess(prefs, pubkey, api, username, rememberMe)
+                                        onLoginSuccess(prefs, pubkey, api, normalizedUsername, rememberMe)
                                     }
                                 } else {
                                     val result = withContext(Dispatchers.IO) {
-                                        api.login(username, password)
+                                        api.login(normalizedUsername, password)
                                     }
 
-                                    val secure = SecurePrefs(context, username)
+                                    val secure = SecurePrefs(context, normalizedUsername)
                                     val kp = if (!result.encryptedPrivateKeyB64.isNullOrEmpty() && result.encryptedPrivateKeyB64 != "null") {
                                         val priv = crypto.decryptPrivateKey(result.encryptedPrivateKeyB64, password)
-                                        val pubKeyStr = withContext(Dispatchers.IO) { api.getPublicKey(username) }
+                                        val pubKeyStr = withContext(Dispatchers.IO) { api.getPublicKey(normalizedUsername) }
                                         E2ECrypto.KeyPair(priv, pubKeyStr)
                                     } else {
                                         // P3.9: НЕ генерируем новую пару молча — она не совпадёт с
@@ -221,9 +239,9 @@ fun LoginScreen(
                                     }
                                     withContext(Dispatchers.IO) { secure.saveKeys(kp) }
 
-                                    val prefs = "${server}|${username}"
+                                    val prefs = "$normalizedServer|$normalizedUsername"
                                     withContext(Dispatchers.Main) {
-                                        onLoginSuccess(prefs, kp, api, username, rememberMe)
+                                        onLoginSuccess(prefs, kp, api, normalizedUsername, rememberMe)
                                     }
                                 }
                             } catch (e: Exception) {

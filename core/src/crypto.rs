@@ -22,6 +22,10 @@ pub fn b64url_decode(s: String) -> Result<Vec<u8>, CoreError> {
     decode_b64(&s)
 }
 
+pub(crate) fn encode_b64(data: &[u8]) -> String {
+    URL_SAFE_NO_PAD.encode(data)
+}
+
 pub(crate) fn decode_b64(s: &str) -> Result<Vec<u8>, CoreError> {
     let normalized: String = s
         .trim()

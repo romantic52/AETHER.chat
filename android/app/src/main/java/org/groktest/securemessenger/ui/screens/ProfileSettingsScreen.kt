@@ -7,8 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -25,6 +23,8 @@ import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.theme.AetherStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -97,28 +97,15 @@ fun ProfileSettingsScreen(
     }
 
     GlassBackground {
-        Scaffold(
-            snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-            topBar = {
-                TopAppBar(
-                    title = { Text("Настройки профиля", fontWeight = FontWeight.Bold, fontSize = 20.sp) },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(
-                        containerColor = Color.Transparent
-                    )
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
+        Box(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .padding(16.dp),
+                    .padding(horizontal = 16.dp)
+                    .padding(
+                        top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
+                        bottom = 8.dp
+                    ),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 // Аватар
@@ -245,6 +232,15 @@ fun ProfileSettingsScreen(
                     }
                 }
             }
+            SnackbarHost(
+                snackbarHostState,
+                Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+            )
+            AetherSettingsTopBar(
+                "Настройки профиля",
+                onBack,
+                Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }
