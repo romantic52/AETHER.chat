@@ -24,11 +24,26 @@ import java.security.MessageDigest
  *  - Новая реакция UI на смену ключа? Ловите [KeyChangedException] / [IncomingTrust.MISMATCH].
  *  - Формат цифр безопасности версионирован константой [SAFETY_VERSION].
  */
-class KeyTrustStore(private val dao: CoreStore) {
+class KeyTrustStore(
+    private val dao: CoreStore,
+    private val namespace: String = "",
+) {
 
     /** Источник ключей с сервера. Устанавливается после логина: { api.getPublicKey(it) }. */
     @Volatile
     var keyFetcher: ((String) -> String)? = null
+
+    var onKeyAccepted: (suspend (String) -> Unit)? = null
+
+    private fun storageId(peerId: String): String {
+        val id = peerId.lowercase()
+        return if (namespace.isBlank()) id else "$namespace:$id"
+    }
+
+    private suspend fun storedPin(peerId: String) = dao.pinGet(storageId(peerId))
+
+    private suspend fun savePin(peerId: String, pin: PinnedKeyEntity) =
+        dao.pinUpsert(pin.copy(peerId = storageId(peerId)))
 
     /** Исходящие: ключ собеседника изменился по сравнению с запиненным. */
     class KeyChangedException(
@@ -55,17 +70,23 @@ class KeyTrustStore(private val dao: CoreStore) {
     suspend fun keyForSending(peerId: String): String {
         val id = peerId.lowercase()
         val fetch = keyFetcher ?: throw IllegalStateException("KeyTrustStore: keyFetcher не установлен")
-        val serverKey = fetch(id)
-        val pin = dao.pinGet(id)
+        return checkForSending(id, fetch(id))
+    }
+
+    /** Проверяет уже полученный вместе с prekey-бандлом identity, не делая второй запрос. */
+    suspend fun checkForSending(peerId: String, serverKey: String): String {
+        val id = peerId.lowercase()
+        require(serverKey.isNotBlank()) { "Пустой ключ собеседника" }
+        val pin = storedPin(id)
         return when {
             pin == null -> {
-                dao.pinUpsert(PinnedKeyEntity(id, serverKey, System.currentTimeMillis()))
+                savePin(id, PinnedKeyEntity(id, serverKey, System.currentTimeMillis()))
                 serverKey
             }
             pin.publicKeyB64 == serverKey -> serverKey
             else -> {
                 // Фиксируем факт смены для UI, но НЕ перепиниваем
-                dao.pinUpsert(pin.copy(previousKeyB64 = pin.publicKeyB64, changedAt = System.currentTimeMillis()))
+                savePin(id, pin.copy(previousKeyB64 = pin.publicKeyB64, changedAt = System.currentTimeMillis()))
                 throw KeyChangedException(id, pin.publicKeyB64, serverKey)
             }
         }
@@ -77,15 +98,16 @@ class KeyTrustStore(private val dao: CoreStore) {
      */
     suspend fun checkIncoming(senderId: String, envelopeKeyB64: String): IncomingTrust {
         val id = senderId.lowercase()
-        val pin = dao.pinGet(id)
+        require(envelopeKeyB64.isNotBlank()) { "Пустой ключ отправителя" }
+        val pin = storedPin(id)
         return when {
             pin == null -> {
-                dao.pinUpsert(PinnedKeyEntity(id, envelopeKeyB64, System.currentTimeMillis()))
+                savePin(id, PinnedKeyEntity(id, envelopeKeyB64, System.currentTimeMillis()))
                 IncomingTrust.OK_TOFU
             }
             pin.publicKeyB64 == envelopeKeyB64 -> IncomingTrust.OK_PINNED
             else -> {
-                dao.pinUpsert(pin.copy(previousKeyB64 = pin.publicKeyB64, changedAt = System.currentTimeMillis()))
+                savePin(id, pin.copy(previousKeyB64 = pin.publicKeyB64, changedAt = System.currentTimeMillis()))
                 IncomingTrust.MISMATCH
             }
         }
@@ -99,7 +121,10 @@ class KeyTrustStore(private val dao: CoreStore) {
         kotlinx.coroutines.runBlocking { keyForSending(peerId) }
 
     /** Текущий пин (для экрана «Цифры безопасности»). */
-    suspend fun pinFor(peerId: String): PinnedKeyEntity? = dao.pinGet(peerId.lowercase())
+    suspend fun pinFor(peerId: String): PinnedKeyEntity? {
+        val id = peerId.lowercase()
+        return storedPin(id)?.copy(peerId = id)
+    }
 
     /**
      * Явное принятие текущего серверного ключа (после смены).
@@ -109,8 +134,10 @@ class KeyTrustStore(private val dao: CoreStore) {
         val id = peerId.lowercase()
         val fetch = keyFetcher ?: throw IllegalStateException("KeyTrustStore: keyFetcher не установлен")
         val serverKey = fetch(id)
-        val old = dao.pinGet(id)
-        dao.pinUpsert(
+        require(serverKey.isNotBlank()) { "Пустой ключ собеседника" }
+        val old = storedPin(id)
+        savePin(
+            id,
             PinnedKeyEntity(
                 peerId = id,
                 publicKeyB64 = serverKey,
@@ -120,12 +147,13 @@ class KeyTrustStore(private val dao: CoreStore) {
                 changedAt = old?.changedAt,
             )
         )
+        onKeyAccepted?.invoke(id)
         return serverKey
     }
 
     /** Отметка «цифры сверены вручную». */
     suspend fun setVerified(peerId: String, verified: Boolean) =
-        dao.pinSetVerified(peerId.lowercase(), verified)
+        dao.pinSetVerified(storageId(peerId), verified)
 
     companion object {
         /** Версия формата цифр безопасности — поднимайте при смене алгоритма. */

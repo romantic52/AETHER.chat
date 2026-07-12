@@ -6,6 +6,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -29,8 +30,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import org.groktest.securemessenger.data.ChatListEntry
+import org.groktest.securemessenger.data.messagePreview
+import org.groktest.securemessenger.ui.theme.AetherEdge
+import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.aetherCircle
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import androidx.compose.foundation.ExperimentalFoundationApi
@@ -57,73 +63,87 @@ fun ChatListScreen(
     onProfileClick: () -> Unit,
     onSettingsClick: () -> Unit,
     onSearchClick: () -> Unit,
+    onCreateGroup: () -> Unit,
+    onCreateChannel: () -> Unit,
     onCallsClick: () -> Unit = {},
     onAction: (String, String) -> Unit = { _, _ -> } // peerId, action ("mute", "archive", "pin", "delete")
 ) {
-    Scaffold(
-        topBar = {
-            Column(
-                modifier = Modifier.background(Color.Transparent)
+    var createMenuOpen by remember { mutableStateOf(false) }
+    val appearance = LocalThemeSettings.current
+    val listState = rememberLazyListState()
+    Box(modifier = Modifier.fillMaxSize()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(appearance.edgeDimLength.value.dp)
+                    .zIndex(20f)
+            ) {
+                AetherEdgeDim(AetherEdge.Top, Modifier.matchParentSize())
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically
                 ) {
-                    TopAppBar(
-                        title = { Text("Aether", fontSize = 24.sp, fontWeight = FontWeight.Bold) },
-                        actions = {
-                            IconButton(onClick = onNewChat) {
-                                Icon(Icons.Default.Person, contentDescription = "Контакты", tint = MaterialTheme.colorScheme.primary)
-                            }
-                            IconButton(onClick = onCallsClick) {
-                                Icon(Icons.Default.Phone, contentDescription = "Звонки", tint = MaterialTheme.colorScheme.primary)
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = Color.Transparent,
-                            titleContentColor = MaterialTheme.colorScheme.onBackground
-                        )
+                    Text(
+                        "Aether",
+                        modifier = Modifier.weight(1f),
+                        fontSize = 24.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onBackground
                     )
-                    Box(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = AetherStyle.ScreenHorizontal)
-                            .padding(bottom = 12.dp)
-                            .height(54.dp)
-                            .aetherIsland(
-                                shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                                fillAlpha = AetherStyle.SearchFillAlpha,
-                                strokeAlpha = 0.38f
-                            )
-                            .clickable(onClick = onSearchClick),
-                        contentAlignment = Alignment.CenterStart
+                    Row(
+                        modifier = Modifier.aetherIsland(
+                            shape = RoundedCornerShape(24.dp),
+                            fillAlpha = AetherStyle.SoftIslandFillAlpha,
+                            strokeAlpha = 0.42f
+                        ),
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.padding(horizontal = 16.dp)
-                        ) {
-                            Icon(Icons.Default.Search, contentDescription = "Search", modifier = Modifier.size(20.dp), tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Поиск...", fontSize = 15.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        IconButton(onClick = onNewChat, modifier = Modifier.size(42.dp)) {
+                            Icon(Icons.Default.Person, contentDescription = "Контакты", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        }
+                        IconButton(onClick = onCallsClick, modifier = Modifier.size(42.dp)) {
+                            Icon(Icons.Default.Phone, contentDescription = "Звонки", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        }
+                        IconButton(onClick = onSearchClick, modifier = Modifier.size(42.dp)) {
+                            Icon(Icons.Default.Search, contentDescription = "Поиск", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                        }
+                        Box(contentAlignment = Alignment.TopEnd) {
+                            IconButton(onClick = { createMenuOpen = true }, modifier = Modifier.size(42.dp)) {
+                                Icon(Icons.Default.Add, contentDescription = "Создать", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+                            }
+                            DropdownMenu(expanded = createMenuOpen, onDismissRequest = { createMenuOpen = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Создать чат") },
+                                    leadingIcon = { Icon(Icons.Default.Person, contentDescription = null) },
+                                    onClick = { createMenuOpen = false; onNewChat() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Создать группу") },
+                                    leadingIcon = { Icon(Icons.Default.Email, contentDescription = null) },
+                                    onClick = { createMenuOpen = false; onCreateGroup() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Создать канал") },
+                                    leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
+                                    onClick = { createMenuOpen = false; onCreateChannel() }
+                                )
+                            }
                         }
                     }
                 }
-        },
-        floatingActionButton = {
-            FloatingActionButton(
-                onClick = onNewChat,
-                modifier = Modifier
-                    .padding(bottom = AetherStyle.DockHeight + AetherStyle.DockBottom + 18.dp)
-                    .border(AetherStyle.Stroke, MaterialTheme.colorScheme.primary.copy(alpha = 0.62f), CircleShape),
-                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = AetherStyle.DockFillAlpha),
-                contentColor = MaterialTheme.colorScheme.primary,
-                shape = CircleShape
-            ) {
-                Icon(Icons.Default.Add, contentDescription = "Новый чат")
             }
-        },
-        containerColor = Color.Transparent
-    ) { padding ->
         val filteredChats = chats
 
         if (filteredChats.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize().padding(padding), contentAlignment = Alignment.Center) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical),
+                contentAlignment = Alignment.Center
+            ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     Box(
                         modifier = Modifier
@@ -151,11 +171,16 @@ fun ChatListScreen(
         } else {
             CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize().padding(padding)
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(
+                        top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical + 8.dp,
+                        bottom = appearance.edgeDimLength.value.dp
+                    )
                 ) {
                     items(filteredChats, key = { it.chat.peerId }) { chatWithMsg ->
                         ChatListItem(
-                            modifier = Modifier.animateItemPlacement(tween(260)),
+                            modifier = Modifier.animateItemPlacement(tween(appearance.motionDuration(260))),
                             chatWithMsg = chatWithMsg,
                             onClick = { onChatSelected(chatWithMsg.chat.peerId) },
                             onAction = { action -> onAction(chatWithMsg.chat.peerId, action) }
@@ -173,6 +198,7 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
     val density = LocalDensity.current
     val maxSwipePx = with(density) { (-240).dp.toPx() }
     var offsetX by remember { mutableStateOf(0f) } // px, синхронно за пальцем
+    val appearance = LocalThemeSettings.current
 
     Box(
         modifier = modifier
@@ -217,7 +243,7 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
                             .border(AetherStyle.Stroke, color.copy(alpha = 0.85f), CircleShape)
                             .clickable {
                                 onAction(action)
-                                coroutineScope.launch { animate(offsetX, 0f, animationSpec = tween(150)) { v, _ -> offsetX = v } }
+                                coroutineScope.launch { animate(offsetX, 0f, animationSpec = tween(appearance.motionDuration(150))) { v, _ -> offsetX = v } }
                             },
                         contentAlignment = Alignment.Center
                     ) {
@@ -234,14 +260,14 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
             modifier = Modifier
                 .offset { IntOffset(offsetX.roundToInt(), 0) }
                 .fillMaxSize()
-                .background(MaterialTheme.colorScheme.background)
+                .background(if (offsetX < -1f) MaterialTheme.colorScheme.background else Color.Transparent)
                 .clickable(onClick = onClick)
                 .pointerInput(Unit) {
                     detectHorizontalDragGestures(
                         onDragEnd = {
                             val target = if (offsetX < maxSwipePx / 2) maxSwipePx else 0f
                             coroutineScope.launch {
-                                animate(offsetX, target, animationSpec = tween(180, easing = FastOutSlowInEasing)) { v, _ -> offsetX = v }
+                                animate(offsetX, target, animationSpec = tween(appearance.motionDuration(180), easing = FastOutSlowInEasing)) { v, _ -> offsetX = v }
                             }
                         },
                         onHorizontalDrag = { change, dragAmount ->
@@ -269,14 +295,27 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
             Spacer(modifier = Modifier.width(16.dp))
 
             Column(modifier = Modifier.weight(1f)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text(
-                        text = displayName,
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
+                Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = displayName,
+                            modifier = Modifier.weight(1f, fill = false),
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        if (chat.type == 0 && !chat.statusEmoji.isNullOrBlank()) {
+                            Spacer(Modifier.width(4.dp))
+                            Text(chat.statusEmoji!!, fontSize = 15.sp, maxLines = 1)
+                        }
+                    }
                     if (lastTimestamp != null) {
+                        Spacer(Modifier.width(8.dp))
                         val time = remember(lastTimestamp) {
                             java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault()).format(java.util.Date(lastTimestamp))
                         }
@@ -284,7 +323,7 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
                     }
                 }
                 Spacer(modifier = Modifier.height(4.dp))
-                val snippet = if (lastText == null) "Нет сообщений" else if (lastText.startsWith("{") && lastText.contains("file_id")) "📎 Медиа" else lastText
+                val snippet = messagePreview(lastText)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically

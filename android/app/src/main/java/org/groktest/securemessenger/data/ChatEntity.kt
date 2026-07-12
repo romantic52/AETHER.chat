@@ -9,6 +9,7 @@ data class ChatEntity(
     val isMuted: Boolean = false,
     val isArchived: Boolean = false,
     val unreadCount: Int = 0,
+    val statusEmoji: String? = null,
     val avatarFileId: String? = null // file_id аватарки на сервере
 )
 

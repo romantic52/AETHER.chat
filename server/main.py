@@ -274,6 +274,15 @@ def init_db() -> None:
                 kind TEXT NOT NULL DEFAULT 'apns',
                 updated_at TEXT NOT NULL
             );
+            -- Prekey-директория для Double Ratchet (Olm/X3DH). Сервер только
+            -- раздаёт публичные one-time keys, приватных не видит. Каждый OTK
+            -- одноразовый: при claim удаляется, чтобы обеспечить forward secrecy.
+            CREATE TABLE IF NOT EXISTS one_time_keys (
+                user_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                key_b64 TEXT NOT NULL,
+                PRIMARY KEY (user_id, key_id)
+            );
             """
         )
         
@@ -289,6 +298,17 @@ def init_db() -> None:
             );
             """
         )
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='users' AND column_name='status_emoji')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN status_emoji TEXT")
+
+        # Olm identity-ключ (curve25519) для Double Ratchet — публичный, отдаётся в prekey-bundle.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='users' AND column_name='olm_identity_key')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN olm_identity_key TEXT")
+
         for col, ddl in [("public_join", "INTEGER NOT NULL DEFAULT 0"),
                          ("join_key_b64", "TEXT"),
                          ("username", "TEXT"),
@@ -450,7 +470,15 @@ class RegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     user_id: str = Field(min_length=2, max_length=64)
-    password: str = Field(min_length=8)
+    # Старые аккаунты могли быть созданы до требования 8 символов.
+    # Новые пароли проверяет RegisterRequest, а вход обязан оставаться совместимым.
+    password: str = Field(min_length=1, max_length=256)
+
+
+class UploadKeysRequest(BaseModel):
+    identity_key_b64: str
+    # {key_id: key_b64}
+    one_time_keys: dict
 
 
 class SendMessageRequest(BaseModel):
@@ -469,6 +497,7 @@ class UpdateProfileRequest(BaseModel):
     display_name: Optional[str] = None
     avatar_file_id: Optional[str] = None
     bio: Optional[str] = None
+    status_emoji: Optional[str] = Field(default=None, max_length=16)
 
 class CreateGroupRequest(BaseModel):
     id: str = Field(min_length=2, max_length=64)
@@ -573,6 +602,51 @@ def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_cu
     return {"ok": True, "user_id": current_user}
 
 
+# --- Prekey-директория для Double Ratchet (Olm/X3DH) ---
+
+@app.put("/keys/upload")
+def upload_keys(body: UploadKeysRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
+                    (body.identity_key_b64, current_user))
+        for key_id, key_b64 in body.one_time_keys.items():
+            cur.execute(
+                "INSERT INTO one_time_keys (user_id, key_id, key_b64) VALUES (%s, %s, %s) "
+                "ON CONFLICT (user_id, key_id) DO NOTHING",
+                (current_user.lower(), str(key_id), str(key_b64)))
+    return {"ok": True}
+
+
+@app.get("/keys/count")
+def keys_count(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
+        n = cur.fetchone()["n"]
+    return {"count": n}
+
+
+# Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
+# удаляется (одноразовость → forward secrecy). Атомарно, чтобы двум клиентам не
+# достался один и тот же OTK.
+@app.post("/keys/claim/{user_id}")
+def claim_keys(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,))
+        row = cur.fetchone()
+        if row is None or not row["olm_identity_key"]:
+            raise HTTPException(404, "No Olm identity for user")
+        cur.execute(
+            "DELETE FROM one_time_keys WHERE ctid IN "
+            "(SELECT ctid FROM one_time_keys WHERE user_id = %s LIMIT 1) "
+            "RETURNING key_id, key_b64",
+            (user_id.lower(),))
+        otk = cur.fetchone()
+    if otk is None:
+        raise HTTPException(409, "No one-time keys available")
+    return {"user_id": user_id.lower(), "identity_key_b64": row["olm_identity_key"],
+            "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"]}}
+
+
 @app.put("/users/me/profile")
 def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
@@ -587,6 +661,10 @@ def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_c
             "UPDATE users SET username = COALESCE(%s, username), display_name = COALESCE(%s, display_name), avatar_file_id = COALESCE(%s, avatar_file_id), bio = COALESCE(%s, bio) WHERE LOWER(user_id) = LOWER(%s)",
             (body.username, body.display_name, body.avatar_file_id, body.bio, current_user)
         )
+        # Эмодзи-статус: пустая строка снимает статус (поэтому без COALESCE).
+        if body.status_emoji is not None:
+            cur.execute("UPDATE users SET status_emoji = %s WHERE LOWER(user_id) = LOWER(%s)",
+                        (body.status_emoji or None, current_user))
     return {"ok": True}
 
 
@@ -595,7 +673,7 @@ def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_c
 def get_user_profile(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            "SELECT user_id, public_key_b64, username, display_name, avatar_file_id, bio, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
+            "SELECT user_id, public_key_b64, username, display_name, avatar_file_id, bio, status_emoji, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
         )
         row = cur.fetchone()
     if not row:
@@ -636,7 +714,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         if handle_only:
             cur.execute(
-                """SELECT user_id, username, display_name, avatar_file_id FROM users
+                """SELECT user_id, username, display_name, avatar_file_id, status_emoji FROM users
                    WHERE LOWER(COALESCE(username, '')) LIKE LOWER(%s)
                    ORDER BY (LOWER(COALESCE(username, '')) = %s) DESC,
                             (LOWER(COALESCE(username, '')) LIKE LOWER(%s)) DESC,
@@ -646,7 +724,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
             )
         else:
             cur.execute(
-                """SELECT user_id, username, display_name, avatar_file_id FROM users
+                """SELECT user_id, username, display_name, avatar_file_id, status_emoji FROM users
                    WHERE LOWER(user_id) LIKE LOWER(%s)
                       OR LOWER(COALESCE(username, '')) LIKE LOWER(%s)
                       OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)
@@ -903,13 +981,20 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
         logger.warning(f"send_message: sender mismatch {body.sender_id} vs {current_user}")
         raise HTTPException(403, "Cannot send messages as another user")
 
-    required = {"nonce_b64", "ciphertext_b64"}
-    if not required.issubset(body.envelope.keys()):
-        logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
-        raise HTTPException(400, f"Invalid envelope: missing keys. Got: {list(body.envelope.keys())}")
-    if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
-        logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
-        raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
+    # Double Ratchet (Olm) 1:1 — свой формат конверта; сервер только релеит.
+    if body.envelope.get("ratchet"):
+        ratchet_required = {"olm_identity", "type", "body_b64"}
+        if not ratchet_required.issubset(body.envelope.keys()):
+            logger.warning(f"send_message: bad ratchet envelope. Got: {list(body.envelope.keys())}")
+            raise HTTPException(400, f"Invalid ratchet envelope. Got: {list(body.envelope.keys())}")
+    else:
+        required = {"nonce_b64", "ciphertext_b64"}
+        if not required.issubset(body.envelope.keys()):
+            logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
+            raise HTTPException(400, f"Invalid envelope: missing keys. Got: {list(body.envelope.keys())}")
+        if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
+            logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
+            raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
     if "plaintext" in body.envelope or "text" in body.envelope:
         raise HTTPException(400, "Plaintext not allowed on server")
 
@@ -1052,6 +1137,22 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
                         # Append sender_id to the message so the recipient knows who is calling
                         msg["sender_id"] = user_id
                         asyncio.create_task(manager.send_personal_message(msg, recipient_id.lower()))
+                # Групповые звонки (mesh): start/join/leave рассылаются всем
+                # участникам группы, направленный SDP/ICE идёт обычными webrtc_*.
+                # Медиа сервер не видит — только сигналинг, как и в 1:1.
+                elif msg.get("type") in ["group_call_start", "group_call_join", "group_call_leave"]:
+                    gid = (msg.get("group_id") or "").lower()
+                    if gid:
+                        with db_conn() as cur:
+                            cur.execute(
+                                """SELECT user_id FROM group_members
+                                   WHERE LOWER(group_id) = LOWER(%s)""", (gid,))
+                            members = [r["user_id"].lower() for r in cur.fetchall()]
+                        if user_id in members:
+                            msg["sender_id"] = user_id
+                            for member in members:
+                                if member != user_id:
+                                    asyncio.create_task(manager.send_personal_message(msg, member))
             except Exception:
                 pass
     except WebSocketDisconnect:

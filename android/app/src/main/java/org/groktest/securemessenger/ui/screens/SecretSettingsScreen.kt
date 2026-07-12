@@ -2,18 +2,18 @@ package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.foundation.layout.*
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Science
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.glass.supportsRealGlass
+import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 /**
@@ -26,21 +26,12 @@ fun SecretSettingsScreen(onBack: () -> Unit) {
     val themeSettings = LocalThemeSettings.current
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Экспериментальное", fontWeight = FontWeight.Bold) },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
-            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .padding(top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical)
+            ) {
                 Row(
                     modifier = Modifier.padding(16.dp),
                     verticalAlignment = Alignment.CenterVertically
@@ -79,6 +70,11 @@ fun SecretSettingsScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            AetherSettingsTopBar(
+                "Экспериментальное",
+                onBack,
+                Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }

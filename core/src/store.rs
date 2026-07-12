@@ -99,6 +99,11 @@ CREATE TABLE IF NOT EXISTS pins (
     first_seen INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS olm_sessions (
+    peer_id TEXT PRIMARY KEY,
+    session_json TEXT NOT NULL,
+    updated_ts INTEGER NOT NULL DEFAULT 0
+);
 "#;
 
 fn row_to_msg(row: &rusqlite::Row) -> rusqlite::Result<StoredMessage> {
@@ -142,6 +147,7 @@ impl CoreStore {
             conn.query_row("SELECT count(*) FROM sqlite_master", [], |_| Ok(()))
                 .map_err(|_| CoreError::Store { msg: "БД зашифрована другим ключом".into() })?;
         }
+        Self::migrate_legacy_android_schema(&conn, encryption_key_b64.as_deref())?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(CoreError::store)?;
         // Миграция: старая group_keys(group_id PRIMARY KEY, key_b64) → эпохи.
@@ -507,6 +513,27 @@ impl CoreStore {
             .execute("INSERT OR REPLACE INTO meta (k,v) VALUES (?1,?2)", params![key, value])?;
         Ok(())
     }
+
+    pub fn olm_session_get(&self, peer_id: String) -> Result<Option<String>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT session_json FROM olm_sessions WHERE peer_id=?1",
+            params![peer_id.to_lowercase()],
+            |row| row.get(0),
+        ).optional()?)
+    }
+
+    pub fn olm_session_set(&self, peer_id: String, session_json: String) -> Result<(), CoreError> {
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as i64)
+            .unwrap_or(0);
+        self.conn.lock().unwrap().execute(
+            "INSERT OR REPLACE INTO olm_sessions (peer_id, session_json, updated_ts) VALUES (?1,?2,?3)",
+            params![peer_id.to_lowercase(), session_json, ts],
+        )?;
+        Ok(())
+    }
 }
 
 /// b64url-ключ (32 байта) → hex для PRAGMA key.
@@ -550,6 +577,341 @@ impl CoreStore {
         let _ = std::fs::remove_file(format!("{path}-shm"));
         std::fs::rename(&tmp, path).map_err(CoreError::store)?;
         Ok(())
+    }
+}
+
+
+#[derive(Debug)]
+struct LegacyAndroidMessage {
+    id: String,
+    peer_id: String,
+    outgoing: bool,
+    text: String,
+    ts: i64,
+    reply_to_id: Option<String>,
+    reply_to_text: Option<String>,
+    reactions: String,
+    status: i32,
+    edited: bool,
+    forwarded_from: Option<String>,
+}
+
+#[derive(Debug)]
+struct LegacyAndroidChat {
+    peer_id: String,
+    title: String,
+    kind: i32,
+    pinned: bool,
+    muted: bool,
+    archived: bool,
+    unread: i32,
+    avatar_file_id: Option<String>,
+}
+
+#[derive(Debug)]
+struct LegacyAndroidPin {
+    peer_id: String,
+    public_key_b64: String,
+    first_seen: i64,
+    verified: bool,
+    previous_key_b64: Option<String>,
+    changed_at: Option<i64>,
+}
+
+fn table_exists(conn: &Connection, table: &str) -> bool {
+    conn.query_row(
+        "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+        params![table],
+        |row| row.get::<_, i64>(0),
+    )
+    .map(|count| count > 0)
+    .unwrap_or(false)
+}
+
+fn legacy_plaintext(stored: &str, key_b64: Option<&str>) -> String {
+    let Some(key) = key_b64 else {
+        return stored.to_string();
+    };
+    let Some((nonce, encoded_ciphertext)) = stored.split_once(':') else {
+        return stored.to_string();
+    };
+    let Ok(ciphertext) = crate::crypto::decode_b64(encoded_ciphertext) else {
+        return stored.to_string();
+    };
+    crate::crypto::aes_decrypt(key.to_string(), nonce.to_string(), ciphertext)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())
+        .unwrap_or_else(|| stored.to_string())
+}
+
+fn legacy_payload(
+    text: &str,
+    reply_to_id: &Option<String>,
+    reply_to_text: &Option<String>,
+    forwarded_from: &Option<String>,
+) -> String {
+    if serde_json::from_str::<serde_json::Value>(text)
+        .ok()
+        .and_then(|value| value.get("type").cloned())
+        .is_some()
+    {
+        return text.to_string();
+    }
+    let mut value = serde_json::json!({ "type": "text", "text": text });
+    if let Some(reply) = reply_to_id {
+        value["reply_to_id"] = reply.clone().into();
+    }
+    if let Some(reply) = reply_to_text {
+        value["reply_to_text"] = reply.clone().into();
+    }
+    if let Some(author) = forwarded_from {
+        value["fwd_from"] = author.clone().into();
+    }
+    value.to_string()
+}
+
+impl CoreStore {
+    /// Migrates the Android v1 store in place. The database itself may already have
+    /// been converted to SQLCipher; legacy text fields are additionally AES-GCM wrapped.
+    fn migrate_legacy_android_schema(
+        conn: &Connection,
+        encryption_key_b64: Option<&str>,
+    ) -> Result<(), CoreError> {
+        let legacy_messages = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('messages') WHERE name='msg_id'",
+                [],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|count| count > 0)
+            .unwrap_or(false);
+        if !legacy_messages {
+            return Ok(());
+        }
+
+        let messages = {
+            let mut statement = conn.prepare(
+                "SELECT msg_id, peer_id, is_out, text, timestamp, reply_to_id, reply_to_text,
+                        reactions, status, is_edited, forwarded_from
+                 FROM messages ORDER BY timestamp ASC",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(LegacyAndroidMessage {
+                        id: row.get(0)?,
+                        peer_id: row.get(1)?,
+                        outgoing: row.get::<_, i64>(2)? != 0,
+                        text: row.get(3)?,
+                        ts: row.get(4)?,
+                        reply_to_id: row.get(5)?,
+                        reply_to_text: row.get(6)?,
+                        reactions: row.get(7)?,
+                        status: row.get(8)?,
+                        edited: row.get::<_, i64>(9)? != 0,
+                        forwarded_from: row.get(10)?,
+                    })
+                })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        };
+
+        let chats = if table_exists(conn, "chats") {
+            let mut statement = conn.prepare(
+                "SELECT peer_id, name, type, is_pinned, is_muted, is_archived,
+                        unread_count, avatar_file_id FROM chats",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(LegacyAndroidChat {
+                        peer_id: row.get(0)?,
+                        title: row.get(1)?,
+                        kind: row.get(2)?,
+                        pinned: row.get::<_, i64>(3)? != 0,
+                        muted: row.get::<_, i64>(4)? != 0,
+                        archived: row.get::<_, i64>(5)? != 0,
+                        unread: row.get(6)?,
+                        avatar_file_id: row.get(7)?,
+                    })
+                })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+
+        let pins = if table_exists(conn, "pinned_keys") {
+            let mut statement = conn.prepare(
+                "SELECT peer_id, public_key_b64, pinned_at, verified,
+                        previous_key_b64, changed_at FROM pinned_keys",
+            )?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok(LegacyAndroidPin {
+                        peer_id: row.get(0)?,
+                        public_key_b64: row.get(1)?,
+                        first_seen: row.get(2)?,
+                        verified: row.get::<_, i64>(3)? != 0,
+                        previous_key_b64: row.get(4)?,
+                        changed_at: row.get(5)?,
+                    })
+                })?;
+            rows.collect::<Result<Vec<_>, _>>()?
+        } else {
+            Vec::new()
+        };
+
+        let mut latest: std::collections::HashMap<String, (String, i64)> =
+            std::collections::HashMap::new();
+        let migrated_messages: Vec<StoredMessage> = messages
+            .into_iter()
+            .map(|message| {
+                let text = legacy_plaintext(&message.text, encryption_key_b64);
+                let reply_text = message
+                    .reply_to_text
+                    .as_deref()
+                    .map(|value| legacy_plaintext(value, encryption_key_b64));
+                let reactions = legacy_plaintext(&message.reactions, encryption_key_b64);
+                latest.insert(message.peer_id.clone(), (text.clone(), message.ts));
+                StoredMessage {
+                    id: message.id,
+                    peer_id: message.peer_id.clone(),
+                    outgoing: message.outgoing,
+                    sender_id: if message.outgoing {
+                        String::new()
+                    } else {
+                        message.peer_id
+                    },
+                    payload_json: legacy_payload(
+                        &text,
+                        &message.reply_to_id,
+                        &reply_text,
+                        &message.forwarded_from,
+                    ),
+                    status: message.status,
+                    ts: message.ts,
+                    reactions_json: if reactions.is_empty() {
+                        "{}".into()
+                    } else {
+                        reactions
+                    },
+                    edited: message.edited,
+                    deleted: false,
+                }
+            })
+            .collect();
+
+        conn.execute_batch("BEGIN IMMEDIATE;").map_err(CoreError::store)?;
+        let result = (|| -> Result<(), CoreError> {
+            conn.execute_batch(
+                "ALTER TABLE messages RENAME TO messages_android_v1;
+                 ALTER TABLE chats RENAME TO chats_android_v1;",
+            )?;
+            if table_exists(conn, "pinned_keys") {
+                conn.execute_batch(
+                    "ALTER TABLE pinned_keys RENAME TO pinned_keys_android_v1;",
+                )?;
+            }
+            conn.execute_batch(SCHEMA)?;
+
+            for message in migrated_messages {
+                conn.execute(
+                    "INSERT OR REPLACE INTO messages
+                     (id, peer_id, outgoing, sender_id, payload_json, status, ts,
+                      reactions_json, edited, deleted)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,0)",
+                    params![
+                        message.id,
+                        message.peer_id,
+                        message.outgoing as i64,
+                        message.sender_id,
+                        message.payload_json,
+                        message.status,
+                        message.ts,
+                        message.reactions_json,
+                        message.edited as i64,
+                    ],
+                )?;
+            }
+
+            for chat in chats {
+                let (last_text, last_ts) = latest
+                    .get(&chat.peer_id)
+                    .cloned()
+                    .unwrap_or_default();
+                conn.execute(
+                    "INSERT OR REPLACE INTO chats
+                     (peer_id, is_group, title, last_text, last_ts, unread, pinned, muted, archived)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+                    params![
+                        chat.peer_id,
+                        (chat.kind == 1 || chat.kind == 2) as i64,
+                        chat.title,
+                        last_text,
+                        last_ts,
+                        chat.unread,
+                        chat.pinned as i64,
+                        chat.muted as i64,
+                        chat.archived as i64,
+                    ],
+                )?;
+                conn.execute(
+                    "INSERT OR REPLACE INTO meta (k,v) VALUES (?1,?2)",
+                    params![format!("android.type.{}", chat.peer_id.to_lowercase()), chat.kind.to_string()],
+                )?;
+                if let Some(avatar) = chat.avatar_file_id {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta (k,v) VALUES (?1,?2)",
+                        params![format!("android.avatar.{}", chat.peer_id.to_lowercase()), avatar],
+                    )?;
+                }
+            }
+
+            for pin in pins {
+                conn.execute(
+                    "INSERT OR REPLACE INTO pins
+                     (peer_id, public_key_b64, verified, first_seen) VALUES (?1,?2,?3,?4)",
+                    params![
+                        pin.peer_id,
+                        pin.public_key_b64,
+                        pin.verified as i64,
+                        pin.first_seen,
+                    ],
+                )?;
+                if let Some(previous) = pin.previous_key_b64 {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta (k,v) VALUES (?1,?2)",
+                        params![format!("android.pin_previous.{}", pin.peer_id.to_lowercase()), previous],
+                    )?;
+                }
+                if let Some(changed_at) = pin.changed_at {
+                    conn.execute(
+                        "INSERT OR REPLACE INTO meta (k,v) VALUES (?1,?2)",
+                        params![
+                            format!("android.pin_changed.{}", pin.peer_id.to_lowercase()),
+                            changed_at.to_string(),
+                        ],
+                    )?;
+                }
+            }
+
+            conn.execute_batch(
+                "DROP TABLE messages_android_v1;
+                 DROP TABLE chats_android_v1;",
+            )?;
+            if table_exists(conn, "pinned_keys_android_v1") {
+                conn.execute_batch("DROP TABLE pinned_keys_android_v1;")?;
+            }
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                conn.execute_batch("COMMIT;").map_err(CoreError::store)?;
+                Ok(())
+            }
+            Err(error) => {
+                let _ = conn.execute_batch("ROLLBACK;");
+                Err(error)
+            }
+        }
     }
 }
 

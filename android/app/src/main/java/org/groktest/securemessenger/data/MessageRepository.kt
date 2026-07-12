@@ -10,11 +10,13 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.crypto.E2ECrypto
 import org.groktest.securemessenger.crypto.KeyTrustStore
 import org.json.JSONObject
+import java.io.File
 import java.util.UUID
 
 /**
@@ -40,15 +42,19 @@ class MessageRepository(
     val myId: String,
     private val store: CoreStore,
     private val trustStore: KeyTrustStore,
+    private val olmTrustStore: KeyTrustStore,
     private val resolver: ContentResolver,
+    private val cacheRoot: File,
 ) {
     private val crypto = E2ECrypto()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val inboxMutex = Mutex()
+    private val ratchetMutex = Mutex()
+    private var cachedOlmIdentity = ""
     // CONFLATED: множественные сигналы «есть что отправить» схлопываются в один
     private val outboxSignal = Channel<Unit>(Channel.CONFLATED)
-    private val receiptSignal = Channel<Unit>(Channel.CONFLATED)
-    private val pendingDeliveredReceipts = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val mediaDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    @Volatile private var appActive = true
 
     // ------------------------------------------------------------------
     // (#A3) Групповые ключи: общий симметричный ключ, завёрнутый box'ом
@@ -61,6 +67,7 @@ class MessageRepository(
         val isE2E: Boolean,
         val role: String = "member",
         val linkedGroupId: String? = null,
+        val isChannel: Boolean = false,
     )
 
     /**
@@ -70,6 +77,8 @@ class MessageRepository(
      */
     class GroupKeyUnavailableException(groupId: String) :
         IllegalStateException("Нет ключа группы $groupId (вы не участник?)")
+
+    private class RatchetSessionUnavailableException(message: String) : IllegalStateException(message)
 
     private val groupKeys = java.util.concurrent.ConcurrentHashMap<String, GroupKey>()
     private val groupKeysMutex = Mutex()
@@ -100,10 +109,22 @@ class MessageRepository(
                             o.getString("nonce_b64"),
                             o.getString("ciphertext_b64"),
                         )
-                        GroupKey(E2ECrypto.SymmetricKey(crypto.decrypt(env, keys)), isE2E = true, role = g.role, linkedGroupId = g.linkedGroupId)
+                        GroupKey(
+                            E2ECrypto.SymmetricKey(crypto.decrypt(env, keys)),
+                            isE2E = true,
+                            role = g.role,
+                            linkedGroupId = g.linkedGroupId,
+                            isChannel = g.isChannel,
+                        )
                     } else {
                         // Легаси: raw base64-ключ, известный серверу → НЕ E2E
-                        GroupKey(E2ECrypto.SymmetricKey(raw), isE2E = false, role = g.role, linkedGroupId = g.linkedGroupId)
+                        GroupKey(
+                            E2ECrypto.SymmetricKey(raw),
+                            isE2E = false,
+                            role = g.role,
+                            linkedGroupId = g.linkedGroupId,
+                            isChannel = g.isChannel,
+                        )
                     }
                 } catch (e: Exception) { null }
                 if (parsed != null) groupKeys[g.id.lowercase()] = parsed
@@ -119,7 +140,6 @@ class MessageRepository(
      * Для личных чатов и недоступных групп — false (там другая диагностика).
      */
     suspend fun isPeerNotE2E(peerId: String): Boolean {
-        if (!isGroupLike(peerId)) return false
         val gk = try { groupKeyFor(peerId) } catch (e: Exception) { null }
         return gk != null && !gk.isE2E
     }
@@ -147,14 +167,12 @@ class MessageRepository(
      * Личные чаты и группы — всегда true.
      */
     suspend fun canPostTo(peerId: String): Boolean {
-        if (!peerId.startsWith("channel_", ignoreCase = true)) return true
         val gk = try { groupKeyFor(peerId) } catch (e: Exception) { null }
-        return gk?.role == "admin"
+        return gk == null || !gk.isChannel || gk.role == "admin"
     }
 
     /** (#A6) Группа обсуждений канала (null — не подвязана). */
     suspend fun discussionGroupFor(peerId: String): String? {
-        if (!peerId.startsWith("channel_", ignoreCase = true)) return null
         val gk = try { groupKeyFor(peerId) } catch (e: Exception) { null }
         return gk?.linkedGroupId?.takeIf { it.isNotBlank() }
     }
@@ -175,14 +193,43 @@ class MessageRepository(
         }
     }
 
-    /**
-     * (#A3) Единая точка шифрования исходящего wire-JSON:
-     *  - личный чат → crypto_box на ключ собеседника (TOFU-пиннинг);
-     *  - группа/канал → AES-GCM общим ключом, конверт с is_group=1
-     *    (sender_pubkey не нужен — авторство подтверждает сервер по токену).
-     */
-    private suspend fun encryptWireFor(peerId: String, wire: String): Map<String, String> {
-        return if (isGroupLike(peerId)) {
+    private suspend fun olmAccountLocked(): String {
+        store.metaGet("olm_account")?.takeIf(String::isNotBlank)?.let { return it }
+        return uniffi.sm_core.olmAccountNew().also { store.metaSet("olm_account", it) }
+    }
+
+    private suspend fun myOlmIdentityLocked(): String {
+        if (cachedOlmIdentity.isBlank()) {
+            cachedOlmIdentity = uniffi.sm_core.olmAccountIdentity(olmAccountLocked())
+        }
+        return cachedOlmIdentity
+    }
+
+    suspend fun myOlmIdentity(): String = ratchetMutex.withLock { myOlmIdentityLocked() }
+
+    private suspend fun ensureOlmKeysLocked() {
+        val account = olmAccountLocked()
+        if (api.olmKeysCount(myId) >= 20u) return
+        val published = uniffi.sm_core.olmAccountGenerateOtks(account, 40u)
+        store.metaSet("olm_account", published.accountPickle)
+        cachedOlmIdentity = published.identityKeyB64
+        api.uploadOlmKeys(myId, published.identityKeyB64, published.oneTimeKeysJson)
+    }
+
+    suspend fun ensureOlmKeys() = ratchetMutex.withLock { ensureOlmKeysLocked() }
+
+    private suspend fun olmSession(peerId: String): String? =
+        if (store.metaGet("olm_session_reset.${peerId.lowercase()}") == "1") null
+        else store.olmSessionGet(peerId)
+
+    private suspend fun saveOlmSession(peerId: String, session: String) {
+        store.olmSessionSet(peerId, session)
+        store.metaSet("olm_session_reset.${peerId.lowercase()}", "0")
+    }
+
+    /** Личные сообщения идут только через общее Rust Olm-ядро; box остаётся у групповых ключей. */
+    private suspend fun encryptWireFor(peerId: String, wire: String): Map<String, Any> {
+        return if (isGroupPeer(peerId)) {
             val gk = groupKeyFor(peerId) ?: throw GroupKeyUnavailableException(peerId)
             val env = crypto.encryptFile(wire.toByteArray(Charsets.UTF_8), gk.key)
             mapOf(
@@ -191,7 +238,27 @@ class MessageRepository(
                 "ciphertext_b64" to env.ciphertextB64,
             )
         } else {
-            crypto.encrypt(wire, keys, trustStore.keyForSending(peerId)).toMap()
+            ratchetMutex.withLock {
+                val id = peerId.lowercase()
+                var session = olmSession(id)
+                if (session == null) {
+                    val bundle = api.claimOlmKeys(myId, id)
+                    olmTrustStore.checkForSending(id, bundle.identityKeyB64)
+                    session = uniffi.sm_core.olmCreateOutbound(
+                        olmAccountLocked(),
+                        bundle.identityKeyB64,
+                        bundle.oneTimeKeyB64,
+                    )
+                }
+                val encrypted = uniffi.sm_core.olmEncrypt(session, wire)
+                saveOlmSession(id, encrypted.sessionPickle)
+                mapOf(
+                    "ratchet" to "1",
+                    "olm_identity" to myOlmIdentityLocked(),
+                    "type" to encrypted.messageType.toInt(),
+                    "body_b64" to encrypted.bodyB64,
+                )
+            }
         }
     }
 
@@ -202,13 +269,46 @@ class MessageRepository(
     /** Запуск фоновых циклов: поллинг инбокса (страховка WS) и outbox. */
     fun start() {
         scope.launch {
+            runCatching { ensureOlmKeys() }
             while (true) {
                 syncInbox()
                 delay(10_000)
             }
         }
+        scope.launch {
+            while (true) {
+                syncGroups()
+                delay(60_000)
+            }
+        }
+        scope.launch {
+            while (true) {
+                if (appActive) runCatching { api.heartbeat() }
+                delay(25_000)
+            }
+        }
         scope.launch { outboxLoop() }
-        scope.launch { receiptLoop() }
+    }
+
+    fun setAppActive(active: Boolean) {
+        appActive = active
+        if (active) scope.launch { runCatching { api.heartbeat() } }
+    }
+
+    private suspend fun syncGroups() {
+        val groups = try { api.getMyGroups() } catch (_: Exception) { return }
+        for (group in groups) {
+            val current = store.getChat(group.id)
+            val next = current?.copy(
+                name = group.name.ifBlank { current.name },
+                type = if (group.isChannel) 2 else 1,
+            ) ?: ChatEntity(
+                peerId = group.id,
+                name = group.name.ifBlank { group.id },
+                type = if (group.isChannel) 2 else 1,
+            )
+            if (current == null) store.insertChat(next) else if (current != next) store.updateChat(next)
+        }
     }
 
     /** Полная остановка (logout). Повторное использование объекта невозможно. */
@@ -230,21 +330,31 @@ class MessageRepository(
         try {
             val msgs = api.fetchInbox(myId)
             val ackIds = mutableListOf<String>()
-            // Отправители новых личных сообщений — им разошлём квитанцию «доставлено».
-            val deliveredTo = HashSet<String>()
             for (m in msgs) {
                 try {
-                    processInboxMessage(m)?.let { deliveredTo.add(it) }
+                    val deliveryPeer = processInboxMessage(m)
+                    if (deliveryPeer != null) {
+                        // Сначала квитанция, потом ACK. Иначе при убийстве процесса между
+                        // этими действиями отправитель навсегда останется с одной галочкой.
+                        try {
+                            val wire = JSONObject().put("type", "delivered").toString()
+                            api.sendMessage(myId, deliveryPeer, encryptWireFor(deliveryPeer, wire))
+                        } catch (_: Exception) {
+                            continue
+                        }
+                    }
                     ackIds.add(m.id)
                 } catch (e: GroupKeyUnavailableException) {
                     // (#A3) Ключ группы временно недоступен (сеть/только вступили):
                     // НЕ ACKаем и НЕ ставим плашку — сообщение придёт в следующем sync.
+                } catch (e: RatchetSessionUnavailableException) {
+                    // Normal без подходящей сессии нельзя потерять: ждём prekey/восстановление.
                 } catch (e: Exception) {
                     // «Ядовитое» сообщение: сохраняем плашку, чтобы не зацикливалось
                     try {
                         if (store.getMessageByMsgId(m.id) == null) {
                             val peer = peerIdOf(m)
-                            ensureChatExists(peer)
+                            ensureChatExists(peer, forceGroup = m.isGroupEnvelope)
                             store.insertMessage(
                                 MessageEntity(
                                     msgId = m.id,
@@ -267,26 +377,64 @@ class MessageRepository(
                     // ACK не дошёл — дедупликация по msgId отбросит повторы
                 }
             }
-            // Delivery receipts are retried separately so sender statuses do not get stuck after a transient network miss.
-            if (deliveredTo.isNotEmpty()) {
-                pendingDeliveredReceipts.addAll(deliveredTo)
-                receiptSignal.trySend(Unit)
-            }
         } catch (e: Exception) {
         } finally {
             inboxMutex.unlock()
         }
     }
 
-    private fun isGroupLike(recipientId: String) =
+    private fun isLegacyGroupId(recipientId: String) =
         recipientId.startsWith("channel_", ignoreCase = true) ||
             recipientId.startsWith("group_", ignoreCase = true)
 
+    private suspend fun isGroupPeer(peerId: String): Boolean =
+        isLegacyGroupId(peerId) || store.getChat(peerId)?.type in 1..2 || groupKeyFor(peerId) != null
+
     private fun peerIdOf(m: RelayApi.InboxMessage) =
-        if (isGroupLike(m.recipientId)) m.recipientId else m.senderId
+        if (m.isGroupEnvelope) m.recipientId else m.senderId
 
     private fun timestampOf(m: RelayApi.InboxMessage) =
         if (m.createdAtMs > 0) m.createdAtMs else System.currentTimeMillis()
+
+    private suspend fun decryptRatchet(m: RelayApi.InboxMessage): String {
+        val envelope = JSONObject(m.envelopeJson)
+        val senderIdentity = envelope.optString("olm_identity")
+        val body = envelope.optString("body_b64")
+        val type = envelope.optInt("type", -1)
+        require(senderIdentity.isNotBlank() && body.isNotBlank() && type in 0..1) {
+            "Некорректный Ratchet-конверт"
+        }
+
+        var consumedOneTimeKey = false
+        val plaintext = ratchetMutex.withLock {
+            val peer = m.senderId.lowercase()
+            olmSession(peer)?.let { session ->
+                runCatching { uniffi.sm_core.olmDecrypt(session, type.toUInt(), body) }
+                    .getOrNull()
+                    ?.let { decrypted ->
+                        saveOlmSession(peer, decrypted.sessionPickle)
+                        return@withLock decrypted.plaintext
+                    }
+                if (type != 0) {
+                    throw RatchetSessionUnavailableException("Ratchet-сессия рассинхронизирована")
+                }
+            }
+            if (type != 0) {
+                throw RatchetSessionUnavailableException("Нет Ratchet-сессии для normal-сообщения")
+            }
+            val inbound = uniffi.sm_core.olmCreateInbound(
+                olmAccountLocked(),
+                senderIdentity,
+                body,
+            )
+            store.metaSet("olm_account", inbound.accountPickle)
+            saveOlmSession(peer, inbound.sessionPickle)
+            consumedOneTimeKey = true
+            inbound.plaintext
+        }
+        if (consumedOneTimeKey) scope.launch { runCatching { ensureOlmKeys() } }
+        return plaintext
+    }
 
     /**
      * Обработка одного входящего. Бросает исключение при сбое — caller решает про ACK.
@@ -295,22 +443,35 @@ class MessageRepository(
      */
     private suspend fun processInboxMessage(m: RelayApi.InboxMessage): String? {
         // Дедупликация: своё сообщение (Избранное, ретраи) уже сохранено при отправке
-        if (store.getMessageByMsgId(m.id) != null) return null
+        store.getMessageByMsgId(m.id)?.let { existing ->
+            return if (
+                !m.isGroupEnvelope && !existing.isOut &&
+                !m.senderId.equals(myId, ignoreCase = true)
+            ) m.senderId else null
+        }
 
         // Чёрный список: личные сообщения от заблокированных отбрасываем (caller заACKает).
-        if (!isGroupLike(m.recipientId) &&
+        if (!m.isGroupEnvelope &&
             !m.senderId.equals(myId, ignoreCase = true) &&
             BlockStore.isBlocked(m.senderId)
         ) return null
 
-        val env = E2ECrypto.Envelope(m.senderPubkeyB64, m.nonceB64, m.ciphertextB64)
-        val groupLike = isGroupLike(m.recipientId)
+        val groupLike = m.isGroupEnvelope
         val msgPeerId = peerIdOf(m)
         val msgTimestamp = timestampOf(m)
 
-        // P6: пиннинг ключа отправителя — без него сервер мог бы спуфить авторство
+        // TOFU: для Ratchet пиним Olm identity, для легаси-box — старый box-ключ.
         if (!groupLike && !m.senderId.equals(myId, ignoreCase = true)) {
-            val trust = trustStore.checkIncoming(m.senderId, m.senderPubkeyB64)
+            val envelopeKey = if (m.isRatchetEnvelope) {
+                JSONObject(m.envelopeJson).optString("olm_identity")
+            } else {
+                m.senderPubkeyB64
+            }
+            val trust = if (m.isRatchetEnvelope) {
+                olmTrustStore.checkIncoming(m.senderId, envelopeKey)
+            } else {
+                trustStore.checkIncoming(m.senderId, envelopeKey)
+            }
             if (trust == KeyTrustStore.IncomingTrust.MISMATCH) {
                 ensureChatExists(msgPeerId)
                 store.insertMessage(
@@ -327,13 +488,16 @@ class MessageRepository(
             }
         }
 
-        // (#A3) Групповой конверт — AES-GCM общим ключом; личный — crypto_box;
-        // плюс легаси-путь CHANNEL_NONCE внутри decrypt (только чтение истории).
-        val plain = if (m.isGroupEnvelope) {
-            val gk = groupKeyFor(msgPeerId) ?: throw GroupKeyUnavailableException(msgPeerId)
-            String(crypto.decryptFile(E2ECrypto.Envelope("SYM", m.nonceB64, m.ciphertextB64), gk.key), Charsets.UTF_8)
-        } else {
-            crypto.decrypt(env, keys)
+        val plain = when {
+            m.isRatchetEnvelope -> decryptRatchet(m)
+            m.isGroupEnvelope -> {
+                val gk = groupKeyFor(msgPeerId) ?: throw GroupKeyUnavailableException(msgPeerId)
+                String(crypto.decryptFile(E2ECrypto.Envelope("SYM", m.nonceB64, m.ciphertextB64), gk.key), Charsets.UTF_8)
+            }
+            else -> {
+                // Переходный период: старый direct box только читаем, никогда не отправляем.
+                crypto.decrypt(E2ECrypto.Envelope(m.senderPubkeyB64, m.nonceB64, m.ciphertextB64), keys)
+            }
         }
         val obj = try { JSONObject(plain) } catch (e: Exception) { null }?.let { normalizeIncomingPayload(it) }
         val ptype = obj?.optString("type") ?: ""
@@ -397,7 +561,7 @@ class MessageRepository(
             return null
         }
 
-        ensureChatExists(msgPeerId)
+        ensureChatExists(msgPeerId, forceGroup = groupLike)
 
         val storeText: String
         val replyId: String?
@@ -560,29 +724,6 @@ class MessageRepository(
         return n >= 20
     }
 
-    private suspend fun receiptLoop() {
-        var backoffMs = 2_000L
-        while (true) {
-            var failed = false
-            for (sender in pendingDeliveredReceipts.toList()) {
-                try {
-                    val wire = JSONObject().put("type", "delivered")
-                    api.sendMessage(myId, sender, encryptWireFor(sender, wire.toString()))
-                    pendingDeliveredReceipts.remove(sender)
-                } catch (e: Exception) {
-                    failed = true
-                }
-            }
-            if (failed && pendingDeliveredReceipts.isNotEmpty()) {
-                delay(backoffMs)
-                backoffMs = (backoffMs * 2).coerceAtMost(30_000L)
-            } else {
-                backoffMs = 2_000L
-                withTimeoutOrNull(15_000L) { receiptSignal.receive() }
-            }
-        }
-    }
-
     // ------------------------------------------------------------------
     // Медиа (синхронно, как раньше; стриминг — этап 4)
     // ------------------------------------------------------------------
@@ -679,6 +820,7 @@ class MessageRepository(
 
     suspend fun sendRecording(peerId: String, bytes: ByteArray, mime: String, kind: String, durationMs: Long): Exception? {
         return try {
+            val wireKind = if (kind == "video_note" || kind == "circle") "video_msg" else kind
             // (#A4) Без base64-раздувания: шифруем стримом во временный файл
             val symKey = crypto.generateSymmetricKey()
             val tmp = java.io.File.createTempFile("aether_rec", null)
@@ -696,12 +838,14 @@ class MessageRepository(
             }
             val jsonText = JSONObject()
                 .put("type", "media")
-                .put("kind", kind)
+                .put("kind", wireKind)
                 .put("file_id", fileId)
                 .put("sym_key", symKey.keyB64)
                 .put("mime_type", mime)
                 .put("nonce", nonceB64)
-                .put("duration", durationMs)
+                // Канон iOS/core: секунды. Старые Android-сообщения в миллисекундах
+                // остаются читаемыми по эвристике на отображении.
+                .put("duration", durationMs / 1000.0)
                 .toString()
             val clientId = UUID.randomUUID().toString()
             api.sendMessage(myId, peerId, encryptWireFor(peerId, jsonText), clientMsgId = clientId)
@@ -729,8 +873,24 @@ class MessageRepository(
             val nonce = firstString(obj, "nonce", "nonce_b64", "iv") ?: media?.let { firstString(it, "nonce", "nonce_b64", "iv") } ?: return null
             // (#A4) Дешифруем сырые байты напрямую — без base64-прохода,
             // который удваивал потребление памяти на больших файлах
-            val encryptedBytes = api.downloadFile(fileId)
-            crypto.decryptBytes(encryptedBytes, nonce, E2ECrypto.SymmetricKey(symKeyB64))
+            val cacheKey = "$fileId|$nonce|$symKeyB64"
+            val cacheFile = MediaCache.fileFor(cacheRoot, cacheKey)
+            if (cacheFile.exists() && cacheFile.length() > 0L) return cacheFile.readBytes()
+
+            val lock = mediaDownloadLocks.getOrPut(cacheKey) { Mutex() }
+            lock.withLock {
+                if (cacheFile.exists() && cacheFile.length() > 0L) return@withLock cacheFile.readBytes()
+                val encryptedBytes = api.downloadFile(fileId)
+                val plain = crypto.decryptBytes(encryptedBytes, nonce, E2ECrypto.SymmetricKey(symKeyB64))
+                val tmp = File(cacheFile.parentFile, "${cacheFile.name}.tmp")
+                try {
+                    tmp.writeBytes(plain)
+                    if (!tmp.renameTo(cacheFile)) cacheFile.writeBytes(plain)
+                } finally {
+                    if (tmp.exists()) tmp.delete()
+                }
+                plain
+            }
         } catch (e: Exception) { null }
     }
 
@@ -773,6 +933,9 @@ class MessageRepository(
         if (!obj.has("kind") || obj.optString("kind").isBlank()) {
             val mime = firstString(obj, "mime_type", "mimeType", "mime") ?: ""
             obj.put("kind", fallbackKind ?: mediaKindFor(mime))
+        }
+        if (obj.optString("kind") in setOf("video_msg", "circle")) {
+            obj.put("kind", "video_note")
         }
         return obj
     }
@@ -850,7 +1013,7 @@ class MessageRepository(
         try {
             val unread = store.getChat(peerId)?.unreadCount ?: 0
             if (unread > 0) store.clearUnread(peerId)
-            if (isGroupLike(peerId)) return
+            if (isGroupPeer(peerId)) return
             if (unread == 0) return
             val wire = JSONObject().put("type", "read")
             api.sendMessage(myId, peerId, encryptWireFor(peerId, wire.toString()))
@@ -897,7 +1060,7 @@ class MessageRepository(
         } catch (e: Exception) { e }
     }
 
-    suspend fun encryptForPeer(peerId: String, wireJson: String): Map<String, String> =
+    suspend fun encryptForPeer(peerId: String, wireJson: String): Map<String, Any> =
         encryptWireFor(peerId, wireJson)
 
     // ------------------------------------------------------------------
@@ -909,34 +1072,44 @@ class MessageRepository(
      * @param fetchProfile false — без сетевого запроса профиля (для optimistic-путей,
      *        где вставка должна быть мгновенной); имя обогатится позже из инбокса.
      */
-    suspend fun ensureChatExists(peerId: String, fetchProfile: Boolean = true) {
-        if (store.getChat(peerId) != null) return
+    suspend fun ensureChatExists(peerId: String, fetchProfile: Boolean = true, forceGroup: Boolean = false) {
+        val existing = store.getChat(peerId)
+        if (existing != null && (!forceGroup || existing.type in 1..2)) return
+        val group = if (forceGroup || isLegacyGroupId(peerId)) {
+            try { api.getMyGroups().firstOrNull { it.id.equals(peerId, ignoreCase = true) } }
+            catch (_: Exception) { null }
+        } else null
         val type = when {
-            peerId.startsWith("channel_", ignoreCase = true) -> 2
-            peerId.startsWith("group_", ignoreCase = true) -> 1
+            group?.isChannel == true || peerId.startsWith("channel_", ignoreCase = true) -> 2
+            group != null || forceGroup || peerId.startsWith("group_", ignoreCase = true) -> 1
             else -> 0
         }
         var resolvedAvatar: String? = null
+        var resolvedStatusEmoji: String? = null
         val resolvedName = if (type == 0 && fetchProfile) {
             try {
                 val p = api.getUserProfile(peerId)
                 resolvedAvatar = p.avatarFileId
-                p.displayName.ifBlank { peerId }
+                resolvedStatusEmoji = p.statusEmoji
+                p.displayName.ifBlank { p.username.ifBlank { peerId } }
             } catch (e: Exception) { peerId }
         } else if (type != 0 && fetchProfile) {
             // (#A3) Имя группы/канала вместо технического id
-            try {
-                api.getMyGroups().firstOrNull { it.id.equals(peerId, ignoreCase = true) }?.name?.ifBlank { peerId } ?: peerId
-            } catch (e: Exception) { peerId }
+            group?.name?.ifBlank { existing?.name ?: peerId } ?: existing?.name ?: peerId
         } else peerId
-        store.insertChat(
-            ChatEntity(
+        val chat = existing?.copy(
+            name = resolvedName,
+            type = type,
+            avatarFileId = resolvedAvatar ?: existing.avatarFileId,
+            statusEmoji = resolvedStatusEmoji ?: existing.statusEmoji,
+        ) ?: ChatEntity(
                 peerId = peerId,
                 name = resolvedName,
                 type = type,
-                avatarFileId = resolvedAvatar
+                avatarFileId = resolvedAvatar,
+                statusEmoji = resolvedStatusEmoji,
             )
-        )
+        if (existing == null) store.insertChat(chat) else store.updateChat(chat)
     }
 
     private fun parseReactions(raw: String): JSONObject =

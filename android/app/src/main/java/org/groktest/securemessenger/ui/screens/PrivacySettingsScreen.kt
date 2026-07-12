@@ -3,23 +3,26 @@ package org.groktest.securemessenger.ui.screens
 import androidx.biometric.BiometricManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Fingerprint
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.groktest.securemessenger.data.LockPrefs
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherStyle
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -37,21 +40,14 @@ fun PrivacySettingsScreen(
     }
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Конфиденциальность", fontWeight = FontWeight.Bold, fontSize = 20.sp) },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
-            Column(modifier = Modifier.fillMaxSize().padding(padding)) {
+        Box(Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(bottom = 24.dp)
+            ) {
+                Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
                 ListItem(
                     headlineContent = { Text("Код-пароль") },
                     supportingContent = { Text(if (lockEnabled) "Включён · запрашивается при входе" else "Запрашивать пароль при входе") },
@@ -132,6 +128,11 @@ fun PrivacySettingsScreen(
                     }
                 }
             }
+            AetherSettingsTopBar(
+                "Конфиденциальность",
+                onBack,
+                Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 

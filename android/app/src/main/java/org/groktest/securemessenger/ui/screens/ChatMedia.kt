@@ -165,6 +165,58 @@ private fun Waveform(bars: FloatArray, progress: Float, tint: Color, modifier: M
     }
 }
 
+@Composable
+fun VideoMessage(
+    jsonText: String,
+    onDownloadMedia: suspend (String) -> ByteArray?
+) {
+    val context = LocalContext.current
+    var filePath by remember(jsonText) { mutableStateOf<String?>(null) }
+    var loading by remember(jsonText) { mutableStateOf(true) }
+
+    LaunchedEffect(jsonText) {
+        loading = true
+        val bytes = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
+        filePath = bytes?.let {
+            val file = File(context.cacheDir, "video_${jsonText.hashCode()}.mp4")
+            withContext(Dispatchers.IO) { file.writeBytes(it) }
+            file.absolutePath
+        }
+        loading = false
+    }
+
+    Box(
+        modifier = Modifier
+            .width(300.dp)
+            .height(220.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Color.Black),
+        contentAlignment = Alignment.Center
+    ) {
+        val path = filePath
+        if (path != null) {
+            AndroidView(
+                factory = { ctx ->
+                    android.widget.VideoView(ctx).apply {
+                        setMediaController(android.widget.MediaController(ctx).also { it.setAnchorView(this) })
+                        setVideoPath(path)
+                        setOnPreparedListener { player ->
+                            player.isLooping = false
+                            seekTo(1)
+                            pause()
+                        }
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+        } else if (loading) {
+            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(28.dp))
+        } else {
+            Text("Не удалось открыть видео", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+        }
+    }
+}
+
 /**
  * Сообщение-документ (файл): иконка + имя + размер. Тап — скачать, расшифровать
  * и открыть системным просмотрщиком (через FileProvider, без прав на хранилище).
@@ -184,8 +236,6 @@ fun FileMessageBubble(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
             .widthIn(min = 210.dp, max = 280.dp)
-            .clip(RoundedCornerShape(24.dp))
-            .background(tint.copy(alpha = 0.10f))
             .clickable(enabled = !loading) {
                 loading = true
                 scope.launch {
@@ -213,7 +263,7 @@ fun FileMessageBubble(
                     }
                 }
             }
-            .padding(horizontal = 10.dp, vertical = 8.dp)
+            .padding(vertical = 2.dp)
     ) {
         Box(
             modifier = Modifier.size(42.dp).clip(CircleShape).background(tint.copy(alpha = 0.16f)),

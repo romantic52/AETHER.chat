@@ -25,20 +25,17 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Image
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Slider
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
@@ -51,6 +48,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.AppPalette
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
@@ -76,28 +74,13 @@ fun CustomizationScreen(onBack: () -> Unit) {
     }
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Кастомизация", fontWeight = FontWeight.Bold) },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
+        Box(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(padding),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = AetherStyle.ScreenHorizontal,
+                    top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
                     end = AetherStyle.ScreenHorizontal,
-                    top = 8.dp,
                     bottom = 28.dp
                 ),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
@@ -114,6 +97,100 @@ fun CustomizationScreen(onBack: () -> Unit) {
                             )
                         }
                     }
+                }
+
+                item { SoftDivider() }
+
+                item {
+                    SectionTitle("Интерфейс", "Прозрачность применяется ко всем панелям и пузырям")
+                    Spacer(Modifier.height(12.dp))
+                    SettingSlider(
+                        title = "Прозрачность",
+                        value = themeSettings.surfaceTransparency.value,
+                        valueLabel = "${(themeSettings.surfaceTransparency.value * 100).toInt()}%",
+                        range = 0f..1f,
+                        onChange = themeSettings::setSurfaceTransparency
+                    )
+                    SettingSwitch(
+                        title = "Жидкое стекло",
+                        subtitle = "Размытие обоев под плавающими панелями",
+                        checked = themeSettings.liquidGlassEnabled.value,
+                        onCheckedChange = themeSettings::setLiquidGlassEnabled
+                    )
+                    SettingSwitch(
+                        title = "Затемнение краёв",
+                        subtitle = "Мягкий градиент вместо сплошных верхних и нижних панелей",
+                        checked = themeSettings.edgeDimEnabled.value,
+                        onCheckedChange = themeSettings::setEdgeDimEnabled
+                    )
+                    SettingSlider(
+                        title = "Сила затемнения",
+                        value = themeSettings.edgeDimStrength.value,
+                        valueLabel = if (themeSettings.edgeDimStrength.value <= 0.01f) "Выкл." else "${(themeSettings.edgeDimStrength.value * 100).toInt()}%",
+                        range = 0f..1f,
+                        onChange = themeSettings::setEdgeDimStrength
+                    )
+                    SettingSlider(
+                        title = "Длина затемнения",
+                        value = themeSettings.edgeDimLength.value,
+                        valueLabel = "${themeSettings.edgeDimLength.value.toInt()} dp",
+                        range = 112f..240f,
+                        onChange = themeSettings::setEdgeDimLength
+                    )
+                }
+
+                item { SoftDivider() }
+
+                item {
+                    SectionTitle("Движение", "Плавность интерфейса, реакций и появления новых сообщений")
+                    Spacer(Modifier.height(12.dp))
+                    SettingSlider(
+                        title = "Скорость анимаций",
+                        value = themeSettings.animationSpeed.value,
+                        valueLabel = if (themeSettings.animationSpeed.value <= 0.01f) "Выкл." else "${(themeSettings.animationSpeed.value * 100).toInt()}%",
+                        range = 0f..2f,
+                        onChange = themeSettings::setAnimationSpeed
+                    )
+                    SettingSlider(
+                        title = "Выразительность",
+                        value = themeSettings.motionIntensity.value,
+                        valueLabel = "${(themeSettings.motionIntensity.value * 100).toInt()}%",
+                        range = 0f..1.5f,
+                        onChange = themeSettings::setMotionIntensity
+                    )
+                    SettingSwitch(
+                        title = "Эффекты реакций",
+                        subtitle = "Вспышка эмодзи и мягкие частицы при выборе реакции",
+                        checked = themeSettings.reactionEffects.value,
+                        onCheckedChange = themeSettings::setReactionEffects
+                    )
+                }
+
+                item { SoftDivider() }
+
+                item {
+                    SectionTitle("Сообщения", "Размер текста и форма пузырей")
+                    Spacer(Modifier.height(12.dp))
+                    SettingSlider(
+                        title = "Размер текста",
+                        value = themeSettings.messageTextSize.value,
+                        valueLabel = "${themeSettings.messageTextSize.value.toInt()}",
+                        range = 14f..20f,
+                        onChange = themeSettings::setMessageTextSize
+                    )
+                    SettingSlider(
+                        title = "Скругление",
+                        value = themeSettings.bubbleRadius.value,
+                        valueLabel = "${themeSettings.bubbleRadius.value.toInt()}",
+                        range = 8f..30f,
+                        onChange = themeSettings::setBubbleRadius
+                    )
+                    SettingSwitch(
+                        title = "Хвостики пузырей",
+                        subtitle = "Показывать у последнего сообщения в группе",
+                        checked = themeSettings.bubbleTails.value,
+                        onCheckedChange = themeSettings::setBubbleTails
+                    )
                 }
 
                 item { SoftDivider() }
@@ -171,7 +248,48 @@ fun CustomizationScreen(onBack: () -> Unit) {
                     }
                 }
             }
+            AetherSettingsTopBar(
+                "Оформление",
+                onBack,
+                Modifier.align(Alignment.TopCenter)
+            )
         }
+    }
+}
+
+@Composable
+private fun SettingSlider(
+    title: String,
+    value: Float,
+    valueLabel: String,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit
+) {
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(title, modifier = Modifier.weight(1f), fontWeight = FontWeight.Medium)
+            Text(valueLabel, color = MaterialTheme.colorScheme.primary, fontSize = 13.sp)
+        }
+        Slider(value = value, onValueChange = onChange, valueRange = range)
+    }
+}
+
+@Composable
+private fun SettingSwitch(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontWeight = FontWeight.Medium)
+            Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+        }
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
     }
 }
 
