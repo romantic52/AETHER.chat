@@ -268,6 +268,9 @@ actor CoreClient {
 
     /// Запечатать личное сообщение Double Ratchet'ом и отправить. При первом
     /// сообщении устанавливает Olm-сессию по prekey-бандлу пира (X3DH).
+    /// Отправка 1:1 ТОЛЬКО через Double Ratchet — никаких даунгрейдов. Если у пира
+    /// нет prekeys (claim 404/409) — сообщение видимо падает, а не уходит слабым
+    /// статическим box. box остаётся лишь для обёртки групповых ключей.
     func sendDirect(to peerId: String, wirePayload: String, clientId: String? = nil) throws -> String {
         let id = peerId.lowercased()
         var sessionPickle = try store.olmSessionGet(peerId: id)
