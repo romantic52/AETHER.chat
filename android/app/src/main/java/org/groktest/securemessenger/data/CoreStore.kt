@@ -5,12 +5,15 @@ import android.content.SharedPreferences
 import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
-import kotlinx.coroutines.flow.distinctUntilChanged
-import kotlinx.coroutines.flow.map
-import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import uniffi.sm_core.Chat as CoreChat
 import uniffi.sm_core.KeyPin as CoreKeyPin
@@ -32,46 +35,76 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
         appContext.getDatabasePath("sm_core_store_$accountKey.db").absolutePath,
         encKeyB64,
     )
-    private val version = MutableStateFlow(0L)
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val chatRefreshes = Channel<Unit>(Channel.CONFLATED)
+    private val chatList = MutableStateFlow<List<ChatListEntry>>(emptyList())
+    private val allChats = MutableStateFlow<List<ChatEntity>>(emptyList())
+    private val messageStreams = java.util.concurrent.ConcurrentHashMap<String, MessageStream>()
 
     init {
         hydrateMigratedAndroidMeta()
+        refreshChats()
+        scope.launch {
+            for (ignored in chatRefreshes) refreshChats()
+        }
         store.setListener(object : StoreListener {
             override fun onMessagesChanged(peerId: String) {
-                version.update { it + 1 }
+                messageStreams[normalized(peerId)]?.refresh()
             }
 
             override fun onChatsChanged() {
-                version.update { it + 1 }
+                chatRefreshes.trySend(Unit)
             }
         })
     }
 
-    fun getMessagesForPeer(peerId: String): Flow<List<MessageEntity>> =
-        version.map {
-            withContext(Dispatchers.IO) { readMessages(peerId) }
-        }.distinctUntilChanged()
+    private inner class MessageStream(private val peerId: String) {
+        val messages = MutableStateFlow<List<MessageEntity>>(emptyList())
+        private val refreshes = Channel<Unit>(Channel.CONFLATED)
+        private val loadMutex = Mutex()
+        private var loaded = false
 
-    fun getChatList(): Flow<List<ChatListEntry>> =
-        version.map {
-            withContext(Dispatchers.IO) {
-                store.getChatList().map { chat ->
-                    ChatListEntry(
-                        chat = chat.toEntity(meta),
-                        lastText = chat.lastText.takeIf(String::isNotBlank),
-                        lastTimestamp = chat.lastTs.takeIf { it > 0L },
-                        lastIsOut = null,
-                    )
-                }
+        init {
+            scope.launch {
+                load()
+                for (ignored in refreshes) load(force = true)
             }
-        }.distinctUntilChanged()
+        }
 
-    fun getAllChats(): Flow<List<ChatEntity>> =
-        version.map {
-            withContext(Dispatchers.IO) {
-                store.getChatList().map { it.toEntity(meta) }
-            }
-        }.distinctUntilChanged()
+        fun refresh() {
+            refreshes.trySend(Unit)
+        }
+
+        suspend fun load(force: Boolean = false) = loadMutex.withLock {
+            if (loaded && !force) return@withLock
+            messages.value = readMessages(peerId)
+            loaded = true
+        }
+    }
+
+    fun getMessagesForPeer(peerId: String): StateFlow<List<MessageEntity>> =
+        streamFor(peerId).messages
+
+    fun getChatList(): StateFlow<List<ChatListEntry>> = chatList
+
+    fun getAllChats(): StateFlow<List<ChatEntity>> = allChats
+
+    fun cachedChat(peerId: String): ChatEntity? =
+        chatList.value.firstOrNull { it.chat.peerId.equals(peerId, ignoreCase = true) }?.chat
+
+    fun cachedMessages(peerId: String): List<MessageEntity> =
+        messageStreams[normalized(peerId)]?.messages?.value.orEmpty()
+
+    fun recentPeerIds(limit: Int): List<String> =
+        chatList.value.asSequence().map { it.chat.peerId }.take(limit).toList()
+
+    suspend fun preloadMessages(peerId: String) = withContext(Dispatchers.IO) {
+        streamFor(peerId).load()
+    }
+
+    suspend fun preloadRecentMessages(limit: Int = 4) = withContext(Dispatchers.IO) {
+        recentPeerIds(limit).forEach { streamFor(it).load() }
+    }
 
     suspend fun insertMessage(message: MessageEntity) = withContext(Dispatchers.IO) {
         store.insertMessage(message.toCore())
@@ -161,6 +194,7 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
                 archived = chat.isArchived,
             )
         )
+        refreshChats()
     }
 
     suspend fun updateChat(chat: ChatEntity) = insertChat(chat)
@@ -272,6 +306,23 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
         }
         if (changed) editor.apply()
     }
+
+    private fun streamFor(peerId: String): MessageStream =
+        messageStreams.computeIfAbsent(normalized(peerId)) { MessageStream(peerId) }
+
+    private fun refreshChats() {
+        val entries = store.getChatList().map { chat ->
+            ChatListEntry(
+                chat = chat.toEntity(meta),
+                lastText = chat.lastText.takeIf(String::isNotBlank),
+                lastTimestamp = chat.lastTs.takeIf { it > 0L },
+                lastIsOut = null,
+            )
+        }
+        chatList.value = entries
+        allChats.value = entries.map { it.chat }
+    }
+
     private fun readMessages(peerId: String): List<MessageEntity> =
         store.getMessagesForPeer(peerId, 0L, HISTORY_LIMIT)
             .filterNot { it.deleted }

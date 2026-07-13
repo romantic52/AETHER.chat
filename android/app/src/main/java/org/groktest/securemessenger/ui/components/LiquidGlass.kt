@@ -3,7 +3,6 @@ package org.groktest.securemessenger.ui.components
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
@@ -19,7 +18,6 @@ fun Modifier.liquidGlass(
     tint: Color = Color.White,
     tintAlpha: Float = 0.12f
 ): Modifier = this
-    .clip(shape)
     .background(
         Brush.verticalGradient(
             colors = listOf(

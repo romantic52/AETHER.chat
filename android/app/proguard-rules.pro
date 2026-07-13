@@ -6,6 +6,8 @@
 -keep class com.goterl.lazysodium.** { *; }
 -keep class com.sun.jna.** { *; }
 -keepclassmembers class * extends com.sun.jna.* { public *; }
+-keep class uniffi.sm_core.** { *; }
+-keepattributes *Annotation*
 -dontwarn java.awt.*
 
 # --- WebRTC: JNI-биндинги ---

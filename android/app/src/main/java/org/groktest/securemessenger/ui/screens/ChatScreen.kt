@@ -101,7 +101,7 @@ fun ChatScreen(
     peerId: String,
     peerDisplayName: String = peerId,
     chatType: Int = 0,
-    messagesFlow: kotlinx.coroutines.flow.Flow<List<MessageEntity>>,
+    messagesFlow: kotlinx.coroutines.flow.StateFlow<List<MessageEntity>>,
     onBack: () -> Unit,
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit,
@@ -116,7 +116,8 @@ fun ChatScreen(
     onRetryMessage: (String) -> Unit = {},
     onSeen: () -> Unit = {},
     myId: String = "",
-    onDownloadMedia: suspend (String) -> ByteArray?,
+    onDownloadMedia: suspend (String) -> java.io.File?,
+    cachedMediaFile: (String) -> java.io.File? = { null },
     onEditMessage: suspend (String, String) -> Exception? = { _, _ -> null },
     onForwardMessage: suspend (String, MessageEntity) -> Exception? = { _, _ -> null },
     onScheduleMessage: (String, Long) -> Unit = { _, _ -> },
@@ -126,7 +127,7 @@ fun ChatScreen(
     checkCanPost: suspend () -> Boolean = { true },
     // (#A6) Открыть группу обсуждений канала (null — обсуждений нет)
     onOpenDiscussion: ((MessageEntity) -> Unit)? = null,
-    forwardChatsFlow: kotlinx.coroutines.flow.Flow<List<org.groktest.securemessenger.data.ChatEntity>> = kotlinx.coroutines.flow.flowOf(emptyList()),
+    forwardChatsFlow: kotlinx.coroutines.flow.StateFlow<List<org.groktest.securemessenger.data.ChatEntity>> = kotlinx.coroutines.flow.MutableStateFlow(emptyList()),
     // P6: открыть экран «Цифры безопасности» (null — кнопка скрыта, например для каналов)
     onOpenSafety: (() -> Unit)? = null,
     // last_active + эмодзи-статус одним запросом профиля.
@@ -136,10 +137,10 @@ fun ChatScreen(
     // Открыть профиль собеседника (тап по шапке)
     onOpenProfile: () -> Unit = {}
 ) {
-    val messages by messagesFlow.collectAsState(initial = emptyList())
+    val messages by messagesFlow.collectAsState()
     var inputText by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
-    val listState = rememberLazyListState()
+    val listState = rememberLazyListState(initialFirstVisibleItemIndex = messages.lastIndex.coerceAtLeast(0))
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -149,7 +150,7 @@ fun ChatScreen(
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
     var forwardingMessage by remember { mutableStateOf<MessageEntity?>(null) }
     var showScheduleDialog by remember { mutableStateOf(false) }
-    val forwardChats by forwardChatsFlow.collectAsState(initial = emptyList())
+    val forwardChats by forwardChatsFlow.collectAsState()
     var typingFromPeer by remember { mutableStateOf(false) }
     var lastTypingSent by remember { mutableStateOf(0L) }
     var headerMenuOpen by remember { mutableStateOf(false) }
@@ -204,7 +205,11 @@ fun ChatScreen(
         knownLastMessageId != null && it != knownLastMessageId
     }
     val showJump by remember { derivedStateOf { listState.canScrollForward } }
-    val imeBottom = WindowInsets.ime.getBottom(LocalDensity.current)
+    val density = LocalDensity.current
+    val imeInsets = WindowInsets.ime
+    val imeVisible by remember(density, imeInsets) {
+        derivedStateOf { imeInsets.getBottom(density) > 0 }
+    }
 
     suspend fun snapToLatest() {
         if (messages.isEmpty()) return
@@ -225,8 +230,6 @@ fun ChatScreen(
                 withFrameNanos { }
                 snapToLatest()
                 followLatest = true
-                kotlinx.coroutines.delay(350)
-                snapToLatest()
                 didInitialScroll = true
             } else if (followLatest || messages.last().isOut) {
                 if (appearance.animationSpeed.value <= 0.01f) snapToLatest()
@@ -239,8 +242,8 @@ fun ChatScreen(
         knownLastMessageId = currentLastMessageId
     }
 
-    LaunchedEffect(imeBottom) {
-        if (didInitialScroll && followLatest && messages.isNotEmpty()) {
+    LaunchedEffect(imeVisible) {
+        if (imeVisible && didInitialScroll && followLatest && messages.isNotEmpty()) {
             snapToLatest()
         }
     }
@@ -310,29 +313,12 @@ fun ChatScreen(
     var attachCaption by remember { mutableStateOf("") }
     var attachAsDocument by remember { mutableStateOf(false) }
     var recentMedia by remember { mutableStateOf<List<Pair<android.net.Uri, Boolean>>>(emptyList()) }
-    val gridImageLoader = remember {
-        coil.ImageLoader.Builder(context)
-            .components { add(coil.decode.VideoFrameDecoder.Factory()) }
-            .build()
-    }
     val mediaPermsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        if (grants.values.any { it }) {
-            coroutineScope.launch(Dispatchers.IO) { recentMedia = queryRecentMedia(context) }
-        }
-    }
-
-    // (#A5) Прогрев галереи при входе в чат: шторка вложений открывается
-    // мгновенно с готовыми миниатюрами, а не с пустой сеткой (телеграм-паттерн)
-    LaunchedEffect(Unit) {
-        val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
-            arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
-        else
-            arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE)
-        val granted = perms.any {
-            androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
-        }
-        if (granted && recentMedia.isEmpty()) {
-            withContext(Dispatchers.IO) { recentMedia = queryRecentMedia(context) }
+        coroutineScope.launch {
+            if (grants.values.any { it }) {
+                recentMedia = withContext(Dispatchers.IO) { queryRecentMedia(context) }
+            }
+            showAttachSheet = true
         }
     }
 
@@ -807,12 +793,12 @@ fun ChatScreen(
                                     val granted = perms.any {
                                         androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                     }
-                                    showAttachSheet = true
                                     if (granted) {
-                                        // Сетка уже прогрета при входе в чат — тихо обновляем
-                                        coroutineScope.launch(Dispatchers.IO) {
-                                            val fresh = queryRecentMedia(context)
-                                            if (fresh != recentMedia) recentMedia = fresh
+                                        coroutineScope.launch {
+                                            if (recentMedia.isEmpty()) {
+                                                recentMedia = withContext(Dispatchers.IO) { queryRecentMedia(context) }
+                                            }
+                                            showAttachSheet = true
                                         }
                                     } else {
                                         mediaPermsLauncher.launch(perms)
@@ -1136,7 +1122,7 @@ fun ChatScreen(
                         val showTail = next == null || next.isOut != msg.isOut ||
                             !isSameDay(next.timestamp, msg.timestamp) || (next.timestamp - msg.timestamp) >= gap
 
-                        Column(modifier = Modifier.animateItemPlacement(tween(appearance.motionDuration(260)))) {
+                        Column {
                             if (showDate) DateSeparator(msg.timestamp)
                             Spacer(Modifier.height(if (groupedWithPrev) 2.dp else 8.dp))
                             val bubble: @Composable () -> Unit = {
@@ -1145,6 +1131,7 @@ fun ChatScreen(
                                     showTail = showTail,
                                     isChannelPost = isChannelChat,
                                     onDownloadMedia = onDownloadMedia,
+                                    cachedMediaFile = cachedMediaFile,
                                     onDeleteMessage = { mid, deleteEverywhere ->
                                         coroutineScope.launch {
                                             val err = withContext(Dispatchers.IO) {
@@ -1326,6 +1313,14 @@ fun ChatScreen(
 
         // --- Telegram-like шторка вложений ---
         if (showAttachSheet) {
+            val gridImageLoader = remember {
+                coil.ImageLoader.Builder(context)
+                    .components { add(coil.decode.VideoFrameDecoder.Factory()) }
+                    .build()
+            }
+            DisposableEffect(gridImageLoader) {
+                onDispose { gridImageLoader.shutdown() }
+            }
             // Сразу полностью раскрыта — шторка «выпрыгивает» высоко, помещается 3 ряда фото
             val attachSheetState = androidx.compose.material3.rememberModalBottomSheetState(skipPartiallyExpanded = true)
             ModalBottomSheet(
@@ -1561,7 +1556,8 @@ fun MessageBubble(
     msg: MessageEntity,
     showTail: Boolean = true,
     isChannelPost: Boolean = false,
-    onDownloadMedia: suspend (String) -> ByteArray? = { null },
+    onDownloadMedia: suspend (String) -> java.io.File? = { null },
+    cachedMediaFile: (String) -> java.io.File? = { null },
     onDeleteMessage: (String, Boolean) -> Unit = { _, _ -> },
     myId: String = "",
     onReact: (String, String) -> Unit = { _, _ -> },
@@ -1590,7 +1586,11 @@ fun MessageBubble(
     // барам/панелям (см. isLiquidGlass в шапке/нижней панели), пузыри — сплошные.
     val mediaJson = remember(msg.text) { parseMediaPayloadForDisplay(msg.text) }
     val isMedia = mediaJson != null
-    var mediaBytes by remember { mutableStateOf<ByteArray?>(null) }
+    val kind = mediaJson?.let { mediaKindForDisplay(it) } ?: ""
+    val mediaText = mediaJson?.toString() ?: msg.text
+    var mediaFile by remember(msg.msgId, mediaText) {
+        mutableStateOf(if (isMedia) cachedMediaFile(mediaText) else null)
+    }
     var isDownloading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     val coroutineScope = rememberCoroutineScope()
@@ -1624,8 +1624,6 @@ fun MessageBubble(
     }
 
     // (#A5) remember: JSON парсится один раз, а не при каждой рекомпозиции пузыря
-    val kind = mediaJson?.let { mediaKindForDisplay(it) } ?: ""
-    val mediaText = mediaJson?.toString() ?: msg.text
     val isDetachedMedia = kind == "image" || kind == "video" || kind == "video_note"
     val bubbleColor by animateColorAsState(
         targetValue = if (isDetachedMedia) {
@@ -1653,11 +1651,11 @@ fun MessageBubble(
     }
 
     LaunchedEffect(msg.msgId, mediaText, kind) {
-        if (kind == "image" && mediaBytes == null && !isDownloading && errorMessage == null) {
+        if (kind == "image" && mediaFile == null && !isDownloading && errorMessage == null) {
             isDownloading = true
-            val bytes = withContext(Dispatchers.IO) { onDownloadMedia(mediaText) }
-            if (bytes != null) {
-                mediaBytes = bytes
+            val file = withContext(Dispatchers.IO) { onDownloadMedia(mediaText) }
+            if (file != null) {
+                mediaFile = file
             } else {
                 errorMessage = "Не удалось открыть изображение"
             }
@@ -1775,12 +1773,14 @@ fun MessageBubble(
                     if (kind == "video_note") {
                         VideoNoteMessage(
                             jsonText = mediaText,
+                            cachedMediaFile = cachedMediaFile,
                             onDownloadMedia = onDownloadMedia,
                             onLongClick = { menuOpen = true }
                         )
                     } else if (kind == "video") {
                         VideoMessage(
                             jsonText = mediaText,
+                            cachedMediaFile = cachedMediaFile,
                             onDownloadMedia = onDownloadMedia
                         )
                     } else if (kind == "voice") {
@@ -1804,15 +1804,24 @@ fun MessageBubble(
                             tint = textColor,
                             onDownloadMedia = onDownloadMedia
                         )
-                    } else if (mediaBytes != null) {
-                        if (mimeType.startsWith("image/")) {
+                    } else if (mediaFile != null) {
+                        if (kind == "image" || mimeType.startsWith("image/")) {
                             var showFullscreen by remember { mutableStateOf(false) }
+                            val imageAspect = remember(mediaText) {
+                                val width = json?.optDouble("width", 0.0) ?: 0.0
+                                val height = json?.optDouble("height", 0.0) ?: 0.0
+                                if (width > 0.0 && height > 0.0) {
+                                    (width / height).toFloat().coerceIn(0.84f, 1.8f)
+                                } else {
+                                    4f / 3f
+                                }
+                            }
                             coil.compose.AsyncImage(
-                                model = mediaBytes,
+                                model = mediaFile,
                                 contentDescription = "Вложение",
                                 modifier = Modifier
-                                    .heightIn(min = 120.dp, max = 360.dp)
-                                    .fillMaxWidth()
+                                    .width(300.dp)
+                                    .aspectRatio(imageAspect)
                                     .clip(RoundedCornerShape(AetherStyle.MediaRadius))
                                     // (#A5) Тап — полноэкранный просмотр с зумом
                                     .clickable { showFullscreen = true },
@@ -1820,7 +1829,7 @@ fun MessageBubble(
                             )
                             if (showFullscreen) {
                                 FullscreenImageViewer(
-                                    imageBytes = mediaBytes!!,
+                                    imageModel = mediaFile!!,
                                     onClose = { showFullscreen = false }
                                 )
                             }
@@ -1832,8 +1841,8 @@ fun MessageBubble(
                             if (isDownloading) {
                                 Box(
                                     modifier = Modifier
-                                        .height(180.dp)
-                                        .fillMaxWidth()
+                                        .width(300.dp)
+                                        .aspectRatio(4f / 3f)
                                         .clip(RoundedCornerShape(AetherStyle.MediaRadius))
                                         .background(textColor.copy(alpha = 0.08f)),
                                     contentAlignment = Alignment.Center
@@ -1850,9 +1859,9 @@ fun MessageBubble(
                                 onClick = {
                                     isDownloading = true
                                     coroutineScope.launch {
-                                        val bytes = withContext(Dispatchers.IO) { onDownloadMedia(mediaText) }
-                                        if (bytes != null) {
-                                            mediaBytes = bytes
+                                        val file = withContext(Dispatchers.IO) { onDownloadMedia(mediaText) }
+                                        if (file != null) {
+                                            mediaFile = file
                                         } else {
                                             errorMessage = "Ошибка скачивания"
                                         }
@@ -2185,7 +2194,7 @@ private fun queryRecentMedia(context: android.content.Context, limit: Int = 120)
  * pinch-zoom до 5x, пан при увеличении, двойной тап — зум/сброс, одиночный — закрыть.
  */
 @Composable
-fun FullscreenImageViewer(imageBytes: ByteArray, onClose: () -> Unit) {
+fun FullscreenImageViewer(imageModel: Any, onClose: () -> Unit) {
     androidx.compose.ui.window.Dialog(
         onDismissRequest = onClose,
         properties = androidx.compose.ui.window.DialogProperties(
@@ -2234,7 +2243,7 @@ fun FullscreenImageViewer(imageBytes: ByteArray, onClose: () -> Unit) {
             contentAlignment = Alignment.Center
         ) {
             coil.compose.AsyncImage(
-                model = imageBytes,
+                model = imageModel,
                 contentDescription = "Фото",
                 contentScale = androidx.compose.ui.layout.ContentScale.Fit,
                 modifier = Modifier
