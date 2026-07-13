@@ -268,6 +268,7 @@ class MessageRepository(
 
     /** Запуск фоновых циклов: поллинг инбокса (страховка WS) и outbox. */
     fun start() {
+        scope.launch { warmUiCache() }
         scope.launch {
             runCatching { ensureOlmKeys() }
             while (true) {
@@ -592,6 +593,9 @@ class MessageRepository(
                 forwardedFrom = fwdFrom
             )
         )
+        if (ptype == "media" && shouldAutoCache(storeText)) {
+            scope.launch { downloadMedia(storeText) }
+        }
         // (#A4) Своё эхо (Избранное) не считается непрочитанным
         if (!m.senderId.equals(myId, ignoreCase = true)) {
             store.incrementUnread(msgPeerId)
@@ -760,6 +764,14 @@ class MessageRepository(
         return 0L
     }
 
+    private fun queryImageSize(uri: Uri): Pair<Int, Int>? = try {
+        val options = android.graphics.BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        resolver.openInputStream(uri)?.use { android.graphics.BitmapFactory.decodeStream(it, null, options) }
+        if (options.outWidth > 0 && options.outHeight > 0) options.outWidth to options.outHeight else null
+    } catch (_: Exception) {
+        null
+    }
+
     private suspend fun sendUris(peerId: String, uris: List<Uri>, caption: String?, asFile: Boolean): Exception? {
         return try {
             for (uri in uris) {
@@ -777,6 +789,7 @@ class MessageRepository(
                     } ?: continue
 
                     val fileId = api.uploadFile(tmp)
+                    cachePlaintext(uri, mediaCacheFile(fileId, nonceB64, symKey.keyB64))
 
                     val mimeType = resolver.getType(uri) ?: "application/octet-stream"
                     val jsonObj = JSONObject()
@@ -792,6 +805,11 @@ class MessageRepository(
                         jsonObj.put("file_size", queryFileSize(uri))
                     } else {
                         jsonObj.put("kind", mediaKindFor(mimeType))
+                        if (mimeType.startsWith("image/")) {
+                            queryImageSize(uri)?.let { (width, height) ->
+                                jsonObj.put("width", width).put("height", height)
+                            }
+                        }
                     }
                     if (caption != null && uri == uris.first()) jsonObj.put("caption", caption)
                     jsonText = jsonObj.toString()
@@ -836,6 +854,7 @@ class MessageRepository(
             } finally {
                 tmp.delete()
             }
+            cacheBytes(bytes, mediaCacheFile(fileId, nonceB64, symKey.keyB64))
             val jsonText = JSONObject()
                 .put("type", "media")
                 .put("kind", wireKind)
@@ -864,34 +883,107 @@ class MessageRepository(
         } catch (e: Exception) { e }
     }
 
-    suspend fun downloadMedia(jsonText: String): ByteArray? {
+    private data class MediaRef(
+        val fileId: String,
+        val nonce: String,
+        val key: String,
+        val kind: String,
+        val mime: String,
+    )
+
+    private fun mediaRef(jsonText: String): MediaRef? {
         return try {
             val obj = JSONObject(jsonText)
             val media = obj.optJSONObject("media")
-            val fileId = firstString(obj, "file_id", "fileId", "id") ?: media?.let { firstString(it, "file_id", "fileId", "id") } ?: return null
-            val symKeyB64 = firstString(obj, "sym_key", "symKey", "key", "key_b64") ?: media?.let { firstString(it, "sym_key", "symKey", "key", "key_b64") } ?: return null
-            val nonce = firstString(obj, "nonce", "nonce_b64", "iv") ?: media?.let { firstString(it, "nonce", "nonce_b64", "iv") } ?: return null
-            // (#A4) Дешифруем сырые байты напрямую — без base64-прохода,
-            // который удваивал потребление памяти на больших файлах
-            val cacheKey = "$fileId|$nonce|$symKeyB64"
-            val cacheFile = MediaCache.fileFor(cacheRoot, cacheKey)
-            if (cacheFile.exists() && cacheFile.length() > 0L) return cacheFile.readBytes()
+            val fileId = firstString(obj, "file_id", "fileId", "id")
+                ?: media?.let { firstString(it, "file_id", "fileId", "id") }
+                ?: return null
+            val key = firstString(obj, "sym_key", "symKey", "key", "key_b64")
+                ?: media?.let { firstString(it, "sym_key", "symKey", "key", "key_b64") }
+                ?: return null
+            val nonce = firstString(obj, "nonce", "nonce_b64", "iv")
+                ?: media?.let { firstString(it, "nonce", "nonce_b64", "iv") }
+                ?: return null
+            val kind = firstString(obj, "kind", "type")
+                ?: media?.let { firstString(it, "kind", "type") }
+                ?: ""
+            val mime = firstString(obj, "mime_type", "mimeType", "mime")
+                ?: media?.let { firstString(it, "mime_type", "mimeType", "mime") }
+                ?: ""
+            MediaRef(fileId, nonce, key, kind, mime)
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun mediaCacheFile(fileId: String, nonce: String, key: String): File =
+        MediaCache.fileFor(cacheRoot, "$fileId|$nonce|$key")
+
+    fun cachedMediaFile(jsonText: String): File? = mediaRef(jsonText)?.let {
+        mediaCacheFile(it.fileId, it.nonce, it.key).takeIf { file -> file.exists() && file.length() > 0L }
+    }
+
+    suspend fun downloadMedia(jsonText: String): File? {
+        return try {
+            val ref = mediaRef(jsonText) ?: return null
+            val cacheKey = "${ref.fileId}|${ref.nonce}|${ref.key}"
+            val cacheFile = mediaCacheFile(ref.fileId, ref.nonce, ref.key)
+            if (cacheFile.exists() && cacheFile.length() > 0L) return cacheFile
 
             val lock = mediaDownloadLocks.getOrPut(cacheKey) { Mutex() }
             lock.withLock {
-                if (cacheFile.exists() && cacheFile.length() > 0L) return@withLock cacheFile.readBytes()
-                val encryptedBytes = api.downloadFile(fileId)
-                val plain = crypto.decryptBytes(encryptedBytes, nonce, E2ECrypto.SymmetricKey(symKeyB64))
-                val tmp = File(cacheFile.parentFile, "${cacheFile.name}.tmp")
-                try {
-                    tmp.writeBytes(plain)
-                    if (!tmp.renameTo(cacheFile)) cacheFile.writeBytes(plain)
-                } finally {
-                    if (tmp.exists()) tmp.delete()
-                }
-                plain
+                if (cacheFile.exists() && cacheFile.length() > 0L) return@withLock cacheFile
+                val encryptedBytes = api.downloadFile(ref.fileId)
+                val plain = crypto.decryptBytes(
+                    encryptedBytes,
+                    ref.nonce,
+                    E2ECrypto.SymmetricKey(ref.key),
+                )
+                cacheBytes(plain, cacheFile)
+                cacheFile
             }
-        } catch (e: Exception) { null }
+        } catch (_: Exception) {
+            null
+        }
+    }
+
+    private fun shouldAutoCache(jsonText: String): Boolean = mediaRef(jsonText)?.let {
+        it.kind == "image" || it.mime.startsWith("image/")
+    } == true
+
+    private suspend fun warmUiCache() {
+        store.preloadRecentMessages()
+        for (peerId in store.recentPeerIds(4)) {
+            store.cachedMessages(peerId)
+                .asReversed()
+                .asSequence()
+                .filter { shouldAutoCache(it.text) }
+                .take(2)
+                .forEach { downloadMedia(it.text) }
+        }
+    }
+
+    private fun cachePlaintext(uri: Uri, target: File) {
+        if (target.exists() && target.length() > 0L) return
+        resolver.openInputStream(uri)?.use { input ->
+            val tmp = File(target.parentFile, "${target.name}.tmp")
+            try {
+                tmp.outputStream().use { output -> input.copyTo(output) }
+                if (!tmp.renameTo(target)) tmp.copyTo(target, overwrite = true)
+            } finally {
+                tmp.delete()
+            }
+        }
+    }
+
+    private fun cacheBytes(bytes: ByteArray, target: File) {
+        val tmp = File(target.parentFile, "${target.name}.tmp")
+        try {
+            tmp.writeBytes(bytes)
+            if (!tmp.renameTo(target)) tmp.copyTo(target, overwrite = true)
+        } finally {
+            tmp.delete()
+        }
     }
 
     private fun mediaKindFor(mimeType: String): String = when {
@@ -920,6 +1012,12 @@ class MessageRepository(
         if (obj.has("fileSize")) out.put("file_size", obj.optLong("fileSize"))
         if (media?.has("file_size") == true) out.put("file_size", media.optLong("file_size"))
         if (media?.has("fileSize") == true) out.put("file_size", media.optLong("fileSize"))
+        for (key in listOf("width", "height")) {
+            when {
+                obj.has(key) -> out.put(key, obj.optInt(key))
+                media?.has(key) == true -> out.put(key, media.optInt(key))
+            }
+        }
         return normalizeMediaPayload(out, fallbackKind = when (type) {
             "image" -> "image"
             "video" -> "video"

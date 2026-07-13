@@ -72,7 +72,7 @@ private data class MainTab(
 fun MainScreen(
     api: RelayApi,
     myId: String,
-    chatListFlow: kotlinx.coroutines.flow.Flow<List<ChatListEntry>>,
+    chatListFlow: kotlinx.coroutines.flow.StateFlow<List<ChatListEntry>>,
     onChatSelected: (String) -> Unit,
     onLogout: () -> Unit,
     onNewChat: () -> Unit,
@@ -98,7 +98,7 @@ fun MainScreen(
     }
     val pagerState = rememberPagerState(initialPage = 2, pageCount = { tabs.size })
     val coroutineScope = rememberCoroutineScope()
-    val chats by chatListFlow.collectAsState(initial = emptyList())
+    val chats by chatListFlow.collectAsState()
     val appearance = LocalThemeSettings.current
     var dockDragCenterPx by remember { mutableFloatStateOf(Float.NaN) }
     var dockSettlingPosition by remember { mutableFloatStateOf(Float.NaN) }

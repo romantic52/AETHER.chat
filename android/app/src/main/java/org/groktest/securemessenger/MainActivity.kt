@@ -139,28 +139,8 @@ class MainActivity : FragmentActivity() {
                                     )
                                 )
                             },
-                            exitTransition = {
-                                androidx.compose.animation.slideOutHorizontally(
-                                    targetOffsetX = { -it / 3 },
-                                    animationSpec = androidx.compose.animation.core.tween(
-                                        themeSettings.motionDuration(300),
-                                        easing = androidx.compose.animation.core.FastOutSlowInEasing
-                                    )
-                                ) + androidx.compose.animation.fadeOut(
-                                    animationSpec = androidx.compose.animation.core.tween(themeSettings.motionDuration(240))
-                                )
-                            },
-                            popEnterTransition = {
-                                androidx.compose.animation.slideInHorizontally(
-                                    initialOffsetX = { -it / 3 },
-                                    animationSpec = androidx.compose.animation.core.tween(
-                                        themeSettings.motionDuration(300),
-                                        easing = androidx.compose.animation.core.FastOutSlowInEasing
-                                    )
-                                ) + androidx.compose.animation.fadeIn(
-                                    animationSpec = androidx.compose.animation.core.tween(themeSettings.motionDuration(240))
-                                )
-                            },
+                            exitTransition = { androidx.compose.animation.ExitTransition.None },
+                            popEnterTransition = { androidx.compose.animation.EnterTransition.None },
                             popExitTransition = {
                                 androidx.compose.animation.slideOutHorizontally(
                                     targetOffsetX = { it },
@@ -314,7 +294,10 @@ class MainActivity : FragmentActivity() {
                             myId = myId,
                             chatListFlow = store.getChatList(),
                             onChatSelected = { peerId ->
-                                navController.navigate("chat/$peerId")
+                                coroutineScope.launch {
+                                    withContext(Dispatchers.IO) { store.preloadMessages(peerId) }
+                                    navController.navigate("chat/$peerId")
+                                }
                             },
                             onLogout = {
                                 sessionPrefs.clear()
@@ -528,11 +511,7 @@ class MainActivity : FragmentActivity() {
                                 kotlinx.coroutines.withContext(Dispatchers.IO) { repoSafe.discussionGroupFor(peerId) }
                             } catch (e: Exception) { null }
                         }
-                        val peerChat by androidx.compose.runtime.produceState<org.groktest.securemessenger.data.ChatEntity?>(initialValue = null, peerId) {
-                            value = try {
-                                kotlinx.coroutines.withContext(Dispatchers.IO) { store.getChat(peerId) }
-                            } catch (e: Exception) { null }
-                        }
+                        val peerChat = store.cachedChat(peerId)
                         val peerName = peerChat?.name?.takeIf { it.isNotBlank() } ?: peerId
                         val peerType = peerChat?.type ?: 0
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
@@ -601,6 +580,9 @@ class MainActivity : FragmentActivity() {
                                 },
                                 onDownloadMedia = { jsonText ->
                                     repoSafe.downloadMedia(jsonText)
+                                },
+                                cachedMediaFile = { jsonText ->
+                                    repoSafe.cachedMediaFile(jsonText)
                                 },
                                 onDeleteMessage = { mid, deleteEverywhere ->
                                     if (deleteEverywhere) {

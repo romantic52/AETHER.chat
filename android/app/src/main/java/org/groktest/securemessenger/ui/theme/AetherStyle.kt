@@ -13,8 +13,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.unit.dp
-import org.groktest.securemessenger.ui.components.liquidGlass
 
 object AetherStyle {
     val ScreenHorizontal = 18.dp
@@ -105,40 +106,50 @@ fun Modifier.aetherIsland(
     shape: Shape = RoundedCornerShape(AetherStyle.IslandRadius),
     fillAlpha: Float = AetherStyle.IslandFillAlpha,
     strokeAlpha: Float = AetherStyle.SelectedStrokeAlpha
-): Modifier {
-    val settings = LocalThemeSettings.current
-    val glassAlpha = 0.08f + (1f - settings.glassTransparency.value) * 0.06f
-    return this
-        .clip(shape)
-        .background(aetherSurface(fillAlpha), shape)
-        .then(
-            if (settings.liquidGlassEnabled.value) {
-                Modifier.liquidGlass(shape, MaterialTheme.colorScheme.onBackground, glassAlpha)
-            } else {
-                Modifier
-            }
-        )
-        .border(AetherStyle.Stroke, aetherStroke(strokeAlpha), shape)
-}
+): Modifier = aetherShape(shape, fillAlpha, strokeAlpha)
 
 @Composable
 fun Modifier.aetherCircle(
     fillAlpha: Float = AetherStyle.ControlFillAlpha,
     strokeAlpha: Float = AetherStyle.ControlStrokeAlpha
+): Modifier = aetherShape(CircleShape, fillAlpha, strokeAlpha)
+
+@Composable
+private fun Modifier.aetherShape(
+    shape: Shape,
+    fillAlpha: Float,
+    strokeAlpha: Float,
 ): Modifier {
     val settings = LocalThemeSettings.current
+    val fill = aetherSurface(fillAlpha)
+    val primary = MaterialTheme.colorScheme.primary
     val glassAlpha = 0.08f + (1f - settings.glassTransparency.value) * 0.06f
-    return this
-        .clip(CircleShape)
-        .background(aetherSurface(fillAlpha), CircleShape)
-        .then(
-            if (settings.liquidGlassEnabled.value) {
-                Modifier.liquidGlass(CircleShape, MaterialTheme.colorScheme.onBackground, glassAlpha)
-            } else {
-                Modifier
-            }
+    val fillBrush = if (settings.liquidGlassEnabled.value) {
+        val tint = MaterialTheme.colorScheme.onBackground
+        Brush.verticalGradient(
+            listOf(
+                tint.copy(alpha = glassAlpha * 1.6f).compositeOver(fill),
+                tint.copy(alpha = glassAlpha).compositeOver(fill),
+            )
         )
-        .border(AetherStyle.Stroke, aetherStroke(strokeAlpha), CircleShape)
+    } else {
+        SolidColor(fill)
+    }
+    val strokeBrush = if (settings.liquidGlassEnabled.value) {
+        Brush.verticalGradient(
+            listOf(
+                primary.copy(alpha = strokeAlpha),
+                primary.copy(alpha = strokeAlpha * 0.38f),
+                primary.copy(alpha = strokeAlpha * 0.76f),
+            )
+        )
+    } else {
+        SolidColor(primary.copy(alpha = strokeAlpha))
+    }
+    return this
+        .clip(shape)
+        .background(fillBrush, shape)
+        .border(AetherStyle.Stroke, strokeBrush, shape)
 }
 
 @Composable

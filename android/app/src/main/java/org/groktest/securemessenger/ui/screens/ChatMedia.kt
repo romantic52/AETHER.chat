@@ -49,9 +49,8 @@ fun VoiceMessagePlayer(
     jsonText: String,
     durationMs: Long,
     tint: Color,
-    onDownloadMedia: suspend (String) -> ByteArray?
+    onDownloadMedia: suspend (String) -> File?
 ) {
-    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var isPlaying by remember { mutableStateOf(false) }
     var isLoading by remember { mutableStateOf(false) }
@@ -96,16 +95,17 @@ fun VoiceMessagePlayer(
                     else -> {
                         isLoading = true
                         scope.launch {
-                            val bytes = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
+                            val file = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
                             isLoading = false
-                            if (bytes != null) {
-                                val f = File(context.cacheDir, "voice_${jsonText.hashCode()}.m4a")
-                                withContext(Dispatchers.IO) { f.writeBytes(bytes) }
+                            if (file != null) {
                                 try {
-                                    val mp = android.media.MediaPlayer()
-                                    mp.setDataSource(f.absolutePath)
+                                    val mp = withContext(Dispatchers.IO) {
+                                        android.media.MediaPlayer().apply {
+                                            setDataSource(file.absolutePath)
+                                            prepare()
+                                        }
+                                    }
                                     mp.setOnCompletionListener { isPlaying = false; progress = 0f }
-                                    mp.prepare()
                                     mp.start()
                                     player = mp
                                     isPlaying = true
@@ -168,20 +168,16 @@ private fun Waveform(bars: FloatArray, progress: Float, tint: Color, modifier: M
 @Composable
 fun VideoMessage(
     jsonText: String,
-    onDownloadMedia: suspend (String) -> ByteArray?
+    cachedMediaFile: (String) -> File? = { null },
+    onDownloadMedia: suspend (String) -> File?
 ) {
-    val context = LocalContext.current
-    var filePath by remember(jsonText) { mutableStateOf<String?>(null) }
-    var loading by remember(jsonText) { mutableStateOf(true) }
+    var filePath by remember(jsonText) { mutableStateOf(cachedMediaFile(jsonText)?.absolutePath) }
+    var loading by remember(jsonText) { mutableStateOf(filePath == null) }
 
     LaunchedEffect(jsonText) {
+        if (filePath != null) return@LaunchedEffect
         loading = true
-        val bytes = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
-        filePath = bytes?.let {
-            val file = File(context.cacheDir, "video_${jsonText.hashCode()}.mp4")
-            withContext(Dispatchers.IO) { file.writeBytes(it) }
-            file.absolutePath
-        }
+        filePath = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }?.absolutePath
         loading = false
     }
 
@@ -227,7 +223,7 @@ fun FileMessageBubble(
     fileName: String,
     fileSize: Long,
     tint: Color,
-    onDownloadMedia: suspend (String) -> ByteArray?
+    onDownloadMedia: suspend (String) -> File?
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -239,13 +235,13 @@ fun FileMessageBubble(
             .clickable(enabled = !loading) {
                 loading = true
                 scope.launch {
-                    val bytes = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
+                    val source = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
                     loading = false
-                    if (bytes != null) {
+                    if (source != null) {
                         try {
                             val safe = fileName.ifBlank { "file" }.replace(Regex("[\\\\/:*?\"<>|]"), "_")
                             val f = File(context.cacheDir, safe)
-                            withContext(Dispatchers.IO) { f.writeBytes(bytes) }
+                            withContext(Dispatchers.IO) { source.copyTo(f, overwrite = true) }
                             val uri = androidx.core.content.FileProvider.getUriForFile(
                                 context, "${context.packageName}.fileprovider", f
                             )
@@ -437,12 +433,12 @@ private fun TrimWaveform(
 @Composable
 fun VideoNoteMessage(
     jsonText: String,
-    onDownloadMedia: suspend (String) -> ByteArray?,
+    cachedMediaFile: (String) -> File? = { null },
+    onDownloadMedia: suspend (String) -> File?,
     onLongClick: (() -> Unit)? = null
 ) {
-    val context = LocalContext.current
-    var filePath by remember { mutableStateOf<String?>(null) }
-    var loading by remember { mutableStateOf(true) }
+    var filePath by remember(jsonText) { mutableStateOf(cachedMediaFile(jsonText)?.absolutePath) }
+    var loading by remember(jsonText) { mutableStateOf(filePath == null) }
     var mediaPlayerRef by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     // active = открыт со звуком и увеличен; playing = играет (vs пауза) в active-режиме.
     var active by remember { mutableStateOf(false) }
@@ -452,13 +448,9 @@ fun VideoNoteMessage(
     val size by animateDpAsState(if (active) 280.dp else 200.dp, label = "noteSize")
 
     LaunchedEffect(jsonText) {
+        if (filePath != null) return@LaunchedEffect
         loading = true
-        val bytes = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
-        if (bytes != null) {
-            val f = File(context.cacheDir, "note_${jsonText.hashCode()}.mp4")
-            withContext(Dispatchers.IO) { f.writeBytes(bytes) }
-            filePath = f.absolutePath
-        }
+        filePath = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }?.absolutePath
         loading = false
     }
 

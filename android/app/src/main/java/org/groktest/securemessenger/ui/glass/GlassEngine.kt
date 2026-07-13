@@ -5,6 +5,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
@@ -69,6 +70,6 @@ fun Modifier.glassSurface(
     return if (hazeState != null && supportsRealGlass) {
         this.hazeChild(state = hazeState, shape = shape)
     } else {
-        this.liquidGlass(shape = shape, tint = fallbackTint, tintAlpha = fallbackAlpha)
+        this.clip(shape).liquidGlass(shape = shape, tint = fallbackTint, tintAlpha = fallbackAlpha)
     }
 }
