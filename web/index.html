@@ -3,13 +3,14 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* http://10.0.2.2:* ws://localhost:* ws://127.0.0.1:* ws://10.0.2.2:*;">
     <title>Æther</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="style.css?v=3.7.0">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/tweetnacl/1.0.3/nacl.min.js"></script>
+    <script src="vendor/nacl.min.js"></script>
     <link rel="manifest" href="manifest.json">
     <link rel="icon" type="image/png" href="favicon.png">
 </head>
@@ -39,9 +40,9 @@
                 <div class="tg-input-group checkbox-group" style="display: flex; align-items: center; justify-content: space-between; margin-top: 10px; margin-bottom: 15px; padding-left: 4px;">
                     <div style="display: flex; align-items: center; gap: 8px;">
                         <input type="checkbox" id="remember-me-checkbox" style="width: 18px; height: 18px; cursor: pointer;">
-                        <label for="remember-me-checkbox" style="color: var(--text-secondary); font-size: 14px; cursor: pointer; user-select: none;">Запомнить меня</label>
+                        <label for="remember-me-checkbox" style="color: var(--text-secondary); font-size: 14px; cursor: pointer; user-select: none;">Запомнить имя</label>
                     </div>
-                    <a href="#" onclick="document.getElementById('server-input-group').style.display = 'block'; this.style.display='none'; return false;" style="color: var(--accent-color); font-size: 13px; text-decoration: none;">Сменить сервер</a>
+                    <a href="#" id="change-server-btn" style="color: var(--accent-color); font-size: 13px; text-decoration: none;">Сменить сервер</a>
                 </div>
                 <div class="tg-input-group" id="server-input-group" style="display: none;">
                     <input type="text" id="server-input" value="https://your-server.example.com" placeholder="URL сервера (https://...)">
@@ -646,6 +647,6 @@
         </div>
     </div>
     
-    <script src="app.js?v=3.4.0"></script>
+    <script src="app.js?v=4.0.0"></script>
 </body>
 </html>

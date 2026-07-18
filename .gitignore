@@ -32,6 +32,9 @@ android/.idea/
 # Node
 **/node_modules/
 
+# Rust build output
+**/target/
+
 # Keys / signing
 *.keystore
 *.jks
@@ -50,3 +53,6 @@ ios/AETHER/CoreFFI/Generated/
 
 # Локальные настройки редактора
 .vscode/settings.json
+
+# macOS
+.DS_Store
