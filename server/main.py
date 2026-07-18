@@ -123,6 +123,26 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Browser hardening: user content is ciphertext until it reaches the client,
+# and the client must not be able to turn it into executable markup.
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; "
+        "frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
+        "img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; "
+        "connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* "
+        "http://10.0.2.2:* ws://localhost:* ws://127.0.0.1:* ws://10.0.2.2:*"
+    ))
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
+    return response
+
 SESSION_LIFETIME_DAYS = 30
 
 
@@ -185,9 +205,10 @@ def verify_password(password: str, hashed: str) -> bool:
 
 # --- Session management (#3): check expiry ---
 def get_current_user(authorization: str = Header(None)) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
         raise HTTPException(401, "Missing or invalid authorization header")
-    token = authorization.split(" ")[1]
+    token = token.strip()
     with db_conn() as cur:
         cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,))
         row = cur.fetchone()
@@ -369,6 +390,15 @@ def init_db() -> None:
         has_encrypted_key = cur.fetchone()[0]
         if not has_encrypted_key:
             cur.execute("ALTER TABLE users ADD COLUMN encrypted_private_key_b64 TEXT")
+
+        # Password-encrypted Olm account pickle for browser recovery. The relay
+        # never receives the account plaintext or password-derived key.
+        cur.execute(
+            """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_name='users' AND column_name='encrypted_olm_account_b64')"""
+        )
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN encrypted_olm_account_b64 TEXT")
             
         # Check username
         cur.execute(
@@ -462,61 +492,68 @@ def init_db() -> None:
 
 
 class RegisterRequest(BaseModel):
-    user_id: str = Field(min_length=2, max_length=64)
-    public_key_b64: str = Field(min_length=16)
-    encrypted_private_key_b64: Optional[str] = None
-    password: str = Field(min_length=8)
+    user_id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    public_key_b64: str = Field(min_length=16, max_length=128)
+    encrypted_private_key_b64: Optional[str] = Field(default=None, max_length=100_000)
+    encrypted_olm_account_b64: Optional[str] = Field(default=None, max_length=100_000)
+    password: str = Field(min_length=8, max_length=256)
 
 
 class LoginRequest(BaseModel):
+    # Login stays compatible with pre-policy accounts; registration below is
+    # stricter for all new ids/passwords.
     user_id: str = Field(min_length=2, max_length=64)
-    password: str = Field(min_length=8)
+    password: str = Field(min_length=1, max_length=256)
 
 
 class UploadKeysRequest(BaseModel):
-    identity_key_b64: str
+    identity_key_b64: str = Field(min_length=16, max_length=128)
     # {key_id: key_b64}
-    one_time_keys: dict
+    one_time_keys: dict[str, str] = Field(default_factory=dict, max_length=100)
+
+
+class UpdateOlmBackupRequest(BaseModel):
+    encrypted_olm_account_b64: str = Field(min_length=16, max_length=100_000)
 
 
 class SendMessageRequest(BaseModel):
-    sender_id: str
-    recipient_id: str
+    sender_id: str = Field(min_length=2, max_length=64)
+    recipient_id: str = Field(min_length=2, max_length=64)
     envelope: dict
     # (#A2) Идемпотентность: клиент генерирует UUID сам (паттерн random_id
     # Telegram). Повторная отправка после обрыва сети не создаёт дубликат.
-    client_id: Optional[str] = None
+    client_id: Optional[str] = Field(default=None, max_length=64)
 
 class UpdateKeyRequest(BaseModel):
-    public_key_b64: str = Field(min_length=16)
+    public_key_b64: str = Field(min_length=16, max_length=128)
 
 class UpdateProfileRequest(BaseModel):
-    username: Optional[str] = None
-    display_name: Optional[str] = None
-    avatar_file_id: Optional[str] = None
-    bio: Optional[str] = None
+    username: Optional[str] = Field(default=None, min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    display_name: Optional[str] = Field(default=None, max_length=128)
+    avatar_file_id: Optional[str] = Field(default=None, max_length=128)
+    bio: Optional[str] = Field(default=None, max_length=2_000)
     status_emoji: Optional[str] = Field(default=None, max_length=16)
 
 class CreateGroupRequest(BaseModel):
-    id: str = Field(min_length=2, max_length=64)
-    name: str
-    description: str = ""
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(default="", max_length=2_000)
     is_channel: bool = False
-    encrypted_key_b64: str
+    encrypted_key_b64: str = Field(min_length=16, max_length=10_000)
     # (#A6) Группа обсуждений канала (телеграм-паттерн «комментарии»):
     # создаётся клиентом ДО канала и подвязывается при создании
-    linked_group_id: Optional[str] = None
+    linked_group_id: Optional[str] = Field(default=None, max_length=64)
 
 class AddGroupMemberRequest(BaseModel):
-    user_id: str
-    encrypted_key_b64: str
-    role: str = "member"
+    user_id: str = Field(min_length=2, max_length=64)
+    encrypted_key_b64: str = Field(min_length=16, max_length=10_000)
+    role: str = Field(default="member", pattern=r"^(member|admin)$")
 
 # (#12) Edit group request
 class UpdateGroupRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    avatar_file_id: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    description: Optional[str] = Field(default=None, max_length=2_000)
+    avatar_file_id: Optional[str] = Field(default=None, max_length=128)
 
 @app.on_event("startup")
 def startup() -> None:
@@ -536,8 +573,12 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
         if exist:
             raise HTTPException(400, "Username already taken")
         cur.execute(
-            "INSERT INTO users (user_id, public_key_b64, encrypted_private_key_b64, password_hash, created_at) VALUES (%s, %s, %s, %s, %s)",
-            (body.user_id.lower(), body.public_key_b64, body.encrypted_private_key_b64, hashed, _utc_now()),
+            """INSERT INTO users
+               (user_id, public_key_b64, encrypted_private_key_b64,
+                encrypted_olm_account_b64, password_hash, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (body.user_id.lower(), body.public_key_b64, body.encrypted_private_key_b64,
+             body.encrypted_olm_account_b64, hashed, _utc_now()),
         )
     return {"ok": True, "user_id": body.user_id.lower()}
 
@@ -547,7 +588,12 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
 @limiter.limit("15/minute;100/hour")
 def login_user(body: LoginRequest, request: Request) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT password_hash, public_key_b64, encrypted_private_key_b64, user_id FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.user_id,))
+        cur.execute(
+            """SELECT password_hash, public_key_b64, encrypted_private_key_b64,
+                      encrypted_olm_account_b64, user_id
+               FROM users WHERE LOWER(user_id) = LOWER(%s)""",
+            (body.user_id,),
+        )
         row = cur.fetchone()
     if not row or not row["password_hash"]:
         raise HTTPException(401, "Invalid username or password")
@@ -567,14 +613,15 @@ def login_user(body: LoginRequest, request: Request) -> dict:
         "token": token,
         "user_id": row["user_id"].lower(),
         "public_key_b64": row["public_key_b64"],
-        "encrypted_private_key_b64": row["encrypted_private_key_b64"]
+        "encrypted_private_key_b64": row["encrypted_private_key_b64"],
+        "encrypted_olm_account_b64": row["encrypted_olm_account_b64"],
     }
 
 
 # (#A4) Полный выход: токен отзывается на сервере, а не только забывается клиентом
 @app.post("/logout")
 def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
-    token = authorization.split(" ")[1]
+    token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
     return {"ok": True}
@@ -602,12 +649,85 @@ def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_cu
 
 # --- Prekey-директория для Double Ratchet (Olm/X3DH) ---
 
+MAX_ENVELOPE_BYTES = 2_000_000
+# Static crypto_box envelopes are kept only as an explicit emergency migration
+# switch. New direct traffic is Ratchet-only by default.
+ALLOW_LEGACY_DIRECT = os.environ.get("AETHER_ALLOW_LEGACY_DIRECT", "0").lower() in {
+    "1", "true", "yes",
+}
+
+
+def _envelope_size(envelope: dict) -> int:
+    return len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _is_group_envelope(envelope: dict) -> bool:
+    marker = envelope.get("is_group")
+    return marker == "1" or marker is True
+
+
+def _decode_b64url(value: object, field: str) -> bytes:
+    import base64
+    if not isinstance(value, str) or not value:
+        raise HTTPException(400, f"{field} must be base64url")
+    try:
+        raw = base64.b64decode(
+            value.replace("-", "+").replace("_", "/") + "=" * (-len(value) % 4),
+            validate=True,
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"{field} must be base64url") from exc
+    return raw
+
+
+def _validate_key_b64(value: object, field: str) -> None:
+    """Olm identity/OTK keys are exactly one Curve25519 public key (32 bytes)."""
+    raw = _decode_b64url(value, field)
+    if len(raw) != 32:
+        raise HTTPException(400, f"{field} must encode 32 bytes")
+
+
+def _validate_ratchet_envelope(envelope: dict) -> None:
+    if _envelope_size(envelope) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(413, "Encrypted envelope is too large")
+    ratchet = envelope.get("ratchet")
+    if ratchet not in ("1", 1):
+        return
+    if envelope.get("is_group"):
+        raise HTTPException(400, "Ratchet envelope cannot be a group message")
+    required = {"olm_identity", "type", "body_b64"}
+    if not required.issubset(envelope):
+        raise HTTPException(400, "Invalid ratchet envelope")
+    _validate_key_b64(envelope["olm_identity"], "olm_identity")
+    if envelope["type"] not in (0, 1):
+        raise HTTPException(400, "Ratchet message type must be 0 or 1")
+    body = envelope["body_b64"]
+    if not isinstance(body, str) or not body or len(body) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(400, "Invalid ratchet body")
+    if len(_decode_b64url(body, "body_b64")) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(413, "Encrypted body is too large")
+
+
 @app.put("/keys/upload")
-def upload_keys(body: UploadKeysRequest, current_user: str = Depends(get_current_user)) -> dict:
+@limiter.limit("30/minute")
+def upload_keys(body: UploadKeysRequest, request: Request,
+                current_user: str = Depends(get_current_user)) -> dict:
+    _validate_key_b64(body.identity_key_b64, "identity_key_b64")
     with db_conn() as cur:
+        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s) FOR UPDATE",
+                    (current_user,))
+        previous = cur.fetchone()
+        if (previous and previous["olm_identity_key"]
+                and previous["olm_identity_key"] != body.identity_key_b64):
+            # OTKs are bound to the identity that generated them. A rotated
+            # account must not leave stale OTKs for the next claimant.
+            cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
         cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
                     (body.identity_key_b64, current_user))
         for key_id, key_b64 in body.one_time_keys.items():
+            if len(str(key_id)) > 128 or len(key_b64) > 128:
+                raise HTTPException(400, "Invalid one-time key")
+            _validate_key_b64(key_b64, "one_time_key")
             cur.execute(
                 "INSERT INTO one_time_keys (user_id, key_id, key_b64) VALUES (%s, %s, %s) "
                 "ON CONFLICT (user_id, key_id) DO NOTHING",
@@ -615,19 +735,38 @@ def upload_keys(body: UploadKeysRequest, current_user: str = Depends(get_current
     return {"ok": True}
 
 
+@app.put("/users/me/olm-backup")
+def update_olm_backup(body: UpdateOlmBackupRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            "UPDATE users SET encrypted_olm_account_b64 = %s WHERE LOWER(user_id) = LOWER(%s)",
+            (body.encrypted_olm_account_b64, current_user),
+        )
+    return {"ok": True}
+
+
 @app.get("/keys/count")
 def keys_count(current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
-        n = cur.fetchone()["n"]
-    return {"count": n}
+        cur.execute(
+            """SELECT COUNT(k.key_id) AS n, u.olm_identity_key
+               FROM users u LEFT JOIN one_time_keys k ON k.user_id = u.user_id
+               WHERE LOWER(u.user_id) = LOWER(%s)
+               GROUP BY u.olm_identity_key""",
+            (current_user.lower(),),
+        )
+        row = cur.fetchone()
+    return {"count": row["n"] if row else 0,
+            "identity_key_b64": row["olm_identity_key"] if row else None}
 
 
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
 # удаляется (одноразовость → forward secrecy). Атомарно, чтобы двум клиентам не
 # достался один и тот же OTK.
 @app.post("/keys/claim/{user_id}")
-def claim_keys(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+@limiter.limit("60/minute")
+def claim_keys(user_id: str, request: Request,
+               current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,))
         row = cur.fetchone()
@@ -980,12 +1119,15 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
         raise HTTPException(403, "Cannot send messages as another user")
 
     # Double Ratchet (Olm) 1:1 — свой формат конверта; сервер только релеит.
-    if body.envelope.get("ratchet"):
+    _validate_ratchet_envelope(body.envelope)
+    if body.envelope.get("ratchet") in ("1", 1):
         ratchet_required = {"olm_identity", "type", "body_b64"}
         if not ratchet_required.issubset(body.envelope.keys()):
             logger.warning(f"send_message: bad ratchet envelope. Got: {list(body.envelope.keys())}")
             raise HTTPException(400, f"Invalid ratchet envelope. Got: {list(body.envelope.keys())}")
     else:
+        if _envelope_size(body.envelope) > MAX_ENVELOPE_BYTES:
+            raise HTTPException(413, "Encrypted envelope is too large")
         required = {"nonce_b64", "ciphertext_b64"}
         if not required.issubset(body.envelope.keys()):
             logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
@@ -993,6 +1135,13 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
         if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
             logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
             raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
+        if _is_group_envelope(body.envelope):
+            nonce = _decode_b64url(body.envelope.get("nonce_b64"), "nonce_b64")
+            ciphertext = _decode_b64url(body.envelope.get("ciphertext_b64"), "ciphertext_b64")
+            if len(nonce) != 12:
+                raise HTTPException(400, "Invalid group nonce")
+            if len(ciphertext) > MAX_ENVELOPE_BYTES:
+                raise HTTPException(413, "Encrypted body is too large")
     if "plaintext" in body.envelope or "text" in body.envelope:
         raise HTTPException(400, "Plaintext not allowed on server")
 
@@ -1019,6 +1168,14 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 
             if not is_user and not is_group:
                 raise HTTPException(404, "Recipient not registered")
+
+            is_ratchet = body.envelope.get("ratchet") in ("1", 1)
+            if is_user and not is_ratchet and not ALLOW_LEGACY_DIRECT:
+                raise HTTPException(400, "Direct messages require Olm Double Ratchet")
+            if is_group and is_ratchet:
+                raise HTTPException(400, "Group messages must use the group envelope")
+            if is_group and not _is_group_envelope(body.envelope):
+                raise HTTPException(400, "Invalid group envelope")
                 
             # If it's a group, ensure sender is a member
             if is_group:

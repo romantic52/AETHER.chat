@@ -1,28 +1,65 @@
 // E2E Secure Messenger Web Client
 
-// (#1) Encrypted storage helpers - never store password in plaintext
-async function encryptForStorage(text) {
-    const fp = navigator.userAgent + screen.width + screen.height + 'aether_device';
-    const enc = new TextEncoder();
-    const km = await crypto.subtle.importKey('raw', enc.encode(fp), 'PBKDF2', false, ['deriveKey']);
-    const key = await crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('aether_v2'),iterations:10000,hash:'SHA-256'}, km, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
-    const iv = crypto.getRandomValues(new Uint8Array(12));
-    const ct = await crypto.subtle.encrypt({name:'AES-GCM',iv}, key, enc.encode(text));
-    const combined = new Uint8Array(iv.length + ct.byteLength);
-    combined.set(iv); combined.set(new Uint8Array(ct), iv.length);
-    return btoa(String.fromCharCode(...combined));
+// User/API data is never HTML. Keep this at the single boundary used by all
+// small static templates below; textContent remains preferred for new UI.
+function escapeHtmlSafe(value) {
+    return String(value == null ? '' : value).replace(/[&<>"']/g, ch => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[ch]));
 }
-async function decryptFromStorage(b64) {
+
+function safeMediaUrl(value, kind = 'image') {
+    const raw = String(value || '').trim();
+    if (!raw) return '';
+    if (raw.startsWith('blob:')) return raw;
+    const prefix = kind === 'audio' ? 'audio/' : kind === 'video' ? 'video/' : 'image/';
+    if (raw.startsWith(`data:${prefix}`) && raw.includes(';base64,')) return raw;
+    return '';
+}
+
+function isTrustedHttpOrigin(url) {
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return false;
+    if (url.origin === window.location.origin) return true;
     try {
-        const fp = navigator.userAgent + screen.width + screen.height + 'aether_device';
-        const enc = new TextEncoder();
-        const km = await crypto.subtle.importKey('raw', enc.encode(fp), 'PBKDF2', false, ['deriveKey']);
-        const key = await crypto.subtle.deriveKey({name:'PBKDF2',salt:enc.encode('aether_v2'),iterations:10000,hash:'SHA-256'}, km, {name:'AES-GCM',length:256}, false, ['encrypt','decrypt']);
-        const combined = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-        const iv = combined.slice(0,12), data = combined.slice(12);
-        const dec = await crypto.subtle.decrypt({name:'AES-GCM',iv}, key, data);
-        return new TextDecoder().decode(dec);
-    } catch(e) { return null; }
+        return typeof serverUrl === 'string' && serverUrl && url.origin === new URL(serverUrl).origin;
+    } catch (_) {
+        return false;
+    }
+}
+
+function safeDownloadUrl(value) {
+    const raw = String(value || '').trim();
+    if (!raw || raw.toLowerCase().startsWith('javascript:')) return '';
+    if (raw.startsWith('blob:')) return raw;
+    if (/^data:(?:image\/(?:png|jpeg|gif|webp)|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+|application\/octet-stream|text\/plain);base64,/i.test(raw)) return raw;
+    try {
+        const url = new URL(raw, window.location.href);
+        return isTrustedHttpOrigin(url) ? url.href : '';
+    } catch (_) {
+        return '';
+    }
+}
+
+function safeBlobMime(value, fallback = 'application/octet-stream') {
+    const raw = String(value || '').trim().toLowerCase();
+    return /^(?:image\/(?:png|jpeg|gif|webp)|audio\/[a-z0-9.+-]+|video\/[a-z0-9.+-]+|application\/(?:octet-stream|pdf)|text\/plain)$/.test(raw)
+        ? raw : fallback;
+}
+
+function setSafeBackgroundImage(element, value) {
+    const raw = String(value || '').trim();
+    if (!raw) {
+        element.style.backgroundImage = 'none';
+        return;
+    }
+    try {
+        const url = new URL(raw, window.location.href);
+        const allowed = isTrustedHttpOrigin(url) || url.protocol === 'blob:' ||
+            (url.protocol === 'data:' && /^data:image\/(?:png|jpeg|gif|webp);base64,/i.test(raw));
+        element.style.backgroundImage = allowed ? `url(${JSON.stringify(url.href)})` : 'none';
+    } catch (_) {
+        element.style.backgroundImage = 'none';
+    }
 }
 
 // Хелперы для URL-safe Base64 (совместимого с Python PyNaCl)
@@ -202,33 +239,44 @@ function fromWire(o) {
             const p = { type: 'text', content: o.text != null ? o.text : '' };
             if (o.reply_to_id) {
                 p.reply_to = {
-                    msg_id: o.reply_to_id,
-                    text: o.reply_to_text != null ? o.reply_to_text : '',
+                    msg_id: typeof o.reply_to_id === 'string' || typeof o.reply_to_id === 'number' ? String(o.reply_to_id).slice(0, 256) : '',
+                    text: typeof o.reply_to_text === 'string' ? o.reply_to_text.slice(0, 2000) : '',
                     author: '' // имя автора восстанавливается из локального сообщения при рендере
                 };
             }
-            if (o.fwd_from) { p.fwd_from = o.fwd_from; p.forwarded_from = o.fwd_from; }
+            if (typeof o.fwd_from === 'string' && o.fwd_from.length <= 128) {
+                p.fwd_from = o.fwd_from;
+                p.forwarded_from = o.fwd_from;
+            }
             if (o.ttl) p.ttl = o.ttl;
             return p;
         }
         case 'edit':
-            return { type: 'edit', target_id: o.target, content: o.text != null ? o.text : '' };
+            return { type: 'edit', target_id: typeof o.target === 'string' || typeof o.target === 'number' ? String(o.target).slice(0, 256) : '', content: o.text != null ? o.text : '' };
         case 'delete':
-            return { type: 'delete', target_id: o.target || o.target_id || '' };
+            return { type: 'delete', target_id: typeof (o.target || o.target_id) === 'string' || typeof (o.target || o.target_id) === 'number' ? String(o.target || o.target_id).slice(0, 256) : '' };
         case 'reaction':
-            return { type: 'reaction', target_id: o.target, emoji: o.emoji != null ? o.emoji : '' };
+            return { type: 'reaction', target_id: typeof o.target === 'string' || typeof o.target === 'number' ? String(o.target).slice(0, 256) : '', emoji: typeof o.emoji === 'string' ? o.emoji.slice(0, 32) : '' };
         case 'media': {
             // Нормализуем в дисплейный тип; контент (blob URL) резолвится лениво при рендере.
             const dt = mediaDisplayType(o);
             const p = {
                 type: dt,
-                media: { file_id: o.file_id, sym_key: o.sym_key, nonce: o.nonce, mime_type: o.mime_type }
+                media: {
+                    file_id: typeof o.file_id === 'string' ? o.file_id.slice(0, 128) : '',
+                    sym_key: typeof o.sym_key === 'string' ? o.sym_key.slice(0, 128) : '',
+                    nonce: typeof o.nonce === 'string' ? o.nonce.slice(0, 128) : '',
+                    mime_type: typeof o.mime_type === 'string' ? o.mime_type.slice(0, 128) : ''
+                }
             };
-            if (o.kind) p.media.kind = o.kind;
+            if (typeof o.kind === 'string') p.media.kind = o.kind.slice(0, 32);
             if (o.duration) p.media.duration = o.duration;
-            if (dt === 'file') p.filename = o.filename || 'Файл';
+            if (dt === 'file') p.filename = typeof o.filename === 'string' ? o.filename.slice(0, 200) : 'Файл';
             if (o.size) p.size = o.size;
-            if (o.fwd_from) { p.fwd_from = o.fwd_from; p.forwarded_from = o.fwd_from; }
+            if (typeof o.fwd_from === 'string' && o.fwd_from.length <= 128) {
+                p.fwd_from = o.fwd_from;
+                p.forwarded_from = o.fwd_from;
+            }
             return p;
         }
         // 'read' и веб-родные типы возвращаем как есть — обрабатываются ниже по коду.
@@ -320,7 +368,8 @@ async function decryptPayload(combinedB64, pin, salt) {
 // на приёме /download → расшифровка → blob URL. Формат байт-в-байт совместим
 // с E2ECrypto.encryptFile (ключ 32б, IV 12б, тег 128б в конце, url-safe base64).
 // ──────────────────────────────────────────────────────────────────────────
-let mediaBlobCache = {}; // file_id -> objectURL (расшифрованный контент)
+let mediaBlobCache = Object.create(null); // file_id -> objectURL (расшифрованный контент)
+const MAX_MEDIA_BYTES = 50 * 1024 * 1024;
 
 // Шифрует байты, грузит в /upload, возвращает {file_id, sym_key, nonce}.
 async function uploadEncryptedMedia(bytes) {
@@ -343,13 +392,17 @@ async function uploadEncryptedMedia(bytes) {
 async function getMediaBlobUrl(media) {
     if (!media || !media.file_id) return null;
     if (mediaBlobCache[media.file_id]) return mediaBlobCache[media.file_id];
-    const res = await fetch(`${serverUrl}/download/${media.file_id}`, {
+    const res = await fetch(`${serverUrl}/download/${pathSegment(media.file_id)}`, {
         headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
     });
     if (!res.ok) throw new Error('download failed: ' + res.status);
-    const ctBytes = new Uint8Array(await res.arrayBuffer());
+    const advertisedLength = Number(res.headers.get('content-length') || 0);
+    if (advertisedLength > MAX_MEDIA_BYTES) throw new Error('media too large');
+    const rawBytes = await res.arrayBuffer();
+    if (rawBytes.byteLength > MAX_MEDIA_BYTES) throw new Error('media too large');
+    const ctBytes = new Uint8Array(rawBytes);
     const plainBytes = await aesGcmDecrypt(base64UrlDecode(media.sym_key), base64UrlDecode(media.nonce), ctBytes);
-    const url = URL.createObjectURL(new Blob([plainBytes], { type: media.mime_type || 'application/octet-stream' }));
+    const url = URL.createObjectURL(new Blob([plainBytes], { type: safeBlobMime(media.mime_type) }));
     mediaBlobCache[media.file_id] = url;
     return url;
 }
@@ -366,7 +419,7 @@ async function sendMediaFile(bytes, mimeType, kind, displayType, extra = {}) {
         return;
     }
     // Предзаполняем кэш локальным контентом — отправителю не нужно качать заново.
-    mediaBlobCache[up.file_id] = URL.createObjectURL(new Blob([bytes], { type: mimeType }));
+    mediaBlobCache[up.file_id] = URL.createObjectURL(new Blob([bytes], { type: safeBlobMime(mimeType) }));
     const payload = Object.assign({
         type: displayType,
         media: { file_id: up.file_id, sym_key: up.sym_key, nonce: up.nonce, mime_type: mimeType, kind }
@@ -379,23 +432,274 @@ let myId = '';
 let myPin = '';
 let serverUrl = '';
 let myKeys = null;
-let groupKeys = {}; // group_id -> Uint8Array (32 bytes) // { publicKey: Uint8Array, secretKey: Uint8Array, publicB64: str, privateB64: str }
+let serverPublicKeyB64 = '';
+let groupKeys = Object.create(null); // group_id -> Uint8Array (32 bytes)
 let messages = []; // [{ direction: 'in'|'out', peer: 'id', plaintext: '...', message_id: '...' }]
-let chatSettingsCache = {}; // { peerId: { is_pinned, is_muted, is_archived } }
+let chatSettingsCache = Object.create(null); // { peerId: { is_pinned, is_muted, is_archived } }
 let isArchiveViewOpen = false;
 let selectedPeer = null;
 let pollInterval = null;
-let peerKeysCache = {}; // { peerId: publicB64 }
 let pollCounter = 0;
 let sessionToken = ''; // Токен сессии сервера
 let loginEncPrivKeyB64 = ''; // Зашифрованный паролем бэкап приватного ключа (из ответа /users/login)
+let loginEncOlmAccountB64 = '';
+let olmAccountPickle = '';
+let olmIdentityB64 = '';
+let olmSessions = Object.create(null);
+let olmIdentityPins = Object.create(null);
+let ratchetModulePromise = null;
+let ratchetQueue = Promise.resolve();
 let keyRotationInterval = null;
+
+function authHeaders(extra = {}) {
+    return Object.assign({
+        'Authorization': `Bearer ${sessionToken}`,
+        'Bypass-Tunnel-Reminder': 'true'
+    }, extra);
+}
+
+function pathSegment(value) {
+    return encodeURIComponent(String(value == null ? '' : value));
+}
+
+function nullMap(value) {
+    return value && typeof value === 'object' && !Array.isArray(value)
+        ? Object.assign(Object.create(null), value)
+        : Object.create(null);
+}
+
+function formatServerError(data, fallback) {
+    const detail = data && data.detail;
+    if (typeof detail === 'string' && detail.trim()) return detail;
+    if (Array.isArray(detail)) {
+        const messages = detail.map(item => item && (item.msg || item.message)).filter(Boolean);
+        if (messages.length) return messages.join('; ');
+    }
+    return fallback;
+}
+
+function loadRatchetApi() {
+    if (!ratchetModulePromise) {
+        ratchetModulePromise = import('./vendor/ratchet/aether_ratchet_wasm.js')
+            .then(async module => {
+                await module.default();
+                return module;
+            })
+            .catch(error => {
+                ratchetModulePromise = null;
+                throw new Error(`Не удалось загрузить модуль Double Ratchet: ${error.message || error}`);
+            });
+    }
+    return ratchetModulePromise;
+}
+
+function runRatchetSerial(task) {
+    const next = ratchetQueue.then(task, task);
+    ratchetQueue = next.catch(() => {});
+    return next;
+}
+
+function ratchetSlots(peerId) {
+    const value = olmSessions[peerId];
+    if (!value) return { inbound: null, outbound: null, current: null };
+    if (typeof value === 'string') return { inbound: null, outbound: null, current: value };
+    return {
+        inbound: typeof value.inbound === 'string' ? value.inbound : null,
+        outbound: typeof value.outbound === 'string' ? value.outbound : null,
+        current: typeof value.current === 'string' ? value.current : null
+    };
+}
+
+function saveRatchetSlots(peerId, slots) {
+    const next = {};
+    if (slots.inbound) next.inbound = slots.inbound;
+    if (slots.outbound) next.outbound = slots.outbound;
+    if (slots.current) next.current = slots.current;
+    if (Object.keys(next).length) olmSessions[peerId] = next;
+    else delete olmSessions[peerId];
+}
+
+async function saveRatchetState(updateServerBackup = false) {
+    if (!olmAccountPickle || !myId || !myPin) return;
+    const encrypted = await encryptPayload({
+        account_pickle: olmAccountPickle,
+        account_identity: olmIdentityB64,
+        sessions: olmSessions,
+        identity_pins: olmIdentityPins
+    }, myPin, getSalt(myId));
+    localStorage.setItem(`ratchet_${myId}`, encrypted);
+
+    if (updateServerBackup) {
+        const backup = await encryptPrivateKeyB64(olmAccountPickle, myPin);
+        const res = await fetch(`${serverUrl}/users/me/olm-backup`, {
+            method: 'PUT',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ encrypted_olm_account_b64: backup })
+        });
+        if (!res.ok) {
+            console.error('Ratchet account backup failed:', res.status);
+            return;
+        }
+        loginEncOlmAccountB64 = backup;
+    }
+}
+
+async function prepareRatchetState(password) {
+    const api = await loadRatchetApi();
+    let serverAccount = '';
+    if (loginEncOlmAccountB64) {
+        serverAccount = await decryptPrivateKeyB64(loginEncOlmAccountB64, password);
+    }
+
+    let localState = null;
+    const stored = localStorage.getItem(`ratchet_${myId}`);
+    if (stored) localState = await decryptPayload(stored, password, getSalt(myId));
+
+    let account = serverAccount || (localState && localState.account_pickle) || api.account_new();
+    let identity = api.account_identity(account);
+    if (localState && localState.account_pickle) {
+        try {
+            const localIdentity = api.account_identity(localState.account_pickle);
+            if (localIdentity === identity) account = localState.account_pickle;
+        } catch (_) {}
+    }
+
+    olmAccountPickle = account;
+    olmIdentityB64 = api.account_identity(account);
+    const sameAccount = localState && localState.account_identity === olmIdentityB64;
+    olmSessions = sameAccount && localState.sessions && typeof localState.sessions === 'object'
+        ? Object.assign(Object.create(null), localState.sessions) : Object.create(null);
+    olmIdentityPins = sameAccount && localState.identity_pins && typeof localState.identity_pins === 'object'
+        ? Object.assign(Object.create(null), localState.identity_pins) : Object.create(null);
+
+    await ensureRatchetKeys();
+}
+
+async function ensureRatchetKeys() {
+    const api = await loadRatchetApi();
+    const countRes = await fetch(`${serverUrl}/keys/count`, { headers: authHeaders() });
+    if (!countRes.ok) throw new Error('Не удалось проверить ключи аккаунта');
+    const countData = await countRes.json();
+    const serverIdentity = typeof countData.identity_key_b64 === 'string' ? countData.identity_key_b64 : '';
+    if (serverIdentity && serverIdentity !== olmIdentityB64) {
+        throw new Error('Аккаунт уже использует другой Olm-ключ. Для безопасного входа в веб пока нужен отдельный аккаунт.');
+    }
+    const serverCount = Number(countData.count) || 0;
+    let oneTimeKeys = {};
+    let accountChanged = false;
+    if (serverCount < 20) {
+        const publish = JSON.parse(api.account_generate_otks(olmAccountPickle, Math.max(50 - serverCount, 20)));
+        olmAccountPickle = publish.account_pickle;
+        olmIdentityB64 = publish.identity_key_b64;
+        oneTimeKeys = JSON.parse(publish.one_time_keys_json);
+        accountChanged = true;
+    }
+
+    const uploadRes = await fetch(`${serverUrl}/keys/upload`, {
+        method: 'PUT',
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ identity_key_b64: olmIdentityB64, one_time_keys: oneTimeKeys })
+    });
+    if (!uploadRes.ok) throw new Error('Не удалось опубликовать prekeys');
+    await saveRatchetState(accountChanged || !loginEncOlmAccountB64);
+}
+
+async function ratchetEnvelopeFor(peerId, plaintext) {
+    return runRatchetSerial(async () => {
+        const api = await loadRatchetApi();
+        const slots = ratchetSlots(peerId);
+        let slot = slots.inbound ? 'inbound' : slots.outbound ? 'outbound' : 'current';
+        let session = slots[slot];
+        if (!session) {
+            const claimRes = await fetch(`${serverUrl}/keys/claim/${pathSegment(peerId)}`, {
+                method: 'POST',
+                headers: authHeaders()
+            });
+            if (!claimRes.ok) {
+                const data = await claimRes.json().catch(() => ({}));
+                throw new Error(formatServerError(data, 'У получателя нет доступных prekeys'));
+            }
+            const bundle = await claimRes.json();
+            session = api.create_outbound(
+                olmAccountPickle,
+                bundle.identity_key_b64,
+                bundle.one_time_key.key_b64
+            );
+            const pinned = olmIdentityPins[peerId];
+            if (pinned && pinned !== bundle.identity_key_b64) {
+                throw new Error('Identity-ключ собеседника изменился');
+            }
+            olmIdentityPins[peerId] = bundle.identity_key_b64;
+            slot = 'outbound';
+        }
+
+        const encrypted = JSON.parse(api.encrypt(session, plaintext));
+        slots[slot] = encrypted.session_pickle;
+        saveRatchetSlots(peerId, slots);
+        await saveRatchetState();
+        return {
+            ratchet: '1',
+            olm_identity: olmIdentityB64,
+            type: encrypted.message_type,
+            body_b64: encrypted.body_b64
+        };
+    });
+}
+
+async function openRatchetEnvelope(peerId, envelope) {
+    return runRatchetSerial(async () => {
+        const api = await loadRatchetApi();
+        const identity = String(envelope.olm_identity || '');
+        const pinned = olmIdentityPins[peerId];
+        if (!identity || (pinned && pinned !== identity)) {
+            throw new Error('Identity-ключ собеседника изменился или отсутствует');
+        }
+        olmIdentityPins[peerId] = identity;
+
+        let plaintext;
+        const slots = ratchetSlots(peerId);
+        const candidates = [['inbound', slots.inbound], ['outbound', slots.outbound], ['current', slots.current]];
+        let lastError = null;
+        for (const [slot, session] of candidates) {
+            if (!session) continue;
+            try {
+                const result = JSON.parse(api.decrypt(session, Number(envelope.type), envelope.body_b64));
+                slots[slot] = result.session_pickle;
+                saveRatchetSlots(peerId, slots);
+                plaintext = result.plaintext;
+                break;
+            } catch (error) {
+                lastError = error;
+            }
+        }
+        if (plaintext == null) {
+            if (Number(envelope.type) !== 0) {
+                throw lastError || new Error('Нет сессии для normal Ratchet-сообщения');
+            }
+            const result = JSON.parse(api.create_inbound(
+                olmAccountPickle,
+                identity,
+                envelope.body_b64
+            ));
+            olmAccountPickle = result.account_pickle;
+            slots.inbound = result.session_pickle;
+            saveRatchetSlots(peerId, slots);
+            plaintext = result.plaintext;
+            await saveRatchetState(true);
+            try { await ensureRatchetKeys(); }
+            catch (refillError) { console.error('Prekey refill failed:', refillError); }
+            return plaintext;
+        }
+        await saveRatchetState();
+        return plaintext;
+    });
+}
 
 // Realtime (WebSocket) state — typing-индикатор, presence, мгновенная доставка
 let realtimeWs = null;
 let wsReconnectTimer = null;
 let wsPingTimer = null;
-let typingTimeouts = {}; // peerId -> timeout, очищающий статус "печатает..."
+let typingTimeouts = Object.create(null); // peerId -> timeout, очищающий статус "печатает..."
 let lastTypingSent = 0;
 
 // Self-destruct: TTL для следующих сообщений в активном чате (секунды, 0 = выкл)
@@ -421,11 +725,12 @@ let speakerphoneOn = false;
 
 function getCustomContactNames() {
     try {
-        if (!myId) return {};
+        if (!myId) return Object.create(null);
         const stored = localStorage.getItem(`contacts_custom_names_${myId}`);
-        return stored ? JSON.parse(stored) : {};
+        const parsed = stored ? JSON.parse(stored) : {};
+        return parsed && typeof parsed === 'object' ? Object.assign(Object.create(null), parsed) : Object.create(null);
     } catch (e) {
-        return {};
+        return Object.create(null);
     }
 }
 
@@ -478,13 +783,13 @@ function removeCustomContact(userId) {
 }
 
 function getContactDisplayName(userId) {
-    if (!userId) return '';
+    if (typeof userId !== 'string') return '';
     userId = userId.toLowerCase().trim();
     if (userId === myId) return 'Избранное';
     const names = getCustomContactNames();
-    if (names[userId]) return names[userId];
+    if (Object.prototype.hasOwnProperty.call(names, userId) && typeof names[userId] === 'string' && names[userId]) return names[userId];
     const prof = profileCache[userId];
-    if (prof && prof.display_name) return prof.display_name;
+    if (prof && typeof prof.display_name === 'string' && prof.display_name) return prof.display_name;
     return userId;
 }
 
@@ -496,6 +801,7 @@ const registerBtn = document.getElementById('register-btn');
 const logoutBtn = document.getElementById('logout-btn');
 const loginStatus = document.getElementById('login-status');
 const serverInput = document.getElementById('server-input');
+const changeServerBtn = document.getElementById('change-server-btn');
 const usernameInput = document.getElementById('username-input');
 const passwordInput = document.getElementById('password-input');
 
@@ -514,6 +820,17 @@ const peerStatusEl = document.getElementById('peer-status');
 const messagesContainer = document.getElementById('messages-container');
 const messageInput = document.getElementById('message-input');
 const sendBtn = document.getElementById('send-btn');
+
+// Message ids come from the server/peer. Never interpolate them into a CSS
+// selector: a malformed id can make querySelector throw or consume excessive
+// parser work. A tiny data-attribute scan is slower only for the already
+// rendered chat and keeps the lookup fail-closed.
+function findMessageElement(messageId) {
+    const wanted = String(messageId == null ? '' : messageId);
+    if (!wanted || !messagesContainer) return null;
+    return Array.from(messagesContainer.querySelectorAll('.tg-msg-wrapper'))
+        .find(element => element.dataset.id === wanted) || null;
+}
 
 // Новые UI элементы Telegram-like
 const burgerBtn = document.getElementById('burger-btn');
@@ -582,7 +899,7 @@ const attachContactBtn = document.getElementById('attach-contact-btn');
 const callSpeakerBtn = document.getElementById('call-speaker-btn');
 
 let myProfile = { username: '', display_name: '', avatar_data: '' };
-let profileCache = {}; // peerId -> profile data
+let profileCache = Object.create(null); // peerId -> profile data
 
 const tabLogin = document.getElementById('tab-login');
 const tabRegister = document.getElementById('tab-register');
@@ -664,6 +981,8 @@ if(messageInput) {
 
 // Обработчики нового UI
 if(burgerBtn) burgerBtn.addEventListener('click', () => {
+    sideDrawer.classList.remove('hidden');
+    drawerOverlay.classList.remove('hidden');
     sideDrawer.classList.add('open');
     drawerOverlay.classList.add('visible');
 });
@@ -779,7 +1098,7 @@ function loadProfileToSettings() {
     settingsUsernameInput.value = myProfile.username || '';
     if (myProfile.avatar_data) {
         settingsAvatarPreview.textContent = '';
-        settingsAvatarPreview.style.backgroundImage = `url(${myProfile.avatar_data})`;
+        setSafeBackgroundImage(settingsAvatarPreview, myProfile.avatar_data);
     } else {
         settingsAvatarPreview.textContent = myProfile.display_name ? myProfile.display_name.charAt(0).toUpperCase() : myId.charAt(0).toUpperCase();
         settingsAvatarPreview.style.backgroundImage = 'none';
@@ -792,7 +1111,7 @@ function handleAvatarSelect(e) {
     const reader = new FileReader();
     reader.onload = function(event) {
         settingsAvatarPreview.textContent = '';
-        settingsAvatarPreview.style.backgroundImage = `url(${event.target.result})`;
+        setSafeBackgroundImage(settingsAvatarPreview, event.target.result);
         myProfile.avatar_data = event.target.result;
     };
     reader.readAsDataURL(file);
@@ -823,7 +1142,7 @@ async function saveSettingsToServer() {
             renderContactsList();
         } else {
             const data = await res.json().catch(()=>({}));
-            settingsStatus.textContent = data.detail || 'Ошибка сохранения';
+            settingsStatus.textContent = formatServerError(data, 'Ошибка сохранения');
             settingsStatus.classList.add('error');
         }
     } catch (e) {
@@ -899,7 +1218,7 @@ function updateActiveChatHeader(peerId) {
     } else {
         if (prof.avatar_data) {
             peerAvatar.innerHTML = '';
-            peerAvatar.style.backgroundImage = `url(${prof.avatar_data})`;
+            setSafeBackgroundImage(peerAvatar, prof.avatar_data);
         } else {
             peerAvatar.innerHTML = dName.charAt(0).toUpperCase();
             peerAvatar.style.backgroundImage = 'none';
@@ -920,7 +1239,7 @@ function updateActiveChatHeader(peerId) {
         if (myGroupsCache[peerId]) {
             groupManageBtn.classList.remove('hidden');
             // Fetch member count
-            fetch(`${serverUrl}/groups/${peerId}/members`, {
+            fetch(`${serverUrl}/groups/${pathSegment(peerId)}/members`, {
                 headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
             }).then(r => r.json()).then(data => {
                 if (data.count && peerStatusEl) {
@@ -981,7 +1300,7 @@ function updateMyDrawerProfile() {
     myUsernameDisplay.textContent = myProfile.username ? '@' + myProfile.username : '@secure';
     if (myProfile.avatar_data) {
         myAvatar.textContent = '';
-        myAvatar.style.backgroundImage = `url(${myProfile.avatar_data})`;
+        setSafeBackgroundImage(myAvatar, myProfile.avatar_data);
     } else {
         myAvatar.textContent = (myProfile.display_name || myId).charAt(0).toUpperCase();
         myAvatar.style.backgroundImage = 'none';
@@ -990,9 +1309,7 @@ function updateMyDrawerProfile() {
 
 async function fetchMyProfile() {
     try {
-        const res = await fetch(`${serverUrl}/users/${myId}/profile`, {
-            headers: { 'Bypass-Tunnel-Reminder': 'true' }
-        });
+        const res = await fetch(`${serverUrl}/users/${pathSegment(myId)}/profile`, { headers: authHeaders() });
         if (res.ok) {
             const data = await res.json();
             myProfile.username = data.username || '';
@@ -1012,6 +1329,12 @@ if(tabLogin) tabLogin.addEventListener('click', () => {
     tabRegister.classList.remove('active');
     loginBtn.classList.remove('hidden');
     registerBtn.classList.add('hidden');
+});
+
+if (changeServerBtn) changeServerBtn.addEventListener('click', event => {
+    event.preventDefault();
+    if (serverInputGroup) serverInputGroup.style.display = 'block';
+    changeServerBtn.style.display = 'none';
 });
 
 if(tabRegister) tabRegister.addEventListener('click', () => {
@@ -1047,6 +1370,11 @@ async function prepareLoginState(password) {
     }
     const secretKeyB64 = await decryptPrivateKeyB64(loginEncPrivKeyB64, password);
     myKeys = keysFromSecretKeyB64(secretKeyB64);
+    if (serverPublicKeyB64 && myKeys.publicB64 !== serverPublicKeyB64) {
+        myKeys = null;
+        throw new Error('Резервная копия ключа не совпадает с ключом аккаунта');
+    }
+    await prepareRatchetState(password);
 
     // Загружаем только историю сообщений
     const storedMsgsEnc = localStorage.getItem(`messages_${myId}`);
@@ -1056,6 +1384,8 @@ async function prepareLoginState(password) {
         if (messages) {
             messages.forEach(m => {
                 if (m.peer) m.peer = m.peer.toLowerCase();
+                if (m.reactions) m.reactions = nullMap(m.reactions);
+                if (m.poll_votes) m.poll_votes = nullMap(m.poll_votes);
             });
         }
     } else {
@@ -1099,18 +1429,32 @@ async function prepareLoginState(password) {
     connectRealtime();
 }
 
-function getAuthInputs() {
+function getAuthInputs(forRegistration = false) {
     myId = usernameInput.value.trim().toLowerCase();
     const password = passwordInput.value;
     serverUrl = serverInput.value.trim();
-    if (myId.length < 2) { showStatus('Имя пользователя должно быть не менее 2 символов', 'error'); return null; }
-    if (password.length < 4) { showStatus('Пароль должен быть не менее 4 символов', 'error'); return null; }
+    if (myId.length < 2 || myId.length > 64) { showStatus('Имя пользователя: от 2 до 64 символов', 'error'); return null; }
+    if (forRegistration && !/^[a-z0-9_]+$/i.test(myId)) { showStatus('Имя пользователя: только латиница, цифры и _', 'error'); return null; }
+    if (!password) { showStatus('Введите пароль', 'error'); return null; }
+    if (forRegistration && password.length < 8) { showStatus('Пароль должен быть не менее 8 символов', 'error'); return null; }
     if (!serverUrl) { showStatus('Введите URL-адрес сервера', 'error'); return null; }
+    try {
+        const url = new URL(serverUrl);
+        const local = ['localhost', '127.0.0.1', '::1'].includes(url.hostname);
+        if (!['https:', 'http:'].includes(url.protocol) || (url.protocol === 'http:' && !local)) {
+            showStatus('Используйте HTTPS (HTTP разрешён только для локальной разработки)', 'error');
+            return null;
+        }
+        serverUrl = url.origin;
+    } catch (_) {
+        showStatus('Некорректный URL сервера', 'error');
+        return null;
+    }
     return password;
 }
 
 async function performLogin() {
-    const password = getAuthInputs();
+    const password = getAuthInputs(false);
     if (!password) return;
 
     loginBtn.disabled = true;
@@ -1125,32 +1469,34 @@ async function performLogin() {
         if (rememberMeCheckbox && rememberMeCheckbox.checked) {
             localStorage.setItem('remember_me', 'true');
             localStorage.setItem('remember_username', myId);
-            encryptForStorage(password).then(enc => localStorage.setItem('remember_password_enc', enc));
         } else {
             localStorage.removeItem('remember_me');
             localStorage.removeItem('remember_username');
-            localStorage.removeItem('remember_password_enc');
-            localStorage.removeItem('remember_password');
         }
-        await prepareLoginState(password);
+        try {
+            await prepareLoginState(password);
+        } catch (error) {
+            showStatus(`Вход: ${error.message}`, 'error');
+        }
     }
 }
 
 async function performRegister() {
-    const password = getAuthInputs();
+    const password = getAuthInputs(true);
     if (!password) return;
 
     registerBtn.disabled = true;
     showStatus('Регистрация аккаунта...', 'success');
 
-    // Постоянная случайная пара ключей; приватный шифруется паролем и кладётся
-    // на сервер как резервная копия (модель Android — один аккаунт на всех устройствах).
-    const kp = nacl.box.keyPair();
-    const publicB64 = base64UrlEncode(kp.publicKey);
-    const privateB64 = base64UrlEncode(kp.secretKey);
-    const encryptedPrivateKeyB64 = await encryptPrivateKeyB64(privateB64, password);
-
     try {
+        // crypto_box остаётся для групп; личные чаты используют общий Olm/Double Ratchet.
+        const kp = nacl.box.keyPair();
+        const publicB64 = base64UrlEncode(kp.publicKey);
+        const privateB64 = base64UrlEncode(kp.secretKey);
+        const encryptedPrivateKeyB64 = await encryptPrivateKeyB64(privateB64, password);
+        const ratchet = await loadRatchetApi();
+        const encryptedOlmAccountB64 = await encryptPrivateKeyB64(ratchet.account_new(), password);
+
         const res = await fetch(`${serverUrl}/users/register`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
@@ -1158,6 +1504,7 @@ async function performRegister() {
                 user_id: myId,
                 public_key_b64: publicB64,
                 encrypted_private_key_b64: encryptedPrivateKeyB64,
+                encrypted_olm_account_b64: encryptedOlmAccountB64,
                 password: password
             })
         });
@@ -1165,9 +1512,9 @@ async function performRegister() {
             const data = await res.json().catch(() => ({}));
             if (res.status === 429) {
                 const wait = res.headers.get('Retry-After') || '60';
-                throw new Error(data.detail || `Слишком много попыток. Подождите ${wait} сек. и попробуйте снова.`);
+                throw new Error(formatServerError(data, `Слишком много попыток. Подождите ${wait} сек. и попробуйте снова.`));
             }
-            throw new Error(data.detail || 'Ошибка регистрации');
+            throw new Error(formatServerError(data, 'Ошибка регистрации'));
         }
         
         // Сразу логинимся
@@ -1177,7 +1524,6 @@ async function performRegister() {
             if (rememberMeCheckbox && rememberMeCheckbox.checked) {
                 localStorage.setItem('remember_me', 'true');
                 localStorage.setItem('remember_username', myId);
-                encryptForStorage(password).then(enc => localStorage.setItem('remember_password_enc', enc));
             }
             await prepareLoginState(password);
         }
@@ -1187,13 +1533,37 @@ async function performRegister() {
     registerBtn.disabled = false;
 }
 
-function logout() {
-    // Clear remember me settings to prevent auto-login
+async function logout() {
+    const token = sessionToken;
+    try { if (realtimeWs) { realtimeWs.onclose = null; realtimeWs.close(); } } catch (_) {}
+    if (pollInterval) clearInterval(pollInterval);
+    pollInterval = null;
+    stopWsPing();
+    if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
+    wsReconnectTimer = null;
+
+    if (token && serverUrl) {
+        try {
+            await fetch(`${serverUrl}/logout`, {
+                method: 'POST',
+                headers: authHeaders(),
+                keepalive: true
+            });
+        } catch (_) {}
+    }
+
+    // Clear remember-me settings to prevent auto-login
     localStorage.removeItem('remember_me');
     localStorage.removeItem('remember_username');
-    localStorage.removeItem('remember_password_enc');
-    localStorage.removeItem('remember_password');
     
+    sessionToken = '';
+    myKeys = null;
+    serverPublicKeyB64 = '';
+    loginEncOlmAccountB64 = '';
+    olmAccountPickle = '';
+    olmIdentityB64 = '';
+    olmSessions = Object.create(null);
+    olmIdentityPins = Object.create(null);
     // Reload the page to cleanly wipe all JS state, caches, and UI variables
     window.location.reload();
 }
@@ -1214,15 +1584,17 @@ async function loginOnServer(password) {
             const data = await res.json().catch(() => ({}));
             if (res.status === 429) {
                 const wait = res.headers.get('Retry-After') || '60';
-                throw new Error(data.detail || `Слишком много попыток входа. Подождите ${wait} сек.`);
+                throw new Error(formatServerError(data, `Слишком много попыток входа. Подождите ${wait} сек.`));
             }
-            throw new Error(data.detail || 'Неверный пароль');
+            throw new Error(formatServerError(data, 'Неверный пароль'));
         }
         const data = await res.json();
         if (data.ok && data.token) {
             sessionToken = data.token;
+            serverPublicKeyB64 = data.public_key_b64 || '';
             // Бэкап приватного ключа расшифруем в prepareLoginState (нужен пароль)
             loginEncPrivKeyB64 = data.encrypted_private_key_b64 || '';
+            loginEncOlmAccountB64 = data.encrypted_olm_account_b64 || '';
             return true;
         }
         return false;
@@ -1230,22 +1602,6 @@ async function loginOnServer(password) {
         console.error("Server login error:", e);
         showStatus(`Вход: ${e.message}`, 'error');
         return false;
-    }
-}
-
-async function getPeerPublicKey(peerId) {
-    if (!peerId) return null;
-    peerId = peerId.toLowerCase().trim();
-    if (peerKeysCache[peerId]) return peerKeysCache[peerId];
-    try {
-        const res = await fetch(`${serverUrl}/users/${peerId}/profile`, { headers: { 'Bypass-Tunnel-Reminder': 'true' } });
-        if (!res.ok) return null;
-        const data = await res.json();
-        peerKeysCache[peerId] = data.public_key_b64;
-        profileCache[peerId] = data; // Кэшируем и профиль заодно!
-        return data.public_key_b64;
-    } catch (e) {
-        return null;
     }
 }
 
@@ -1367,6 +1723,8 @@ async function sendMessage() {
 
 async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
     if (!targetPeer) return false;
+    targetPeer = targetPeer.toLowerCase();
+    const clientId = window.crypto.randomUUID();
     
     const isStoreType = ['text', 'image', 'voice', 'video_msg', 'file', 'poll'].includes(payloadObj.type);
 
@@ -1377,7 +1735,7 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
 
     let tempId = null;
     if (isStoreType) {
-        tempId = 'temp_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+        tempId = `temp_${clientId}`;
         const tempMsg = {
             direction: 'out',
             peer: targetPeer,
@@ -1395,12 +1753,26 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
             renderContactsList();
         }
     }
+
+    // ponytail: saved messages stay local until the server has per-device ratchet fan-out.
+    if (targetPeer === myId && isStoreType && tempId) {
+        const tempMsg = messages.find(message => message.message_id === tempId);
+        if (tempMsg) {
+            tempMsg.message_id = clientId;
+            tempMsg.status = 'sent';
+        }
+        await saveMessagesLocally();
+        renderContactsList();
+        if (selectedPeer === myId) selectContact(myId);
+        return true;
+    }
     
     const runSend = async () => {
         try {
             let envelope;
             // Канонизация: на провод уходит wire-формат Android, не внутренний веб-payload.
-            const textBytes = new TextEncoder().encode(JSON.stringify(toWire(payloadObj)));
+            const wireJson = JSON.stringify(toWire(payloadObj));
+            const textBytes = new TextEncoder().encode(wireJson);
             
             if (myGroupsCache[targetPeer.toLowerCase()]) {
                 // Group message (Symmetric)
@@ -1416,32 +1788,18 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                     ciphertext_b64: enc.ciphertext_b64
                 };
             } else {
-                // Direct message (Asymmetric)
-                const peerPubB64 = await getPeerPublicKey(targetPeer);
-                if (!peerPubB64) throw new Error('Не удалось получить публичный ключ');
-
-                const peerPubBytes = base64UrlDecode(peerPubB64);
-                const nonce = nacl.randomBytes(nacl.box.nonceLength);
-                const ciphertext = nacl.box(textBytes, nonce, peerPubBytes, myKeys.secretKey);
-
-                envelope = {
-                    sender_pubkey_b64: myKeys.publicB64,
-                    nonce_b64: base64UrlEncode(nonce),
-                    ciphertext_b64: base64UrlEncode(ciphertext)
-                };
+                // Direct message: canonical Olm/X3DH + Double Ratchet. No box downgrade.
+                envelope = await ratchetEnvelopeFor(targetPeer, wireJson);
             }
 
             const res = await fetch(`${serverUrl}/messages`, {
                 method: 'POST',
-                headers: { 
-                    'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${sessionToken}`,
-                    'Bypass-Tunnel-Reminder': 'true'
-                },
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
                 body: JSON.stringify({
                     sender_id: myId,
                     recipient_id: targetPeer,
-                    envelope: envelope
+                    envelope: envelope,
+                    client_id: clientId
                 })
             });
 
@@ -1458,7 +1816,7 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                     
                     // Обновляем элемент DOM на экране
                     if (selectedPeer && selectedPeer.toLowerCase() === targetPeer.toLowerCase()) {
-                        const el = messagesContainer.querySelector(`[data-id="${tempId}"]`);
+                        const el = findMessageElement(tempId);
                         if (el) {
                             el.dataset.id = data.message_id;
                             const iconEl = el.querySelector('.msg-status-icon');
@@ -1475,42 +1833,6 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                 }
             }
 
-            // Отправляем синхронизационную копию себе
-            const isControlType = ['edit', 'delete', 'reaction'].includes(payloadObj.type);
-            if (targetPeer !== myId && (isStoreType || isControlType)) {
-                try {
-                    const myPubBytes = base64UrlDecode(myKeys.publicB64);
-                    const syncNonce = nacl.randomBytes(nacl.box.nonceLength);
-                    const syncPayload = {
-                        type: 'sync_sent',
-                        peer: targetPeer,
-                        original_msg_id: data.message_id,
-                        original_payload: payloadObj
-                    };
-                    const syncTextBytes = new TextEncoder().encode(JSON.stringify(syncPayload));
-                    const syncCiphertext = nacl.box(syncTextBytes, syncNonce, myPubBytes, myKeys.secretKey);
-                    const syncEnvelope = {
-                        sender_pubkey_b64: myKeys.publicB64,
-                        nonce_b64: base64UrlEncode(syncNonce),
-                        ciphertext_b64: base64UrlEncode(syncCiphertext)
-                    };
-                    await fetch(`${serverUrl}/messages`, {
-                        method: 'POST',
-                        headers: { 
-                            'Content-Type': 'application/json',
-                            'Authorization': `Bearer ${sessionToken}`,
-                            'Bypass-Tunnel-Reminder': 'true'
-                        },
-                        body: JSON.stringify({
-                            sender_id: myId,
-                            recipient_id: myId,
-                            envelope: syncEnvelope
-                        })
-                    });
-                } catch (syncErr) {
-                    console.error("Sync self-send failed:", syncErr);
-                }
-            }
             return true;
         } catch (e) {
             console.error("Send message error:", e);
@@ -1519,7 +1841,7 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                 if (tempMsg) {
                     tempMsg.status = 'failed';
                     if (selectedPeer && selectedPeer.toLowerCase() === targetPeer.toLowerCase()) {
-                        const el = messagesContainer.querySelector(`[data-id="${tempId}"]`);
+                        const el = findMessageElement(tempId);
                         if (el) {
                             const iconEl = el.querySelector('.msg-status-icon');
                             if (iconEl) {
@@ -1566,16 +1888,14 @@ async function pollInbox() {
     try {
         fetch(`${serverUrl}/users/me/heartbeat`, {
             method: 'POST',
-            headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
+            headers: authHeaders()
         });
     } catch (e) {}
 
     // Refresh active peer online status
     if (selectedPeer && selectedPeer !== myId) {
         try {
-            const profRes = await fetch(`${serverUrl}/users/${selectedPeer}/profile`, {
-                headers: { 'Bypass-Tunnel-Reminder': 'true' }
-            });
+            const profRes = await fetch(`${serverUrl}/users/${pathSegment(selectedPeer)}/profile`, { headers: authHeaders() });
             if (profRes.ok) {
                 const profData = await profRes.json();
                 if (profileCache[selectedPeer] && typeof profileCache[selectedPeer] === 'object') {
@@ -1589,9 +1909,10 @@ async function pollInbox() {
     }
 
     try {
-        let lastSyncTimestamp = localStorage.getItem('last_sync_timestamp_' + myId) || '1970-01-01T00:00:00.000000+00:00';
-        const res = await fetch(`${serverUrl}/messages/inbox/${myId}?since=${encodeURIComponent(lastSyncTimestamp)}`, {
-            headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
+        // The server keeps messages until an explicit ACK. Do not use a local
+        // timestamp cursor: a failed decrypt must remain retryable.
+        const res = await fetch(`${serverUrl}/messages/inbox/${pathSegment(myId)}`, {
+            headers: authHeaders()
         });
         if (!res.ok) return;
         
@@ -1599,23 +1920,24 @@ async function pollInbox() {
         let newAdded = false;
         let playSound = false;
         let lastNotificationMsg = null;
-        let maxTimestamp = lastSyncTimestamp;
+        const ackIds = [];
 
         for (const item of data.messages) {
-            if (item.created_at > maxTimestamp) {
-                maxTimestamp = item.created_at;
-            }
+            let ackThis = false;
+            let decrypted = false;
             try {
                 const env = item.envelope;
-                const nonceBytes = base64UrlDecode(env.nonce_b64);
-                const cipherBytes = base64UrlDecode(env.ciphertext_b64);
-                
-                let decryptedBytes;
                 // Android шлёт is_group="1" (строка); старый веб слал boolean true.
                 const isGroupMsg = env.is_group === "1" || env.is_group === true;
+                let plaintext;
 
-                if (isGroupMsg) {
+                if (env.ratchet === '1' || env.ratchet === 1) {
+                    if (isGroupMsg) throw new Error('Ratchet-конверт не может быть групповым');
+                    plaintext = await openRatchetEnvelope(item.sender_id.toLowerCase(), env);
+                } else if (isGroupMsg) {
                     // Group message — AES-GCM общим ключом группы
+                    const nonceBytes = base64UrlDecode(env.nonce_b64);
+                    const cipherBytes = base64UrlDecode(env.ciphertext_b64);
                     const groupId = item.recipient_id.toLowerCase();
                     const gKey = groupKeys[groupId];
                     if (!gKey) {
@@ -1624,19 +1946,23 @@ async function pollInbox() {
                     }
                     if (item.sender_id.toLowerCase() === myId) continue;
                     try {
-                        decryptedBytes = await aesGcmDecrypt(gKey, nonceBytes, cipherBytes);
+                        const decryptedBytes = await aesGcmDecrypt(gKey, nonceBytes, cipherBytes);
+                        plaintext = new TextDecoder().decode(decryptedBytes);
                     } catch (e) {
                         console.error('Group AES-GCM decrypt failed for', groupId, e);
                         continue;
                     }
                 } else {
-                    // Direct message — asymmetric decryption
-                    const senderPubBytes = base64UrlDecode(env.sender_pubkey_b64);
-                    decryptedBytes = nacl.box.open(cipherBytes, nonceBytes, senderPubBytes, myKeys.secretKey);
+                    // Direct messages are Ratchet-only. Discard an old/static
+                    // box envelope instead of silently accepting a downgrade.
+                    console.warn('Ignoring non-Ratchet direct message:', item.id);
+                    ackThis = true;
+                    continue;
                 }
-                if (!decryptedBytes) continue;
+                if (plaintext == null) continue;
+                decrypted = true;
+                ackThis = true;
 
-                const plaintext = new TextDecoder().decode(decryptedBytes);
                 let payloadObj;
                 try {
                     // fromWire приводит канонический формат Android к внутреннему веб-формату.
@@ -1661,7 +1987,7 @@ async function pollInbox() {
                             
                             // Обновляем элемент DOM на экране
                             if (selectedPeer && selectedPeer.toLowerCase() === peerId.toLowerCase()) {
-                                const el = messagesContainer.querySelector(`[data-id="${oldId}"]`);
+                                const el = findMessageElement(oldId);
                                 if (el) {
                                     el.dataset.id = tempMsg.message_id;
                                     const iconEl = el.querySelector('.msg-status-icon');
@@ -1700,7 +2026,7 @@ async function pollInbox() {
                     if (orig && orig.type === 'reaction') {
                         const target = messages.find(m => m.message_id === orig.target_id);
                         if (target) {
-                            if (!target.reactions) target.reactions = {};
+                            if (!target.reactions) target.reactions = Object.create(null);
                             const emoji = orig.emoji;
                             if (emoji) {
                                 target.reactions[myId] = emoji;
@@ -1740,7 +2066,7 @@ async function pollInbox() {
                     if (target) {
                         target.status = 'read';
                         newAdded = true;
-                        const msgEl = messagesContainer.querySelector(`.tg-msg-wrapper[data-id="${targetId}"]`);
+                        const msgEl = findMessageElement(targetId);
                         if (msgEl) {
                             const statusIcon = msgEl.querySelector('.msg-status-icon');
                             if (statusIcon) {
@@ -1762,7 +2088,7 @@ async function pollInbox() {
                         if (m.direction === 'out' && m.peer === readerId && m.status !== 'read') {
                             m.status = 'read';
                             changed = true;
-                            const msgEl = messagesContainer.querySelector(`.tg-msg-wrapper[data-id="${m.message_id}"]`);
+                            const msgEl = findMessageElement(m.message_id);
                             if (msgEl) {
                                 const statusIcon = msgEl.querySelector('.msg-status-icon');
                                 if (statusIcon) {
@@ -1786,7 +2112,7 @@ async function pollInbox() {
                         if (m.direction === 'out' && m.peer === peerD && m.status !== 'read' && m.status !== 'delivered') {
                             m.status = 'delivered';
                             changed = true;
-                            const msgEl = messagesContainer.querySelector(`.tg-msg-wrapper[data-id="${m.message_id}"]`);
+                            const msgEl = findMessageElement(m.message_id);
                             if (msgEl) {
                                 const statusIcon = msgEl.querySelector('.msg-status-icon');
                                 if (statusIcon) {
@@ -1826,7 +2152,7 @@ async function pollInbox() {
                     const targetId = payloadObj.target_id;
                     const target = messages.find(m => m.message_id === targetId);
                     if (target) {
-                        if (!target.reactions) target.reactions = {};
+                        if (!target.reactions) target.reactions = Object.create(null);
                         const emoji = payloadObj.emoji;
                         const sender = item.sender_id.toLowerCase();
                         if (emoji) {
@@ -1854,7 +2180,7 @@ async function pollInbox() {
                 if (payloadObj.type === 'poll_vote') {
                     const target = messages.find(m => m.message_id === payloadObj.target_id);
                     if (target && target.payload && target.payload.type === 'poll') {
-                        if (!target.poll_votes) target.poll_votes = {};
+                        if (!target.poll_votes) target.poll_votes = Object.create(null);
                         target.poll_votes[item.sender_id.toLowerCase()] = payloadObj.options || (payloadObj.option != null ? [payloadObj.option] : []);
                         newAdded = true;
                         if (selectedPeer === target.peer) {
@@ -1894,7 +2220,7 @@ async function pollInbox() {
                             mine.message_id = item.id;
                             mine.status = 'sent';
                             if (selectedPeer === msgPeer) {
-                                const el = messagesContainer.querySelector(`[data-id="${oldId}"]`);
+                                const el = findMessageElement(oldId);
                                 if (el) el.dataset.id = item.id;
                             }
                         }
@@ -1932,16 +2258,33 @@ async function pollInbox() {
                     playSound = true;
                     lastNotificationMsg = newMsg;
                 }
-            } catch (e) { console.error("Poll parse error:", e); }
-        }
-
-        if (maxTimestamp !== lastSyncTimestamp) {
-            localStorage.setItem('last_sync_timestamp_' + myId, maxTimestamp);
+            } catch (e) {
+                // Once authenticated decryption succeeded, a malformed
+                // payload is a peer/application error, not a retryable crypto
+                // failure. ACK it so one poison message cannot block inbox
+                // polling forever. Failed decrypts remain pending.
+                ackThis = decrypted;
+                console.error("Poll parse error:", e);
+            } finally {
+                if (ackThis && item.id) ackIds.push(item.id);
+            }
         }
 
         if (newAdded) {
             await saveMessagesLocally();
             renderContactsList();
+        }
+
+        // Persist first, then acknowledge. A failed write leaves the server
+        // copy intact and the next poll can retry it.
+        for (let i = 0; i < ackIds.length; i += 500) {
+            const batch = ackIds.slice(i, i + 500);
+            const ackRes = await fetch(`${serverUrl}/messages/ack`, {
+                method: 'POST',
+                headers: authHeaders({ 'Content-Type': 'application/json' }),
+                body: JSON.stringify({ message_ids: batch })
+            });
+            if (!ackRes.ok) console.error('Message ACK failed:', ackRes.status);
         }
 
         if (playSound) {
@@ -1983,22 +2326,23 @@ function renderSearchResults(users, groups = []) {
     users.filter(u => u.user_id !== myId).forEach(u => {
         profileCache[u.user_id] = u;
         
-        const dName = u.display_name || u.user_id;
+        const dName = String(u.display_name || u.user_id);
         const item = document.createElement('div');
         item.className = 'tg-contact-item';
         
-        let avatarHtml = `<div class="tg-contact-avatar">${dName.charAt(0).toUpperCase()}</div>`;
+        let avatarHtml = `<div class="tg-contact-avatar">${escapeHtmlSafe(dName.charAt(0).toUpperCase())}</div>`;
         if (u.avatar_data) {
-            avatarHtml = `<div class="tg-contact-avatar" style="background-image: url(${u.avatar_data})"></div>`;
+            avatarHtml = '<div class="tg-contact-avatar" data-avatar-url></div>';
         }
         
         item.innerHTML = `
             ${avatarHtml}
             <div class="tg-contact-info">
-                <div class="tg-contact-name">${dName}</div>
-                <div style="font-size: 13px; color: var(--text-secondary);">@${u.username || '...'}</div>
+                <div class="tg-contact-name">${escapeHtmlSafe(dName)}</div>
+                <div style="font-size: 13px; color: var(--text-secondary);">@${escapeHtmlSafe(u.username || '...')}</div>
             </div>
         `;
+        if (u.avatar_data) setSafeBackgroundImage(item.querySelector('[data-avatar-url]'), u.avatar_data);
         item.addEventListener('click', () => {
             peerInput.value = '';
             searchBarContainer.classList.add('hidden');
@@ -2015,8 +2359,8 @@ function renderSearchResults(users, groups = []) {
                 ${g.is_channel ? '<i class="fas fa-bullhorn"></i>' : '<i class="fas fa-users"></i>'}
             </div>
             <div class="tg-contact-info">
-                <div class="tg-contact-name">${g.name}</div>
-                <div class="tg-contact-preview">${g.is_channel ? 'Канал' : 'Группа'} • ${g.id}</div>
+                <div class="tg-contact-name">${escapeHtmlSafe(g.name)}</div>
+                <div class="tg-contact-preview">${g.is_channel ? 'Канал' : 'Группа'} • ${escapeHtmlSafe(g.id)}</div>
             </div>
         `;
         item.addEventListener('click', () => {
@@ -2027,7 +2371,7 @@ function renderSearchResults(users, groups = []) {
     });
 }
 
-let profileFetchPromises = {};
+let profileFetchPromises = Object.create(null);
 
 async function fetchPeerProfile(peerId) {
     if (!peerId) return null;
@@ -2047,7 +2391,7 @@ async function fetchPeerProfile(peerId) {
     
     profileFetchPromises[peerId] = new Promise(async (resolve) => {
         try {
-            const res = await fetch(`${serverUrl}/users/${peerId}/profile`, { headers: { 'Bypass-Tunnel-Reminder': 'true' } });
+            const res = await fetch(`${serverUrl}/users/${pathSegment(peerId)}/profile`, { headers: authHeaders() });
             if (res.ok) {
                 const data = await res.json();
                 profileCache[peerId] = data;
@@ -2125,14 +2469,13 @@ function appendMessage(msg, animate = false) {
     let contentHtml = '';
     const type = msg.payload ? msg.payload.type : 'text';
     // Для медиа (.media) контент резолвится лениво ниже; content тут пустой плейсхолдер.
-    let content = msg.payload ? (msg.payload.content || '') : msg.plaintext;
+    let content = String(msg.payload ? (msg.payload.content || '') : (msg.plaintext || ''));
     
     // Эскейпим текст для безопасности (очень простая защита)
     if (type === 'text') {
-        content = content.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        contentHtml = content;
+        contentHtml = escapeHtmlSafe(content);
     } else if (type === 'image') {
-        contentHtml = `<img src="${content}" class="tg-msg-image">`;
+        contentHtml = '<img class="tg-msg-image" alt="Изображение сообщения">';
     } else if (type === 'voice') {
         contentHtml = `
             <div class="tg-voice-player">
@@ -2141,17 +2484,17 @@ function appendMessage(msg, animate = false) {
                     <input type="range" class="voice-slider" min="0" max="100" value="0">
                     <span class="voice-duration">0:00</span>
                 </div>
-                <audio src="${content}" preload="metadata" style="display:none;"></audio>
+                <audio preload="metadata" style="display:none;"></audio>
             </div>
         `;
     } else if (type === 'video_msg') {
         contentHtml = `
             <div class="tg-msg-video-msg">
-                <video src="${content}" loop playsinline autoplay muted></video>
+                <video loop playsinline autoplay muted></video>
             </div>
         `;
     } else if (type === 'file') {
-        const filename = msg.payload.filename || 'Файл';
+        const filename = escapeHtmlSafe(msg.payload.filename || 'Файл');
         const sizeStr = msg.payload.size ? formatBytes(msg.payload.size) : '';
         contentHtml = `
             <div class="tg-file-message" style="display: flex; align-items: center; gap: 12px; padding: 6px 4px; cursor: pointer;">
@@ -2192,16 +2535,16 @@ function appendMessage(msg, animate = false) {
     if (msg.payload && msg.payload.reply_to) {
         const replyInfo = msg.payload.reply_to;
         replyQuoteHtml = `
-            <div class="reply-quote-bubble" data-reply-id="${replyInfo.msg_id}">
-                <div class="reply-quote-author">${replyInfo.author}</div>
-                <div class="reply-quote-text">${replyInfo.text}</div>
+            <div class="reply-quote-bubble" data-reply-id="${escapeHtmlSafe(replyInfo.msg_id)}">
+                <div class="reply-quote-author">${escapeHtmlSafe(replyInfo.author)}</div>
+                <div class="reply-quote-text">${escapeHtmlSafe(replyInfo.text)}</div>
             </div>
         `;
     }
     
     let forwardHtml = '';
     if (msg.payload && msg.payload.forwarded_from) {
-        forwardHtml = `<div class="tg-forward-header" style="font-size: 11px; color: var(--accent-color); font-weight: 500; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;"><i class="fas fa-share" style="font-size: 10px;"></i> Переслано от: ${getContactDisplayName(msg.payload.forwarded_from)}</div>`;
+        forwardHtml = `<div class="tg-forward-header" style="font-size: 11px; color: var(--accent-color); font-weight: 500; margin-bottom: 4px; display: flex; align-items: center; gap: 4px;"><i class="fas fa-share" style="font-size: 10px;"></i> Переслано от: ${escapeHtmlSafe(getContactDisplayName(msg.payload.forwarded_from))}</div>`;
     }
 
     const bubbleExtra = (type === 'text' && isEmojiOnlyText(msg.payload ? msg.payload.content : msg.plaintext)) ? ' emoji-only' : '';
@@ -2213,6 +2556,14 @@ function appendMessage(msg, animate = false) {
             <div class="tg-msg-time">${editedHtml} ${timeStr} ${statusIconHtml}</div>
         </div>
     `;
+
+    // Never put an untrusted media URL in an HTML attribute. Assign it through
+    // the DOM only after the element exists and only for an allow-listed scheme.
+    if (type === 'image' || type === 'voice' || type === 'video_msg') {
+        const mediaEl = wrapper.querySelector(type === 'image' ? 'img.tg-msg-image' : type === 'voice' ? 'audio' : 'video');
+        const mediaUrl = safeMediaUrl(content, type === 'voice' ? 'audio' : type === 'video_msg' ? 'video' : 'image');
+        if (mediaEl && mediaUrl) mediaEl.src = mediaUrl;
+    }
     
     // Ленивая загрузка медиа (единый транспорт с Android): качаем+расшифровываем
     // и подставляем blob URL в <img>/<audio>/<video>. Файлы качаются по клику.
@@ -2330,10 +2681,11 @@ function appendMessage(msg, animate = false) {
                     try { href = await getMediaBlobUrl(msg.payload.media); }
                     catch (e) { showStatus('Не удалось скачать файл', 'error'); return; }
                 }
-                if (!href) return;
+                href = safeDownloadUrl(href);
+                if (!href) { showStatus('Небезопасный адрес файла', 'error'); return; }
                 const link = document.createElement('a');
                 link.href = href;
-                link.download = filename;
+                link.download = String(filename).replace(/[\\/\0]/g, '_').slice(0, 200) || 'download';
                 document.body.appendChild(link);
                 link.click();
                 document.body.removeChild(link);
@@ -2457,7 +2809,7 @@ function appendMessage(msg, animate = false) {
         quoteBubble.addEventListener('click', (e) => {
             e.stopPropagation();
             const replyId = quoteBubble.dataset.replyId;
-            const targetMsgEl = messagesContainer.querySelector(`[data-id="${replyId}"]`);
+            const targetMsgEl = findMessageElement(replyId);
             if (targetMsgEl) {
                 targetMsgEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 const targetBubble = targetMsgEl.querySelector('.tg-msg-bubble');
@@ -2508,14 +2860,14 @@ function appendMessage(msg, animate = false) {
         commentBtn.className = 'tg-channel-comment-btn';
         commentBtn.innerHTML = '<i class="fas fa-comment"></i> Комментарии';
         commentBtn.style.cssText = 'background: rgba(0,0,0,0.1); padding: 4px 8px; border-radius: 12px; font-size: 11px; margin-top: 6px; cursor: pointer; text-align: center; color: var(--accent-color); font-weight: bold; width: fit-content; align-self: flex-end;';
-        commentBtn.onclick = (e) => {
+        commentBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             const linkedId = myGroupsCache[msg.peer].linked_group_id;
             selectContact(linkedId);
             // Optionally, we could pre-fill the input with a reply to this message!
-            const plain = msg.payload.text || "Медиа";
+            const plain = String(msg.payload.text || "Медиа");
             document.getElementById('message-input').value = `> К посту: ${plain.substring(0, 20)}...\n`;
-        };
+        });
         const bubble = wrapper.querySelector('.tg-msg-bubble');
         if (bubble) bubble.appendChild(commentBtn);
     }
@@ -2627,18 +2979,18 @@ function renderContactsList() {
         if (lastMsgText.length > 25) {
             lastMsgText = lastMsgText.substring(0, 22) + '...';
         }
-        if (typingTimeouts[contactId] && contactId !== myId && !myGroupsCache[contactId]) {
-            lastMsgText = '<span class="tg-contact-typing">печатает...</span>';
-        }
+        const isTyping = !!(typingTimeouts[contactId] && contactId !== myId && !myGroupsCache[contactId]);
 
-        let avatarHtml = `<div class="tg-contact-avatar">${dName.charAt(0).toUpperCase()}</div>`;
+        let avatarHtml = `<div class="tg-contact-avatar">${escapeHtmlSafe(dName.charAt(0).toUpperCase())}</div>`;
+        let avatarUrl = '';
         if (contactId === myId) {
             avatarHtml = `<div class="tg-contact-avatar"><i class="fas fa-bookmark"></i></div>`;
             dName = 'Избранное';
         } else if (myGroupsCache[contactId]) {
             avatarHtml = `<div class="tg-contact-avatar" style="background: var(--accent-color);">${myGroupsCache[contactId].is_channel ? '<i class="fas fa-bullhorn" style="color:white"></i>' : '<i class="fas fa-users" style="color:white"></i>'}</div>`;
         } else if (prof && prof.avatar_data) {
-            avatarHtml = `<div class="tg-contact-avatar" style="background-image: url(${prof.avatar_data})"></div>`;
+            avatarHtml = '<div class="tg-contact-avatar" data-avatar-url></div>';
+            avatarUrl = prof.avatar_data;
         }
 
         // Online dot
@@ -2674,31 +3026,45 @@ function renderContactsList() {
         
         wrapper.innerHTML = `
             <div class="tg-swipe-actions">
-                <button class="tg-action-btn pin" onclick="toggleChatSetting('${contactId}', 'is_pinned')">
+                <button class="tg-action-btn pin" data-chat-action="is_pinned">
                     <i class="fas ${set.is_pinned ? 'fa-thumbtack-slash' : 'fa-thumbtack'}"></i>
                 </button>
-                <button class="tg-action-btn mute" onclick="toggleChatSetting('${contactId}', 'is_muted')">
+                <button class="tg-action-btn mute" data-chat-action="is_muted">
                     <i class="fas ${set.is_muted ? 'fa-bell' : 'fa-bell-slash'}"></i>
                 </button>
-                <button class="tg-action-btn archive" onclick="toggleChatSetting('${contactId}', 'is_archived')">
+                <button class="tg-action-btn archive" data-chat-action="is_archived">
                     <i class="fas ${set.is_archived ? 'fa-box-open' : 'fa-archive'}"></i>
                 </button>
-                <button class="tg-action-btn delete" onclick="selectContact('${contactId}'); deleteChatBtn.click();">
+                <button class="tg-action-btn delete" data-chat-action="delete">
                     <i class="fas fa-trash"></i>
                 </button>
             </div>
             <div class="tg-contact-item swipeable ${selectedPeer && selectedPeer.toLowerCase() === contactId.toLowerCase() ? 'active' : ''}">
                 ${avatarHtml}
                 <div class="tg-contact-info">
-                    <div class="tg-contact-name">${dName}${statusIcons}</div>
+                    <div class="tg-contact-name">${escapeHtmlSafe(dName)}${statusIcons}</div>
                     <div style="font-size: 13px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px;">
-                        ${lastMsgText}
+                        ${isTyping ? '<span class="tg-contact-typing">печатает...</span>' : escapeHtmlSafe(lastMsgText)}
                     </div>
                 </div>
                 ${badgeHtml}
                 ${onlineDotHtml}
             </div>
         `;
+
+        if (avatarUrl) setSafeBackgroundImage(wrapper.querySelector('[data-avatar-url]'), avatarUrl);
+        wrapper.querySelectorAll('[data-chat-action]').forEach(button => {
+            button.addEventListener('click', event => {
+                event.stopPropagation();
+                const action = button.dataset.chatAction;
+                if (action === 'delete') {
+                    selectContact(contactId);
+                    if (deleteChatBtn) deleteChatBtn.click();
+                } else {
+                    toggleChatSetting(contactId, action);
+                }
+            });
+        });
         
         const swipeableItem = wrapper.querySelector('.swipeable');
         swipeableItem.addEventListener('click', (e) => {
@@ -2768,13 +3134,13 @@ async function fetchAndRenderGlobalUsers() {
             globalUsersContainer.innerHTML = '';
             data.users.filter(u => u.user_id !== myId).forEach(user => {
                 const u = user.user_id;
-                const dName = user.display_name || u;
+                const dName = String(user.display_name || u);
                 const item = document.createElement('div');
                 item.className = 'tg-contact-item';
                 
-                let avatarHtml = `<div class="tg-contact-avatar">${dName.charAt(0).toUpperCase()}</div>`;
+                let avatarHtml = `<div class="tg-contact-avatar">${escapeHtmlSafe(dName.charAt(0).toUpperCase())}</div>`;
                 if (user.avatar_data) {
-                    avatarHtml = `<div class="tg-contact-avatar" style="background-image: url(${user.avatar_data})"></div>`;
+                    avatarHtml = '<div class="tg-contact-avatar" data-avatar-url></div>';
                 }
                 
                 let statusText = 'не в сети';
@@ -2791,10 +3157,11 @@ async function fetchAndRenderGlobalUsers() {
                 item.innerHTML = `
                     ${avatarHtml}
                     <div class="tg-contact-info">
-                        <div class="tg-contact-name">${dName}</div>
+                    <div class="tg-contact-name">${escapeHtmlSafe(dName)}</div>
                         <div style="font-size: 11px; color: ${statusClass === 'online' ? '#22c55e' : 'var(--text-secondary)'};">${statusText}</div>
                     </div>
                 `;
+                if (user.avatar_data) setSafeBackgroundImage(item.querySelector('[data-avatar-url]'), user.avatar_data);
                 item.addEventListener('click', () => selectContact(u));
                 globalUsersContainer.appendChild(item);
             });
@@ -2941,7 +3308,7 @@ async function toggleDefaultReaction(msg) {
     if (!msg.message_id || msg.message_id.toString().startsWith('temp_')) return; // Cannot react to temporary messages
     const defaultEmoji = localStorage.getItem('settings_default_reaction') || '❤️';
     
-    if (!msg.reactions) msg.reactions = {};
+    if (!msg.reactions) msg.reactions = Object.create(null);
     
     // Toggle reaction
     const alreadyReacted = msg.reactions[myId] === defaultEmoji;
@@ -2989,7 +3356,7 @@ document.querySelectorAll('.ctx-reaction-btn').forEach(btn => {
 });
 
 function updateMessageReactionsUI(msgId, reactions) {
-    const msgEl = messagesContainer.querySelector(`.tg-msg-wrapper[data-id="${msgId}"]`);
+    const msgEl = findMessageElement(msgId);
     if (!msgEl) return;
     
     const bubble = msgEl.querySelector('.tg-msg-bubble');
@@ -3005,14 +3372,9 @@ function updateMessageReactionsUI(msgId, reactions) {
     }
     
     // Group by emoji
-    const emojiGroups = {};
+    const emojiGroups = Object.create(null);
     activeReactions.forEach(([user, emoji]) => {
         emojiGroups[emoji] = (emojiGroups[emoji] || 0) + 1;
-    });
-    
-    let reactionsHtml = '';
-    Object.entries(emojiGroups).forEach(([emoji, count]) => {
-        reactionsHtml += `<span class="tg-reaction-item">${emoji}${count > 1 ? ` <span class="tg-reaction-count">${count}</span>` : ''}</span>`;
     });
     
     if (!reactionsEl) {
@@ -3020,8 +3382,20 @@ function updateMessageReactionsUI(msgId, reactions) {
         reactionsEl.className = 'tg-msg-reactions';
         bubble.appendChild(reactionsEl);
     }
-    
-    reactionsEl.innerHTML = reactionsHtml;
+
+    reactionsEl.replaceChildren();
+    Object.entries(emojiGroups).forEach(([emoji, count]) => {
+        const item = document.createElement('span');
+        item.className = 'tg-reaction-item';
+        item.textContent = emoji;
+        if (count > 1) {
+            const countEl = document.createElement('span');
+            countEl.className = 'tg-reaction-count';
+            countEl.textContent = ` ${count}`;
+            item.appendChild(countEl);
+        }
+        reactionsEl.appendChild(item);
+    });
     
     // Click on reaction badge toggles/removes my reaction
     reactionsEl.onclick = (e) => {
@@ -3197,7 +3571,7 @@ async function initiateCall(videoEnabled) {
     if (callAvatar) {
         if (prof.avatar_data) {
             callAvatar.textContent = '';
-            callAvatar.style.backgroundImage = `url(${prof.avatar_data})`;
+            setSafeBackgroundImage(callAvatar, prof.avatar_data);
         } else {
             callAvatar.textContent = dName.charAt(0).toUpperCase();
             callAvatar.style.backgroundImage = 'none';
@@ -3358,7 +3732,7 @@ async function showCallNotification(sender, isVideo) {
     try {
         const notif = new Notification(name, {
             body: text,
-            icon: prof.avatar_data || 'img/icon.png',
+            icon: safeDownloadUrl(prof.avatar_data) || 'img/icon.png',
             tag: 'incoming-call'
         });
         notif.onclick = () => {
@@ -3407,7 +3781,7 @@ async function handleWebRTCMessage(sender, payload) {
         if (callAvatar) {
             if (prof.avatar_data) {
                 callAvatar.textContent = '';
-                callAvatar.style.backgroundImage = `url(${prof.avatar_data})`;
+                setSafeBackgroundImage(callAvatar, prof.avatar_data);
             } else {
                 callAvatar.textContent = dName.charAt(0).toUpperCase();
                 callAvatar.style.backgroundImage = 'none';
@@ -3745,7 +4119,7 @@ async function showBrowserNotification(sender, text) {
         try {
             const notif = new Notification(name, {
                 body: bodyText,
-                icon: prof.avatar_data || 'img/icon.png'
+                icon: safeDownloadUrl(prof.avatar_data) || 'img/icon.png'
             });
             notif.onclick = () => {
                 window.focus();
@@ -3770,7 +4144,7 @@ function showInAppToast(senderId, name, text, avatarData) {
     toastText.textContent = text;
     if (avatarData) {
         toastAvatar.textContent = '';
-        toastAvatar.style.backgroundImage = `url(${avatarData})`;
+        setSafeBackgroundImage(toastAvatar, avatarData);
     } else {
         toastAvatar.style.backgroundImage = 'none';
         toastAvatar.textContent = name.charAt(0).toUpperCase();
@@ -4191,36 +4565,19 @@ if (window.Capacitor?.Plugins?.LocalNotifications) {
     }
 }
 
-// Check Remember Me auto-login on load
+// Remember only the username. The password unlocks the local encrypted history
+// and is deliberately never persisted in localStorage.
 const rememberMeCheckbox = document.getElementById('remember-me-checkbox');
+// Remove credentials written by older builds; this client never stores them.
+localStorage.removeItem('remember_password_enc');
+localStorage.removeItem('remember_password');
 if (rememberMeCheckbox) {
     const rememberMe = localStorage.getItem('remember_me') === 'true';
     if (rememberMe) {
         rememberMeCheckbox.checked = true;
         const savedUser = localStorage.getItem('remember_username');
-        const encPass = localStorage.getItem('remember_password_enc');
-        const plainPass = localStorage.getItem('remember_password'); // legacy fallback
-        if (savedUser && (encPass || plainPass)) {
+        if (savedUser) {
             usernameInput.value = savedUser;
-            // Delay slightly to ensure complete load
-            setTimeout(async () => {
-                let pass = null;
-                if (encPass) {
-                    pass = await decryptFromStorage(encPass);
-                }
-                if (!pass && plainPass) {
-                    pass = plainPass;
-                    // Migrate: re-encrypt and remove plaintext
-                    encryptForStorage(pass).then(enc => {
-                        localStorage.setItem('remember_password_enc', enc);
-                        localStorage.removeItem('remember_password');
-                    });
-                }
-                if (pass) {
-                    passwordInput.value = pass;
-                    performLogin();
-                }
-            }, 300);
         }
     }
 }
@@ -4293,8 +4650,8 @@ loadAppliedDefaultReaction();
 if (addContactDrawerBtn) {
     addContactDrawerBtn.addEventListener('click', () => {
         // Скрываем меню-бургер
-        if (sideDrawer) sideDrawer.classList.add('hidden');
-        if (drawerOverlay) drawerOverlay.classList.add('hidden');
+        if (sideDrawer) sideDrawer.classList.remove('open');
+        if (drawerOverlay) drawerOverlay.classList.remove('visible');
         
         // Показываем модал добавления контакта
         addContactIdInput.value = '';
@@ -4328,9 +4685,7 @@ if (saveNewContactBtn) {
         
         try {
             // Проверим, существует ли пользователь на сервере
-            const res = await fetch(`${serverUrl}/users/${contactId}/profile`, {
-                headers: { 'Bypass-Tunnel-Reminder': 'true' }
-            });
+            const res = await fetch(`${serverUrl}/users/${pathSegment(contactId)}/profile`, { headers: authHeaders() });
             if (!res.ok) {
                 addContactStatus.textContent = 'Пользователь не найден на сервере';
                 addContactStatus.className = 'tg-status error';
@@ -4379,7 +4734,7 @@ function openUserProfileModal(peerId) {
     // Аватар в профиле
     if (prof.avatar_data) {
         profileAvatarDisplay.textContent = '';
-        profileAvatarDisplay.style.backgroundImage = `url(${prof.avatar_data})`;
+        setSafeBackgroundImage(profileAvatarDisplay, prof.avatar_data);
     } else {
         profileAvatarDisplay.textContent = dName.charAt(0).toUpperCase();
         profileAvatarDisplay.style.backgroundImage = 'none';
@@ -4461,9 +4816,9 @@ function openForwardModal(msg) {
             
             const name = getContactDisplayName(contactId);
             item.innerHTML = `
-                <div class="tg-contact-avatar" style="width: 32px; height: 32px; font-size: 14px;">${name.charAt(0).toUpperCase()}</div>
+                <div class="tg-contact-avatar" style="width: 32px; height: 32px; font-size: 14px;">${escapeHtmlSafe(name.charAt(0).toUpperCase())}</div>
                 <div class="tg-contact-info" style="margin-left: 10px;">
-                    <div class="tg-contact-name" style="font-size: 14px;">${name}</div>
+                    <div class="tg-contact-name" style="font-size: 14px;">${escapeHtmlSafe(name)}</div>
                 </div>
             `;
             item.addEventListener('click', async () => {
@@ -4518,7 +4873,10 @@ if (attachBtn) {
             MOCK_IMAGES.forEach(imgSrc => {
                 const imgWrap = document.createElement('div');
                 imgWrap.className = 'gallery-item-mock';
-                imgWrap.innerHTML = `<img src="${imgSrc}">`;
+                const img = document.createElement('img');
+                img.alt = 'Предпросмотр изображения';
+                img.src = imgSrc;
+                imgWrap.appendChild(img);
                 imgWrap.addEventListener('click', async () => {
                     attachmentDrawer.classList.add('hidden');
                     // Единый транспорт: dataURL → байты → /upload.
@@ -4660,7 +5018,7 @@ document.addEventListener('touchend', (e) => {
 
 // --- GROUPS & CHANNELS LOGIC ---
 
-let myGroupsCache = {}; // group_id -> group_info
+let myGroupsCache = Object.create(null); // group_id -> group_info
 
 async function fetchMyGroups() {
     try {
@@ -4736,7 +5094,7 @@ async function addMemberToGroup(groupId, userId) {
     const peerPub = base64UrlDecode(prof.public_key_b64);
     const encryptedKeyB64 = wrapGroupKey(symKey, peerPub);
 
-    const res = await fetch(`${serverUrl}/groups/${groupId}/members`, {
+    const res = await fetch(`${serverUrl}/groups/${pathSegment(groupId)}/members`, {
         method: 'POST',
         headers: { 
             'Content-Type': 'application/json',
@@ -4790,6 +5148,11 @@ if (submitCreateGroupBtn) {
         
         if (!id || !name) {
             status.textContent = 'ID и Название обязательны';
+            status.className = 'tg-status error';
+            return;
+        }
+        if (!/^[a-z0-9_]{2,64}$/i.test(id)) {
+            status.textContent = 'ID: только латиница, цифры и _ (2–64 символа)';
             status.className = 'tg-status error';
             return;
         }
@@ -4853,7 +5216,7 @@ if (groupManageBtn) {
         groupMembersList.innerHTML = '<p style="color:var(--text-secondary); padding: 10px;">Загрузка...</p>';
         
         try {
-            const res = await fetch(`${serverUrl}/groups/${groupId}/members`, {
+            const res = await fetch(`${serverUrl}/groups/${pathSegment(groupId)}/members`, {
                 headers: { 'Authorization': `Bearer ${sessionToken}` }
             });
             if (res.ok) {
@@ -4862,14 +5225,14 @@ if (groupManageBtn) {
                 data.members.forEach(m => {
                     const div = document.createElement('div');
                     div.style.cssText = 'display:flex; justify-content:space-between; padding: 10px; border-bottom: 1px solid var(--border-color);';
-                    div.innerHTML = `<span><b>${m.display_name || m.username || m.user_id}</b> <span style="font-size:12px; color:var(--text-secondary); margin-left:5px;">(${m.role})</span></span> <span style="color:var(--text-secondary); font-size:12px;">${m.user_id}</span>`;
+                    div.innerHTML = `<span><b>${escapeHtmlSafe(m.display_name || m.username || m.user_id)}</b> <span style="font-size:12px; color:var(--text-secondary); margin-left:5px;">(${escapeHtmlSafe(m.role)})</span></span> <span style="color:var(--text-secondary); font-size:12px;">${escapeHtmlSafe(m.user_id)}</span>`;
                     groupMembersList.appendChild(div);
                 });
             } else {
                 groupMembersList.innerHTML = '<p class="tg-status error" style="padding: 10px;">Ошибка загрузки участников</p>';
             }
         } catch (e) {
-            groupMembersList.innerHTML = `<p class="tg-status error" style="padding: 10px;">${e.message}</p>`;
+            groupMembersList.innerHTML = `<p class="tg-status error" style="padding: 10px;">${escapeHtmlSafe(e.message)}</p>`;
         }
     });
 }
@@ -4958,13 +5321,13 @@ if (confirmDeleteChatBtn) {
         try {
             if (isGroup) {
                 if (isOwner) {
-                    const res = await fetch(`${serverUrl}/groups/${peer}`, {
+                    const res = await fetch(`${serverUrl}/groups/${pathSegment(peer)}`, {
                         method: 'DELETE',
                         headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
                     });
                     if (!res.ok) throw new Error("Failed to delete group");
                 } else {
-                    const res = await fetch(`${serverUrl}/groups/${peer}/leave`, {
+                    const res = await fetch(`${serverUrl}/groups/${pathSegment(peer)}/leave`, {
                         method: 'POST',
                         headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
                     });
@@ -4973,7 +5336,7 @@ if (confirmDeleteChatBtn) {
                 delete myGroupsCache[peer];
                 delete groupKeys[peer];
             } else {
-                const res = await fetch(`${serverUrl}/messages/history/${peer}`, {
+                const res = await fetch(`${serverUrl}/messages/history/${pathSegment(peer)}`, {
                     method: 'DELETE',
                     headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
                 });
@@ -5009,18 +5372,12 @@ if (confirmDeleteChatBtn) {
 // --- CHAT SETTINGS & SWIPE ACTIONS ---
 async function fetchChatSettings() {
     try {
-        const res = await fetch(`${serverUrl}/users/settings/chats`, {
-            headers: { 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' }
-        });
-        if (res.ok) {
-            const data = await res.json();
-            chatSettingsCache = {};
-            data.settings.forEach(s => {
-                chatSettingsCache[s.peer_id.toLowerCase()] = s;
-            });
-        }
-    } catch(e) {
-        console.error("Failed to fetch chat settings", e);
+        const raw = localStorage.getItem(`chat_settings_${myId}`);
+        const parsed = raw ? JSON.parse(raw) : {};
+        chatSettingsCache = parsed && typeof parsed === 'object'
+            ? Object.assign(Object.create(null), parsed) : Object.create(null);
+    } catch (_) {
+        chatSettingsCache = Object.create(null);
     }
 }
 
@@ -5036,16 +5393,7 @@ async function toggleChatSetting(peerId, field) {
     // Update UI immediately
     renderContactsList();
     
-    // Send to server
-    try {
-        await fetch(`${serverUrl}/users/settings/chats/${peerId}`, {
-            method: 'PUT',
-            headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${sessionToken}`, 'Bypass-Tunnel-Reminder': 'true' },
-            body: JSON.stringify(current)
-        });
-    } catch(e) {
-        console.error("Failed to update setting", e);
-    }
+    localStorage.setItem(`chat_settings_${myId}`, JSON.stringify(chatSettingsCache));
 }
 
 function initSwipeGestures(wrapper, item, contactId) {
@@ -5282,7 +5630,7 @@ function pinMessage(peerId, msgId) {
             if (e.target.closest('#pinned-bar-unpin')) return;
             const pid = getPinnedId(selectedPeer);
             if (!pid) return;
-            const el = messagesContainer.querySelector(`[data-id="${pid}"]`);
+            const el = findMessageElement(pid);
             if (el) {
                 el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                 const b = el.querySelector('.tg-msg-bubble');
@@ -5381,8 +5729,10 @@ function runChatSearch(q) {
 // =====================================================================
 // ОПРОСЫ
 // =====================================================================
-function escapeHtmlSafe(t) {
-    return String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+function normalizedPollOptions(payload) {
+    const raw = payload && payload.options;
+    if (!Array.isArray(raw)) return [];
+    return raw.slice(0, 10).map(option => String(option == null ? '' : option).slice(0, 100));
 }
 function pollVotesArr(votes, user) {
     const v = (votes || {})[user];
@@ -5391,7 +5741,7 @@ function pollVotesArr(votes, user) {
     return [];
 }
 function pollCounts(msg) {
-    const opts = (msg.payload && msg.payload.options) || [];
+    const opts = normalizedPollOptions(msg.payload);
     const counts = opts.map(() => 0);
     let totalVoters = 0;
     Object.keys(msg.poll_votes || {}).forEach(u => {
@@ -5403,10 +5753,11 @@ function pollCounts(msg) {
 }
 function renderPollHtml(msg) {
     const p = msg.payload || {};
+    const options = normalizedPollOptions(p);
     const { counts, totalVoters } = pollCounts(msg);
     const mine = pollVotesArr(msg.poll_votes, myId);
     let opts = '';
-    (p.options || []).forEach((o, i) => {
+    options.forEach((o, i) => {
         const c = counts[i];
         const pct = totalVoters ? Math.round(c * 100 / totalVoters) : 0;
         opts += `<div class="poll-option ${mine.includes(i) ? 'voted' : ''}" data-opt="${i}">
@@ -5415,7 +5766,7 @@ function renderPollHtml(msg) {
         </div>`;
     });
     const multi = p.multiple ? ' • неск. ответов' : '';
-    return `<div class="tg-poll" data-poll="${msg.message_id}">
+    return `<div class="tg-poll" data-poll="${escapeHtmlSafe(msg.message_id)}">
         <div class="poll-question">📊 ${escapeHtmlSafe(p.question || '')}</div>
         <div class="poll-options">${opts}</div>
         <div class="poll-total">${totalVoters} проголосовал(о)${multi}</div>
@@ -5433,7 +5784,7 @@ function attachPollHandlers(wrapper, msg) {
 function votePoll(msg, optIdx) {
     if (!msg.payload || msg.payload.type !== 'poll') return;
     if (!msg.message_id || msg.message_id.toString().startsWith('temp_')) return; // ждём отправки
-    if (!msg.poll_votes) msg.poll_votes = {};
+    if (!msg.poll_votes) msg.poll_votes = Object.create(null);
     let arr = pollVotesArr(msg.poll_votes, myId);
     if (msg.payload.multiple) {
         if (arr.includes(optIdx)) arr = arr.filter(x => x !== optIdx);
@@ -5451,7 +5802,7 @@ function votePoll(msg, optIdx) {
 function updatePollUI(msgId) {
     const msg = messages.find(m => m.message_id === msgId);
     if (!msg) return;
-    const wrapper = messagesContainer.querySelector(`.tg-msg-wrapper[data-id="${msgId}"]`);
+    const wrapper = findMessageElement(msgId);
     if (!wrapper) return;
     const pollEl = wrapper.querySelector('.tg-poll');
     if (!pollEl) return;
@@ -5556,7 +5907,7 @@ function destroyMessage(msg) {
     const id = msg.message_id;
     if (!id) return;
     messages = messages.filter(m => m.message_id !== id);
-    const w = messagesContainer.querySelector(`.tg-msg-wrapper[data-id="${id}"]`);
+    const w = findMessageElement(id);
     if (w) w.remove();
     if (msg.peer && getPinnedId(msg.peer) === id) setPinnedId(msg.peer, null);
     saveMessagesLocally();

@@ -26,7 +26,7 @@ rusqlite = { version = "0.32", features = ["bundled-sqlcipher-vendored-openssl"]
 ureq = { version = "2.10", features = ["json"] }
 tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 thiserror = "1"
-vodozemac = { version = "0.10.0", features = ["experimental-session-config"] }  # Olm = X3DH + Double Ratchet (аудит Least Authority); v2-сессии (полный MAC)
+aether-ratchet-core = { path = "ratchet-core" } # единый чистый Olm/Double Ratchet слой для native + web
 
 [profile.release]
 opt-level = "s"

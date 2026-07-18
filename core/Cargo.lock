@@ -44,6 +44,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "aether-ratchet-core"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "serde",
+ "serde_json",
+ "vodozemac",
+]
+
+[[package]]
 name = "ahash"
 version = "0.8.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1345,6 +1355,7 @@ name = "sm_core"
 version = "0.1.0"
 dependencies = [
  "aes-gcm",
+ "aether-ratchet-core",
  "base64",
  "crypto_box",
  "hmac",
@@ -1358,7 +1369,6 @@ dependencies = [
  "tungstenite",
  "uniffi",
  "ureq",
- "vodozemac",
 ]
 
 [[package]]
