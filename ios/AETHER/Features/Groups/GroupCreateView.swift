@@ -43,6 +43,7 @@ struct GroupCreateView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) {
+                // Шторка без чёлки-safe-area: опускаем шапку от скруглённого верха.
                 FloatingHeader(
                     title: step == .type ? "Новый чат" : (isChannel ? "Новый канал" : "Новая группа"),
                     large: false,
@@ -51,6 +52,7 @@ struct GroupCreateView: View {
                         .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty || creating)
                         .foregroundStyle(palette.accent)) : nil
                 )
+                .padding(.top, 14)
             }
         }
     }
@@ -215,12 +217,15 @@ struct GroupCreateView: View {
     }
 
     private func personRow(_ p: Profile) -> some View {
-        Button { toggle(p) } label: {
+        // Имя из профиля (display name), а не сырой id для старых чатов.
+        let name = messaging.displayName(p.userId, fallback: p.displayName ?? p.username ?? p.userId)
+        return Button { toggle(p) } label: {
             HStack(spacing: 12) {
-                Avatar(id: p.userId, name: p.displayName ?? p.username ?? p.userId, size: 42,
+                Avatar(id: p.userId, name: name, size: 42,
                        avatarURL: messaging.avatarURL(p.userId))
+                    .onAppear { messaging.ensureProfile(p.userId) }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(p.displayName ?? p.username ?? p.userId).foregroundStyle(palette.textPrimary)
+                    Text(name).foregroundStyle(palette.textPrimary)
                     if let u = p.username, !u.isEmpty {
                         Text("@\(u)").font(.caption).foregroundStyle(palette.textSecondary)
                     }
@@ -253,10 +258,13 @@ struct GroupCreateView: View {
                     FloatingHeader(
                         title: "Найти людей", large: false,
                         trailing: AnyView(Button("Готово") { showPeopleSearch = false }
-                            .foregroundStyle(palette.accent))
+                            .foregroundStyle(palette.accent)),
+                        withBackground: false
                     )
                     FloatingSearchBar(prompt: "Имя или @username", text: $query)
                 }
+                .padding(.top, 14)
+                .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
             }
             .onChange(of: query) { _, q in scheduleSearch(q) }
         }

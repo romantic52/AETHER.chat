@@ -209,7 +209,11 @@ class MessageRepository(
 
     private suspend fun ensureOlmKeysLocked() {
         val account = olmAccountLocked()
-        if (api.olmKeysCount(myId) >= 20u) return
+        val localIdentity = myOlmIdentityLocked()
+        val serverState = api.olmKeysState(myId)
+        if ((serverState.identityKeyB64 == null || serverState.identityKeyB64 == localIdentity) &&
+            serverState.count >= 20u
+        ) return
         val published = uniffi.sm_core.olmAccountGenerateOtks(account, 40u)
         store.metaSet("olm_account", published.accountPickle)
         cachedOlmIdentity = published.identityKeyB64
@@ -268,7 +272,10 @@ class MessageRepository(
 
     /** Запуск фоновых циклов: поллинг инбокса (страховка WS) и outbox. */
     fun start() {
-        scope.launch { warmUiCache() }
+        scope.launch {
+            ensureChatExists(myId, fetchProfile = false)
+            warmUiCache()
+        }
         scope.launch {
             runCatching { ensureOlmKeys() }
             while (true) {
@@ -686,10 +693,21 @@ class MessageRepository(
             val blockedPeers = HashSet<String>()
             for (msg in store.getPendingOutgoing()) {
                 if (msg.peerId.lowercase() in blockedPeers) continue
+                val localId = localRecordingId(msg.text)
+                if (localId != null && !localRecordingFile(localId).let { it.exists() && it.length() > 0L }) {
+                    android.util.Log.w("Outbox", "Local recording is missing for msg=${msg.msgId}")
+                    store.updateStatus(msg.msgId, -1)
+                    attempts.remove(msg.msgId)
+                    continue
+                }
                 try {
-                    val envelope = encryptWireFor(msg.peerId, buildWire(msg))
-                    api.sendMessage(myId, msg.peerId, envelope, clientMsgId = msg.msgId)
-                    store.updateStatus(msg.msgId, 1)
+                    if (localId != null) {
+                        uploadLocalRecording(msg)
+                    } else {
+                        val envelope = encryptWireFor(msg.peerId, buildWire(msg))
+                        api.sendMessage(myId, msg.peerId, envelope, clientMsgId = msg.msgId)
+                        store.updateStatus(msg.msgId, 1)
+                    }
                     attempts.remove(msg.msgId)
                 } catch (e: KeyTrustStore.KeyChangedException) {
                     android.util.Log.w("Outbox", "KeyChanged for ${msg.peerId} msg=${msg.msgId}", e)
@@ -836,53 +854,93 @@ class MessageRepository(
         } catch (e: Exception) { e }
     }
 
-    suspend fun sendRecording(peerId: String, bytes: ByteArray, mime: String, kind: String, durationMs: Long): Exception? {
+    /**
+     * Запись появляется в чате из локального кеша сразу. Загрузка, шифрование и
+     * отправка выполняются общей outbox-очередью и переживают перезапуск процесса.
+     */
+    suspend fun sendRecording(
+        peerId: String,
+        source: File,
+        mime: String,
+        kind: String,
+        durationMs: Long
+    ): Exception? {
         return try {
+            val clientId = UUID.randomUUID().toString()
             val wireKind = if (kind == "video_note" || kind == "circle") "video_msg" else kind
-            // (#A4) Без base64-раздувания: шифруем стримом во временный файл
-            val symKey = crypto.generateSymmetricKey()
-            val tmp = java.io.File.createTempFile("aether_rec", null)
-            val fileId: String
-            val nonceB64: String
-            try {
-                nonceB64 = java.io.ByteArrayInputStream(bytes).use { input ->
-                    java.io.FileOutputStream(tmp).use { output ->
-                        crypto.encryptStream(input, output, symKey)
-                    }
-                }
-                fileId = api.uploadFile(tmp)
-            } finally {
-                tmp.delete()
-            }
-            cacheBytes(bytes, mediaCacheFile(fileId, nonceB64, symKey.keyB64))
-            val jsonText = JSONObject()
+            val localFile = localRecordingFile(clientId)
+            if (!source.renameTo(localFile)) source.copyTo(localFile, overwrite = true)
+            require(localFile.length() > 0L) { "Пустая запись" }
+            val localJson = JSONObject()
                 .put("type", "media")
                 .put("kind", wireKind)
-                .put("file_id", fileId)
-                .put("sym_key", symKey.keyB64)
                 .put("mime_type", mime)
-                .put("nonce", nonceB64)
-                // Канон iOS/core: секунды. Старые Android-сообщения в миллисекундах
-                // остаются читаемыми по эвристике на отображении.
                 .put("duration", durationMs / 1000.0)
+                .put("local_id", clientId)
                 .toString()
-            val clientId = UUID.randomUUID().toString()
-            api.sendMessage(myId, peerId, encryptWireFor(peerId, jsonText), clientMsgId = clientId)
-            ensureChatExists(peerId)
+
+            ensureChatExists(peerId, fetchProfile = false)
             store.insertMessage(
                 MessageEntity(
                     msgId = clientId,
                     peerId = peerId,
                     isOut = true,
-                    text = jsonText,
+                    text = localJson,
                     timestamp = System.currentTimeMillis(),
-                    status = 1
+                    status = 0
                 )
             )
+            outboxSignal.trySend(Unit)
             null
-        } catch (e: Exception) { e }
+        } catch (e: Exception) {
+            e
+        }
     }
 
+    private suspend fun uploadLocalRecording(msg: MessageEntity) {
+        val localId = localRecordingId(msg.text)
+            ?: throw IllegalArgumentException("Нет локальной записи")
+        val source = localRecordingFile(localId)
+        require(source.exists() && source.length() > 0L) { "Локальная запись потеряна" }
+
+        val payload = JSONObject(msg.text)
+        val symKey = crypto.generateSymmetricKey()
+        val encrypted = File.createTempFile("aether_rec", null)
+        val nonceB64: String
+        val fileId: String
+        try {
+            nonceB64 = source.inputStream().use { input ->
+                encrypted.outputStream().use { output ->
+                    crypto.encryptStream(input, output, symKey)
+                }
+            }
+            fileId = api.uploadFile(encrypted)
+        } finally {
+            encrypted.delete()
+        }
+
+        val finalCache = mediaCacheFile(fileId, nonceB64, symKey.keyB64)
+        if (!finalCache.exists() || finalCache.length() == 0L) {
+            source.copyTo(finalCache, overwrite = true)
+        }
+        payload.remove("local_id")
+        val wireJson = payload
+            .put("file_id", fileId)
+            .put("sym_key", symKey.keyB64)
+            .put("nonce", nonceB64)
+            .toString()
+
+        // После upload сообщение уже пригодно для обычного сетевого retry.
+        store.updatePayload(msg.msgId, wireJson)
+        source.delete()
+        api.sendMessage(
+            myId,
+            msg.peerId,
+            encryptWireFor(msg.peerId, wireJson),
+            clientMsgId = msg.msgId
+        )
+        store.updateStatus(msg.msgId, 1)
+    }
     private data class MediaRef(
         val fileId: String,
         val nonce: String,
@@ -919,12 +977,29 @@ class MessageRepository(
     private fun mediaCacheFile(fileId: String, nonce: String, key: String): File =
         MediaCache.fileFor(cacheRoot, "$fileId|$nonce|$key")
 
-    fun cachedMediaFile(jsonText: String): File? = mediaRef(jsonText)?.let {
-        mediaCacheFile(it.fileId, it.nonce, it.key).takeIf { file -> file.exists() && file.length() > 0L }
+    private fun localRecordingFile(id: String): File =
+        MediaCache.fileFor(cacheRoot, "outgoing-recording|$id")
+
+    private fun localRecordingId(jsonText: String): String? = try {
+        JSONObject(jsonText).optString("local_id")
+            .takeIf { it.isNotBlank() && runCatching { UUID.fromString(it) }.isSuccess }
+    } catch (_: Exception) {
+        null
     }
+
+    private fun cachedLocalRecording(jsonText: String): File? =
+        localRecordingId(jsonText)?.let(::localRecordingFile)
+            ?.takeIf { it.exists() && it.length() > 0L }
+
+    fun cachedMediaFile(jsonText: String): File? =
+        cachedLocalRecording(jsonText) ?: mediaRef(jsonText)?.let {
+            mediaCacheFile(it.fileId, it.nonce, it.key)
+                .takeIf { file -> file.exists() && file.length() > 0L }
+        }
 
     suspend fun downloadMedia(jsonText: String): File? {
         return try {
+            cachedLocalRecording(jsonText)?.let { return it }
             val ref = mediaRef(jsonText) ?: return null
             val cacheKey = "${ref.fileId}|${ref.nonce}|${ref.key}"
             val cacheFile = mediaCacheFile(ref.fileId, ref.nonce, ref.key)
@@ -1172,6 +1247,22 @@ class MessageRepository(
      */
     suspend fun ensureChatExists(peerId: String, fetchProfile: Boolean = true, forceGroup: Boolean = false) {
         val existing = store.getChat(peerId)
+        if (peerId.equals(myId, ignoreCase = true)) {
+            val saved = existing?.copy(
+                name = "Избранное",
+                type = 3,
+                isPinned = true,
+                isArchived = false,
+                unreadCount = 0
+            ) ?: ChatEntity(
+                peerId = myId,
+                name = "Избранное",
+                type = 3,
+                isPinned = true
+            )
+            if (existing == null) store.insertChat(saved) else store.updateChat(saved)
+            return
+        }
         if (existing != null && (!forceGroup || existing.type in 1..2)) return
         val group = if (forceGroup || isLegacyGroupId(peerId)) {
             try { api.getMyGroups().firstOrNull { it.id.equals(peerId, ignoreCase = true) } }

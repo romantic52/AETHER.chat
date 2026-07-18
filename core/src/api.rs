@@ -56,6 +56,12 @@ pub struct PrekeyBundle {
     pub one_time_key_b64: String,
 }
 
+#[derive(uniffi::Record)]
+pub struct PrekeyState {
+    pub count: u32,
+    pub identity_key_b64: Option<String>,
+}
+
 #[derive(uniffi::Object)]
 pub struct ApiClient {
     base: String,
@@ -249,6 +255,19 @@ impl ApiClient {
     pub fn keys_count(&self) -> Result<u32, CoreError> {
         let v = self.get("/keys/count")?;
         Ok(v["count"].as_u64().unwrap_or(0) as u32)
+    }
+
+    /// Server-side prekey state. The identity is needed when restoring an old
+    /// account: a stale server bundle must not be mixed with a new local Olm account.
+    pub fn keys_state(&self) -> Result<PrekeyState, CoreError> {
+        let v = self.get("/keys/count")?;
+        Ok(PrekeyState {
+            count: v["count"].as_u64().unwrap_or(0) as u32,
+            identity_key_b64: v["identity_key_b64"]
+                .as_str()
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        })
     }
 
     /// Забрать prekey-bundle пира (identity + один OTK, сервер его удаляет).

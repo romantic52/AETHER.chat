@@ -1,5 +1,11 @@
 package org.groktest.securemessenger.ui.screens
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -26,6 +32,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -43,6 +50,7 @@ fun SearchScreen(
     var memberGroupIds by remember { mutableStateOf<Set<String>?>(null) }
     var joiningId by remember { mutableStateOf<String?>(null) }
     val snackbarHostState = remember { SnackbarHostState() }
+    val appearance = LocalThemeSettings.current
 
     LaunchedEffect(api) {
         memberGroupIds = withContext(Dispatchers.IO) {
@@ -148,26 +156,47 @@ fun SearchScreen(
             containerColor = Color.Transparent
         ) { padding ->
             Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-                if (isLoading) {
-                    LinearProgressIndicator(modifier = Modifier.fillMaxWidth(), color = MaterialTheme.colorScheme.onBackground)
-                }
-                
-                if (query.length >= 2 && results.isEmpty() && !isLoading) {
-                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text("Ничего не найдено", color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Spacer(modifier = Modifier.height(16.dp))
-                            Button(
-                                onClick = { onCreateChannel(query) },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Text("Создать канал '$query'")
-                            }
+                Box(Modifier.fillMaxWidth().height(4.dp)) {
+                    Crossfade(
+                        targetState = isLoading,
+                        animationSpec = tween(appearance.motionDuration(120)),
+                        label = "directorySearchProgress"
+                    ) { loading ->
+                        if (loading) {
+                            LinearProgressIndicator(
+                                modifier = Modifier.fillMaxWidth(),
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
                         }
                     }
-                } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
-                        items(results, key = { "${it.isGroup}:${it.userId}" }) { result ->
+                }
+
+                val showEmpty = query.length >= 2 && results.isEmpty() && !isLoading
+                AnimatedContent(
+                    targetState = showEmpty,
+                    transitionSpec = {
+                        fadeIn(tween(appearance.motionDuration(160))) togetherWith
+                            fadeOut(tween(appearance.motionDuration(120)))
+                    },
+                    label = "searchResults",
+                    modifier = Modifier.fillMaxSize()
+                ) { empty ->
+                    if (empty) {
+                        Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Ничего не найдено", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(
+                                    onClick = { onCreateChannel(query) },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Text("Создать канал '$query'")
+                                }
+                            }
+                        }
+                    } else {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                            items(results, key = { "${it.isGroup}:${it.userId}" }) { result ->
                             val isMember = memberGroupIds?.contains(result.userId.lowercase()) == true
                             Row(
                                 modifier = Modifier
@@ -253,6 +282,7 @@ fun SearchScreen(
                                         else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
+                            }
                             }
                         }
                     }

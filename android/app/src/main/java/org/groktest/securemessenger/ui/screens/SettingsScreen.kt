@@ -18,6 +18,7 @@ import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Science
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -55,6 +56,7 @@ fun SettingsScreen(
     onNavigateToPrivacy: () -> Unit,
     onNavigateToAbout: () -> Unit,
     onNavigateToCustomization: () -> Unit,
+    onNavigateToExperiments: () -> Unit,
     onSavedMessages: () -> Unit = {},
     onLogout: () -> Unit = {},
     showBack: Boolean = true
@@ -238,6 +240,14 @@ fun SettingsScreen(
                 icon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null) },
                 destructive = true,
                 onClick = { confirmLogout = true }
+            )
+            Spacer(Modifier.height(12.dp))
+            SettingsSectionTitle("Разработка")
+            SettingsItem(
+                title = "Эксперименты",
+                subtitle = "Анимации и новые функции",
+                icon = { Icon(Icons.Default.Science, contentDescription = null) },
+                onClick = onNavigateToExperiments
             )
             Spacer(Modifier.height(if (showBack) 24.dp else appearance.edgeDimLength.value.dp))
         }

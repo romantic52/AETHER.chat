@@ -28,6 +28,7 @@ class ThemeSettings(context: Context) {
     var edgeDimEnabled = mutableStateOf(prefs.getBoolean("edge_dim_enabled", true))
     var edgeDimStrength = mutableStateOf(prefs.getFloat("edge_dim_strength", 1f))
     var edgeDimLength = mutableStateOf(prefs.getFloat("edge_dim_length", 144f).coerceIn(112f, 240f))
+    var experimentalAnimations = mutableStateOf(prefs.getBoolean("experimental_animations", true))
     var animationSpeed = mutableStateOf(prefs.getFloat("animation_speed", 1f))
     var motionIntensity = mutableStateOf(prefs.getFloat("motion_intensity", 1f))
     var reactionEffects = mutableStateOf(prefs.getBoolean("reaction_effects", true))
@@ -122,6 +123,12 @@ class ThemeSettings(context: Context) {
         prefs.edit().putFloat("animation_speed", animationSpeed.value).apply()
     }
 
+    fun setExperimentalAnimations(v: Boolean) {
+        if (v && animationSpeed.value <= 0.01f) setAnimationSpeed(1f)
+        experimentalAnimations.value = v
+        prefs.edit().putBoolean("experimental_animations", v).apply()
+    }
+
     fun setMotionIntensity(v: Float) {
         motionIntensity.value = v.coerceIn(0f, 1.5f)
         prefs.edit().putFloat("motion_intensity", motionIntensity.value).apply()
@@ -134,10 +141,12 @@ class ThemeSettings(context: Context) {
 
     fun motionDuration(baseMillis: Int): Int {
         val speed = animationSpeed.value
-        return if (speed <= 0.01f) 0 else (baseMillis / speed).roundToInt().coerceAtLeast(1)
+        return if (!animationsEnabled()) 0 else (baseMillis / speed).roundToInt().coerceAtLeast(1)
     }
 
-    fun motionDistance(base: Float): Float = base * motionIntensity.value
+    fun animationsEnabled(): Boolean = experimentalAnimations.value && animationSpeed.value > 0.01f
+
+    fun motionDistance(base: Float): Float = if (animationsEnabled()) base * motionIntensity.value else 0f
 
     fun setBubbleRadius(v: Float) {
         bubbleRadius.value = v.coerceIn(8f, 30f)

@@ -166,7 +166,8 @@ struct GroupProfileView: View {
                 actionButton(icon: "bubble.left.fill", title: "Чат") { dismiss() }
                 if !isChannel {
                     actionButton(icon: "phone.fill", title: "Звонок") {
-                        // Групповых звонков нет — заглушка на будущее.
+                        messaging.groupCalls.start(groupId: groupId)
+                        dismiss()
                     }
                 }
                 if isOwnerOrAdmin {
@@ -400,15 +401,18 @@ struct AddMemberView: View {
             }
             .toolbar(.hidden, for: .navigationBar)
             .safeAreaInset(edge: .top) {
+                // Шторка без чёлки-safe-area: опускаем шапку от скруглённого верха.
                 VStack(spacing: 0) {
                     FloatingHeader(
-                        title: "Добавить участника",
+                        title: (messaging.groups.info(groupId)?.isChannel ?? false)
+                            ? "Добавить подписчика" : "Добавить участника",
                         large: false,
                         leading: AnyView(Button("Отмена") { dismiss() }.foregroundStyle(palette.accent)),
                         withBackground: false
                     )
-                    FloatingSearchBar(prompt: "Поиск по @username", text: $query)
+                    FloatingSearchBar(prompt: "Имя или @username", text: $query)
                 }
+                .padding(.top, 14)
                 .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
             }
         }
@@ -529,13 +533,21 @@ struct UserProfileView: View {
                 VStack(spacing: 24) {
                     Avatar(id: userId, name: profile?.displayName ?? userId, size: 100,
                            avatarURL: messaging.avatarURL(userId))
-                        .onAppear { messaging.ensureProfile(userId) }
+                        .onAppear {
+                            messaging.ensureProfile(userId)
+                            messaging.refreshStatusEmoji(userId)
+                        }
                         .padding(.top, 24)
                     
                     VStack(spacing: 4) {
-                        Text(profile?.displayName ?? userId)
-                            .font(.title2.weight(.bold))
-                            .foregroundStyle(palette.textPrimary)
+                        HStack(spacing: 6) {
+                            Text(profile?.displayName ?? userId)
+                                .font(.title2.weight(.bold))
+                                .foregroundStyle(palette.textPrimary)
+                            if let status = messaging.statusEmoji(userId) {
+                                Text(status).font(.system(size: 22))
+                            }
+                        }
                         
                         if let u = profile?.username, !u.isEmpty {
                             Text("@\(u)")

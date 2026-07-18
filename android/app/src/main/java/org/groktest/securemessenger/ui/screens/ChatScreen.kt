@@ -34,6 +34,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.foundation.border
@@ -60,6 +61,7 @@ import org.groktest.securemessenger.AetherService
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -70,8 +72,11 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.LocalOverscrollConfiguration
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -84,6 +89,7 @@ import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.runtime.key
 import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.interaction.collectIsPressedAsState
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.AetherEdge
@@ -109,7 +115,7 @@ fun ChatScreen(
     onSendMedia: suspend (List<android.net.Uri>, String?) -> Exception?,
     // Отправка как документ (файл) — без сжатия, с именем/размером
     onSendFiles: suspend (List<android.net.Uri>, String?) -> Exception? = { _, _ -> null },
-    onSendRecording: suspend (ByteArray, String, String, Long) -> Exception? = { _, _, _, _ -> null },
+    onSendRecording: suspend (java.io.File, String, String, Long) -> Exception? = { _, _, _, _ -> null },
     onDeleteMessage: suspend (String, Boolean) -> Exception? = { _, _ -> null },
     onReact: (String, String) -> Unit = { _, _ -> },
     // (#A2) Повторная отправка сообщения со статусом «ошибка» (-1)
@@ -140,6 +146,7 @@ fun ChatScreen(
     val messages by messagesFlow.collectAsState()
     var inputText by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
+    var sendPulseTrigger by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = messages.lastIndex.coerceAtLeast(0))
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -156,7 +163,8 @@ fun ChatScreen(
     var headerMenuOpen by remember { mutableStateOf(false) }
     val isChannelChat = chatType == 2
     val isGroupChat = chatType == 1
-    val isPersonalChat = !isChannelChat && !isGroupChat
+    val isSavedChat = chatType == 3
+    val isPersonalChat = chatType == 0
 
     // Статус «был(а) в сети» — опрашиваем профиль собеседника (только личные чаты)
     var peerStatus by remember(peerId) { mutableStateOf("") }
@@ -174,21 +182,28 @@ fun ChatScreen(
     fun submitText() {
         val textToSend = inputText.trim()
         if (textToSend.isEmpty() || isSending) return
+        val inputBeforeSend = inputText
         val editing = editingMessage
-        val rId = replyingTo?.msgId
-        val rText = replyingTo?.let { if (it.text.startsWith("{")) "Вложение" else it.text.take(80) }
-        isSending = true
+        val reply = replyingTo
+        val rId = reply?.msgId
+        val rText = reply?.let { if (it.text.startsWith("{")) "Вложение" else it.text.take(80) }
+
+        // Outbox уже оптимистичный: освобождаем composer в момент тапа, а не после IO.
+        inputText = ""
+        replyingTo = null
+        editingMessage = null
+        sendPulseTrigger++
         coroutineScope.launch {
             val error = withContext(Dispatchers.IO) {
                 if (editing != null) onEditMessage(editing.msgId, textToSend)
                 else onSendMessage(textToSend, rId, rText)
             }
-            isSending = false
-            if (error == null) {
-                inputText = ""
-                replyingTo = null
-                editingMessage = null
-            } else {
+            if (error != null) {
+                if (inputText.isEmpty() && replyingTo == null && editingMessage == null) {
+                    inputText = inputBeforeSend
+                    replyingTo = reply
+                    editingMessage = editing
+                }
                 snackbarHostState.showSnackbar(
                     message = "Ошибка отправки: ${error.message ?: "Неизвестная ошибка"}",
                     duration = SnackbarDuration.Long
@@ -204,7 +219,22 @@ fun ChatScreen(
     val arrivingMessageId = currentLastMessageId?.takeIf {
         knownLastMessageId != null && it != knownLastMessageId
     }
-    val showJump by remember { derivedStateOf { listState.canScrollForward } }
+    val showJump by remember(messages) {
+        derivedStateOf {
+            if (!listState.canScrollForward) return@derivedStateOf false
+            val info = listState.layoutInfo
+            val readableEnd = info.viewportEndOffset - info.afterContentPadding
+            val lastVisible = info.visibleItemsInfo.lastOrNull { it.offset < readableEnd }?.index
+                ?: messages.lastIndex
+            var hiddenWeight = 0
+            for (index in (lastVisible + 1)..messages.lastIndex) {
+                hiddenWeight += jumpHistoryWeight(messages[index].text)
+                if (hiddenWeight >= 10) return@derivedStateOf true
+            }
+            false
+        }
+    }
+    val userDragging by listState.interactionSource.collectIsDraggedAsState()
     val density = LocalDensity.current
     val imeInsets = WindowInsets.ime
     val imeVisible by remember(density, imeInsets) {
@@ -217,26 +247,67 @@ fun ChatScreen(
         listState.scrollBy(Float.MAX_VALUE)
     }
 
-    LaunchedEffect(listState.isScrollInProgress) {
-        if (didInitialScroll && !listState.isScrollInProgress) {
-            followLatest = !listState.canScrollForward
+    suspend fun glideToLatest() {
+        if (messages.isEmpty()) return
+        if (!appearance.animationsEnabled()) {
+            snapToLatest()
+            return
+        }
+
+        // Второй кадр нужен AnimatedVisibility, чтобы новый пузырь получил окончательный размер.
+        withFrameNanos { }
+        withFrameNanos { }
+        if (!listState.canScrollForward) return
+        val target = messages.lastIndex
+        val info = listState.layoutInfo
+        val targetItem = info.visibleItemsInfo.firstOrNull { it.index == target }
+        if (targetItem != null) {
+            val remaining = (
+                targetItem.offset + targetItem.size + info.afterContentPadding - info.viewportEndOffset
+            ).coerceAtLeast(0)
+            if (remaining > 0) {
+                listState.animateScrollBy(
+                    remaining.toFloat(),
+                    tween(appearance.motionDuration(420), easing = FastOutSlowInEasing)
+                )
+            }
+        } else {
+            // Для далёкой истории не рисуем сотни промежуточных сообщений.
+            listState.animateScrollToItem(target)
+        }
+        withFrameNanos { }
+        if (listState.canScrollForward) {
+            val settledInfo = listState.layoutInfo
+            val settledItem = settledInfo.visibleItemsInfo.firstOrNull { it.index == target }
+            val remaining = settledItem?.let {
+                (it.offset + it.size + settledInfo.afterContentPadding - settledInfo.viewportEndOffset)
+                    .coerceAtLeast(0)
+            } ?: 0
+            if (remaining > 1) {
+                listState.animateScrollBy(
+                    remaining.toFloat(),
+                    tween(appearance.motionDuration(220), easing = FastOutSlowInEasing)
+                )
+            }
+        }
+    }
+
+    LaunchedEffect(userDragging, listState.isScrollInProgress) {
+        if (didInitialScroll) {
+            if (userDragging) followLatest = false
+            else if (!listState.isScrollInProgress && !listState.canScrollForward) followLatest = true
         }
     }
 
     LaunchedEffect(currentLastMessageId) {
         if (currentLastMessageId != null) {
-            val target = messages.lastIndex
             if (!didInitialScroll) {
                 withFrameNanos { }
                 snapToLatest()
                 followLatest = true
                 didInitialScroll = true
             } else if (followLatest || messages.last().isOut) {
-                if (appearance.animationSpeed.value <= 0.01f) snapToLatest()
-                else {
-                    listState.animateScrollToItem(target)
-                    listState.scrollBy(Float.MAX_VALUE)
-                }
+                glideToLatest()
             }
         }
         knownLastMessageId = currentLastMessageId
@@ -244,7 +315,7 @@ fun ChatScreen(
 
     LaunchedEffect(imeVisible) {
         if (imeVisible && didInitialScroll && followLatest && messages.isNotEmpty()) {
-            snapToLatest()
+            glideToLatest()
         }
     }
 
@@ -263,7 +334,7 @@ fun ChatScreen(
     DisposableEffect(peerId) {
         val prev = AetherService.onTyping
         AetherService.onTyping = { from ->
-            if (from.equals(peerId, ignoreCase = true)) typingFromPeer = true
+            if (!isSavedChat && from.equals(peerId, ignoreCase = true)) typingFromPeer = true
         }
         onDispose { AetherService.onTyping = prev }
     }
@@ -333,27 +404,33 @@ fun ChatScreen(
     // Сегменты текущего голосового (для «дописать») + накопленное время прошлых сегментов.
     val voiceSegments = remember { mutableStateListOf<java.io.File>() }
     var voiceBaseMs by remember { mutableStateOf(0L) }
+    var voiceSegmentStartedAt by remember { mutableLongStateOf(0L) }
     // Превью записанного голосового (review перед отправкой) + обрезка [0..1].
     var voicePreviewFile by remember { mutableStateOf<java.io.File?>(null) }
     var voicePreviewMs by remember { mutableStateOf(0L) }
     var trimStart by remember { mutableStateOf(0f) }
     var trimEnd by remember { mutableStateOf(1f) }
 
-    LaunchedEffect(isRecordingVoice) {
+    LaunchedEffect(isRecordingVoice, voiceBaseMs) {
         if (isRecordingVoice) {
-            recordSeconds = 0
             while (isRecordingVoice) {
-                kotlinx.coroutines.delay(1000)
-                recordSeconds++
+                val currentMs = if (voiceSegmentStartedAt > 0L) {
+                    android.os.SystemClock.elapsedRealtime() - voiceSegmentStartedAt
+                } else 0L
+                recordSeconds = ((voiceBaseMs + currentMs) / 1000L).toInt()
+                kotlinx.coroutines.delay(200)
             }
         }
     }
 
     fun startVoiceRecording() {
+        var rec: android.media.MediaRecorder? = null
+        var file: java.io.File? = null
         try {
             val f = java.io.File(context.cacheDir, "voice_seg_${System.currentTimeMillis()}.m4a")
-            val rec = if (android.os.Build.VERSION.SDK_INT >= 31) android.media.MediaRecorder(context)
-                      else @Suppress("DEPRECATION") android.media.MediaRecorder()
+            file = f
+            rec = if (android.os.Build.VERSION.SDK_INT >= 31) android.media.MediaRecorder(context)
+                  else @Suppress("DEPRECATION") android.media.MediaRecorder()
             rec.setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
             rec.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
@@ -363,8 +440,14 @@ fun ChatScreen(
             voiceRecorder.value = rec
             voiceFile.value = f
             voiceSegments.add(f)
+            voiceSegmentStartedAt = android.os.SystemClock.elapsedRealtime()
             isRecordingVoice = true
-        } catch (e: Exception) {
+        } catch (_: Exception) {
+            try { rec?.release() } catch (_: Exception) {}
+            try { file?.delete() } catch (_: Exception) {}
+            voiceRecorder.value = null
+            voiceFile.value = null
+            voiceSegmentStartedAt = 0L
             isRecordingVoice = false
         }
     }
@@ -372,11 +455,25 @@ fun ChatScreen(
     // Останавливает текущий сегмент рекордера; копит время. true — есть что отправлять.
     fun finishCurrentSegment(): Boolean {
         val rec = voiceRecorder.value
-        try { rec?.stop() } catch (e: Exception) {}
-        try { rec?.release() } catch (e: Exception) {}
-        voiceRecorder.value = null
-        if (isRecordingVoice) voiceBaseMs += recordSeconds * 1000L
+        val currentFile = voiceFile.value
+        val wasRecording = isRecordingVoice
         isRecordingVoice = false
+        var stoppedCleanly = rec == null
+        try {
+            rec?.stop()
+            stoppedCleanly = true
+        } catch (_: Exception) {
+            voiceSegments.remove(currentFile)
+            try { currentFile?.delete() } catch (_: Exception) {}
+        }
+        try { rec?.release() } catch (_: Exception) {}
+        voiceRecorder.value = null
+        if (wasRecording && stoppedCleanly && voiceSegmentStartedAt > 0L) {
+            voiceBaseMs += (android.os.SystemClock.elapsedRealtime() - voiceSegmentStartedAt)
+                .coerceAtLeast(0L)
+        }
+        voiceSegmentStartedAt = 0L
+        recordSeconds = (voiceBaseMs / 1000L).toInt()
         voiceFile.value = null
         return voiceSegments.any { it.exists() && it.length() > 0 }
     }
@@ -387,6 +484,7 @@ fun ChatScreen(
         voicePreviewFile?.let { try { it.delete() } catch (e: Exception) {} }
         voicePreviewFile = null
         voiceBaseMs = 0L
+        voiceSegmentStartedAt = 0L
         recordSeconds = 0
         recordLocked = false
         trimStart = 0f; trimEnd = 1f
@@ -401,11 +499,21 @@ fun ChatScreen(
             val segs = voiceSegments.toList()
             val durMs = voiceBaseMs
             coroutineScope.launch {
-                val bytes = withContext(Dispatchers.IO) {
-                    val out = java.io.File(context.cacheDir, "voice_send_${System.currentTimeMillis()}.m4a")
-                    if (VoiceUtils.concat(segs, out)) out.readBytes() else null
+                val recording = withContext(Dispatchers.IO) {
+                    val valid = segs.filter { it.exists() && it.length() > 0L }
+                    when (valid.size) {
+                        0 -> null
+                        1 -> valid.single()
+                        else -> {
+                            val out = java.io.File(context.cacheDir, "voice_send_${System.currentTimeMillis()}.m4a")
+                            if (VoiceUtils.concat(valid, out)) out else { out.delete(); null }
+                        }
+                    }
                 }
-                val err = if (bytes != null) withContext(Dispatchers.IO) { onSendRecording(bytes, "audio/mp4", "voice", durMs) } else null
+                val err = if (recording != null) withContext(Dispatchers.IO) {
+                    try { onSendRecording(recording, "audio/mp4", "voice", durMs) }
+                    finally { recording.delete() }
+                } else IllegalStateException("Не удалось подготовить голосовое сообщение")
                 isSending = false
                 clearVoice()
                 if (err != null) snackbarHostState.showSnackbar("Ошибка отправки: ${err.message}", duration = SnackbarDuration.Long)
@@ -450,12 +558,16 @@ fun ChatScreen(
         val eMs = (trimEnd * total).toLong().coerceAtMost(total)
         isSending = true
         coroutineScope.launch {
-            val bytes = withContext(Dispatchers.IO) {
-                val out = java.io.File(context.cacheDir, "voice_trim_${System.currentTimeMillis()}.m4a")
-                if (VoiceUtils.trim(prev, out, sMs, eMs)) out.readBytes() else prev.readBytes()
-            }
             val dur = (eMs - sMs).coerceAtLeast(1000L)
-            val err = withContext(Dispatchers.IO) { onSendRecording(bytes, "audio/mp4", "voice", dur) }
+            val err = withContext(Dispatchers.IO) {
+                val out = java.io.File(context.cacheDir, "voice_trim_${System.currentTimeMillis()}.m4a")
+                try {
+                    val recording = if (VoiceUtils.trim(prev, out, sMs, eMs)) out else prev
+                    onSendRecording(recording, "audio/mp4", "voice", dur)
+                } finally {
+                    out.delete()
+                }
+            }
             isSending = false
             clearVoice()
             if (err != null) snackbarHostState.showSnackbar("Ошибка отправки: ${err.message}", duration = SnackbarDuration.Long)
@@ -471,18 +583,23 @@ fun ChatScreen(
     fun sendVideoNoteFile(f: java.io.File) {
         isSending = true
         coroutineScope.launch {
-            val bytes = withContext(Dispatchers.IO) { try { f.readBytes() } catch (e: Exception) { null } }
-            val durMs = withContext(Dispatchers.IO) {
+            val result = withContext(Dispatchers.IO) {
                 try {
-                    val r = android.media.MediaMetadataRetriever()
-                    r.setDataSource(f.absolutePath)
-                    val d = r.extractMetadata(android.media.MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L
-                    r.release(); d
-                } catch (e: Exception) { 0L }
+                    val duration = VideoUtils.durationMs(f)
+                    onSendRecording(f, "video/mp4", "video_note", duration)
+                } catch (e: Exception) {
+                    e
+                } finally {
+                    f.delete()
+                }
             }
-            val err = if (bytes != null) withContext(Dispatchers.IO) { onSendRecording(bytes, "video/mp4", "video_note", durMs) } else null
             isSending = false
-            if (err != null) snackbarHostState.showSnackbar("Ошибка отправки: ${err.message}", duration = SnackbarDuration.Long)
+            if (result != null) {
+                snackbarHostState.showSnackbar(
+                    "Ошибка отправки: ${result.message}",
+                    duration = SnackbarDuration.Long
+                )
+            }
         }
     }
     fun launchVideoNote() {
@@ -490,6 +607,16 @@ fun ChatScreen(
     }
     val cameraPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
         if (perms[android.Manifest.permission.CAMERA] == true && perms[android.Manifest.permission.RECORD_AUDIO] == true) launchVideoNote()
+    }
+
+    DisposableEffect(Unit) {
+        onDispose {
+            try { voiceRecorder.value?.stop() } catch (_: Exception) {}
+            try { voiceRecorder.value?.release() } catch (_: Exception) {}
+            voiceRecorder.value = null
+            voiceSegments.forEach { try { it.delete() } catch (_: Exception) {} }
+            voicePreviewFile?.let { try { it.delete() } catch (_: Exception) {} }
+        }
     }
 
     // ---- Фото с камеры ----
@@ -592,19 +719,32 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(peerColor(peerId))
-                                    .clickable { onOpenProfile() },
+                                    .background(if (isSavedChat) Color(0xFFFFB400) else peerColor(peerId))
+                                    .clickable(enabled = !isSavedChat) { onOpenProfile() },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Text(
-                                    peerDisplayName.trim().firstOrNull()?.uppercase() ?: "?",
-                                    color = Color.White,
-                                    fontSize = 15.sp,
-                                    fontWeight = FontWeight.Bold
-                                )
+                                if (isSavedChat) {
+                                    Icon(
+                                        Icons.Default.Star,
+                                        contentDescription = null,
+                                        tint = Color.White,
+                                        modifier = Modifier.size(20.dp)
+                                    )
+                                } else {
+                                    Text(
+                                        peerDisplayName.trim().firstOrNull()?.uppercase() ?: "?",
+                                        color = Color.White,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
+                                }
                             }
                             Spacer(Modifier.width(9.dp))
-                            Column(modifier = Modifier.weight(1f).clickable { onOpenProfile() }) {
+                            Column(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clickable(enabled = !isSavedChat) { onOpenProfile() }
+                            ) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(
                                         peerDisplayName,
@@ -620,7 +760,7 @@ fun ChatScreen(
                                         Text(peerStatusEmoji!!, fontSize = 14.sp, maxLines = 1)
                                     }
                                 }
-                                val isTyping = typingFromPeer && !isChannelChat
+                                val isTyping = typingFromPeer && !isSavedChat && !isChannelChat
                                 if (isTyping) {
                                     var dots by remember { mutableStateOf(1) }
                                     LaunchedEffect(Unit) {
@@ -639,6 +779,7 @@ fun ChatScreen(
                                         }
                                     }
                                     val (subtitle, subColor) = when {
+                                        isSavedChat -> "Личные сохраненные сообщения" to MaterialTheme.colorScheme.onSurfaceVariant
                                         isChannelChat -> (memberCount?.let { "$it подписчиков" } ?: "Канал") to MaterialTheme.colorScheme.onSurfaceVariant
                                         isGroupChat -> (memberCount?.let { "$it участников" } ?: "Группа") to MaterialTheme.colorScheme.onSurfaceVariant
                                         else -> peerStatus.ifBlank { "был(а) недавно" } to
@@ -661,7 +802,7 @@ fun ChatScreen(
                                     Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 }
                             }
-                            Box {
+                            if (!isSavedChat) Box {
                                 IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(38.dp)) {
                                     Icon(Icons.Default.MoreVert, contentDescription = "Меню чата", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
@@ -689,7 +830,9 @@ fun ChatScreen(
                     modifier = Modifier
                         .fillMaxWidth()
                         .heightIn(min = appearance.edgeDimLength.value.dp)
-                        .imePadding()
+                        .graphicsLayer {
+                            translationY = -imeInsets.getBottom(density).toFloat()
+                        }
                         .zIndex(2f),
                     contentAlignment = Alignment.BottomCenter
                 ) {
@@ -714,44 +857,50 @@ fun ChatScreen(
                       }
                   } else {
                   Column {
-                    if (editingMessage != null) {
+                    val composerContextMessage = editingMessage ?: replyingTo
+                    val composerContextIsEditing = editingMessage != null
+                    AnimatedVisibility(
+                        visible = composerContextMessage != null,
+                        enter = fadeIn(tween(appearance.motionDuration(150))) + expandVertically(
+                            animationSpec = tween(appearance.motionDuration(190), easing = FastOutSlowInEasing),
+                            expandFrom = Alignment.Bottom
+                        ),
+                        exit = fadeOut(tween(appearance.motionDuration(110))) + shrinkVertically(
+                            animationSpec = tween(appearance.motionDuration(160), easing = FastOutSlowInEasing),
+                            shrinkTowards = Alignment.Bottom
+                        )
+                    ) {
+                        val accent = if (composerContextIsEditing) Color(0xFFF59E0B) else MaterialTheme.colorScheme.primary
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Box(modifier = Modifier.width(3.dp).height(36.dp).background(Color(0xFFF59E0B)))
+                            Box(modifier = Modifier.width(3.dp).height(36.dp).background(accent))
                             Spacer(Modifier.width(10.dp))
                             Column(modifier = Modifier.weight(1f)) {
-                                Text("Редактирование", color = Color(0xFFF59E0B), fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 Text(
-                                    editingMessage?.text ?: "",
+                                    if (composerContextIsEditing) "Редактирование" else "Ответ",
+                                    color = accent,
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    composerContextMessage?.text?.let {
+                                        if (!composerContextIsEditing && it.startsWith("{")) "Вложение" else it
+                                    }.orEmpty(),
                                     maxLines = 1,
                                     fontSize = 13.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
-                            IconButton(onClick = { editingMessage = null; inputText = "" }) {
-                                Icon(Icons.Default.Close, contentDescription = "Отмена", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        }
-                    }
-                    if (replyingTo != null) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Box(modifier = Modifier.width(3.dp).height(36.dp).background(MaterialTheme.colorScheme.primary))
-                            Spacer(Modifier.width(10.dp))
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Ответ", color = MaterialTheme.colorScheme.primary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Text(
-                                    replyingTo?.let { if (it.text.startsWith("{")) "Вложение" else it.text } ?: "",
-                                    maxLines = 1,
-                                    fontSize = 13.sp,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                            IconButton(onClick = { replyingTo = null }) {
+                            IconButton(onClick = {
+                                if (composerContextIsEditing) {
+                                    editingMessage = null
+                                    inputText = ""
+                                } else {
+                                    replyingTo = null
+                                }
+                            }) {
                                 Icon(Icons.Default.Close, contentDescription = "Отмена", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                             }
                         }
@@ -847,7 +996,7 @@ fun ChatScreen(
                                 value = inputText,
                                 onValueChange = {
                                     inputText = it
-                                    if (it.isNotEmpty()) {
+                                    if (!isSavedChat && it.isNotEmpty()) {
                                         val now = System.currentTimeMillis()
                                         if (now - lastTypingSent > 2500) {
                                             lastTypingSent = now
@@ -876,11 +1025,11 @@ fun ChatScreen(
                         val sendActive = (inputText.isNotBlank() || isRecordingVoice || voicePreviewFile != null) && !isSending
                         val sendBg by animateColorAsState(
                             targetValue = if (sendActive) MaterialTheme.colorScheme.primary else aetherSurface(AetherStyle.ControlFillAlpha),
-                            animationSpec = tween(org.groktest.securemessenger.ui.theme.LocalThemeSettings.current.motionDuration(200)),
+                            animationSpec = tween(org.groktest.securemessenger.ui.theme.LocalThemeSettings.current.motionDuration(280)),
                             label = "sendBg"
                         )
                         // Лёгкая пульсация кнопки во время незалоченной записи (живее, как в TG).
-                        val btnScale = if (isRecordingVoice && !recordLocked) {
+                        val recordingScale = if (isRecordingVoice && !recordLocked) {
                             val micPulse by rememberInfiniteTransition(label = "micPulse").animateFloat(
                                 initialValue = 1f,
                                 targetValue = 1.12f,
@@ -894,6 +1043,19 @@ fun ChatScreen(
                         } else {
                             1f
                         }
+                        val sendTapScale = remember { Animatable(1f) }
+                        LaunchedEffect(sendPulseTrigger, appearance.experimentalAnimations.value, appearance.animationSpeed.value) {
+                            if (sendPulseTrigger == 0 || !appearance.animationsEnabled()) {
+                                sendTapScale.snapTo(1f)
+                            } else {
+                                sendTapScale.animateTo(0.88f, tween(appearance.motionDuration(110)))
+                                sendTapScale.animateTo(
+                                    1f,
+                                    spring(dampingRatio = 0.82f, stiffness = 320f * appearance.animationSpeed.value)
+                                )
+                            }
+                        }
+                        val btnScale = recordingScale * sendTapScale.value
                         Box(
                             modifier = Modifier
                                 .size(AetherStyle.ControlSize)
@@ -1058,8 +1220,7 @@ fun ChatScreen(
                           shadowElevation = 4.dp,
                           modifier = Modifier.size(46.dp).clickable {
                               coroutineScope.launch {
-                                  listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0))
-                                  listState.scrollBy(Float.MAX_VALUE)
+                                  glideToLatest()
                               }
                           }
                       ) {
@@ -1107,10 +1268,16 @@ fun ChatScreen(
                         start = 8.dp,
                         top = if (notE2e) 8.dp else AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
                         end = 8.dp,
-                        bottom = appearance.edgeDimLength.value.dp + AetherStyle.ScreenVertical
+                        bottom = appearance.edgeDimLength.value.dp +
+                            AetherStyle.ScreenVertical +
+                            imeInsets.asPaddingValues().calculateBottomPadding()
                     )
                 ) {
-                    itemsIndexed(messages, key = { _, m -> m.msgId }) { index, msg ->
+                    itemsIndexed(
+                        items = messages,
+                        key = { _, m -> m.msgId },
+                        contentType = { _, m -> if (m.text.startsWith("{")) "media" else "text" }
+                    ) { index, msg ->
                         // Группировка как в Telegram: разделители дат, тесная группа
                         // сообщений одного автора, «хвост» пузыря только у последнего.
                         val prev = messages.getOrNull(index - 1)
@@ -1146,9 +1313,17 @@ fun ChatScreen(
                                         }
                                     },
                                     myId = myId,
-                                    onReact = onReact,
+                                    onReact = { messageId, emoji ->
+                                        onReact(messageId, emoji)
+                                        if (followLatest && messageId == currentLastMessageId) {
+                                            coroutineScope.launch { glideToLatest() }
+                                        }
+                                    },
                                     onRetry = onRetryMessage,
-                                    onReply = { replyingTo = it },
+                                    onReply = {
+                                        editingMessage = null
+                                        replyingTo = it
+                                    },
                                     onEdit = {
                                         replyingTo = null
                                         editingMessage = it
@@ -1159,7 +1334,7 @@ fun ChatScreen(
                                 )
                             }
                             val animateArrival = remember(msg.msgId) {
-                                msg.msgId == arrivingMessageId && appearance.animationSpeed.value > 0.01f
+                                msg.msgId == arrivingMessageId && appearance.animationsEnabled()
                             }
                             if (animateArrival) {
                                 var visible by remember(msg.msgId) { mutableStateOf(false) }
@@ -1167,14 +1342,23 @@ fun ChatScreen(
                                     withFrameNanos { }
                                     visible = true
                                 }
-                                val duration = appearance.motionDuration(if (isChannelChat) 440 else 340)
+                                val duration = appearance.motionDuration(if (isChannelChat) 520 else if (msg.isOut) 420 else 460)
+                                val origin = androidx.compose.ui.graphics.TransformOrigin(
+                                    pivotFractionX = if (msg.isOut && !isChannelChat) 1f else 0f,
+                                    pivotFractionY = 1f
+                                )
                                 androidx.compose.animation.AnimatedVisibility(
                                     visible = visible,
-                                    enter = androidx.compose.animation.fadeIn(tween(appearance.motionDuration(220))) +
+                                    enter = androidx.compose.animation.fadeIn(tween(appearance.motionDuration(300))) +
+                                        androidx.compose.animation.scaleIn(
+                                            animationSpec = tween(duration, easing = FastOutSlowInEasing),
+                                            initialScale = 0.92f,
+                                            transformOrigin = origin
+                                        ) +
                                         androidx.compose.animation.slideInVertically(
                                             animationSpec = tween(duration, easing = FastOutSlowInEasing),
                                             initialOffsetY = {
-                                                (it * 0.18f * appearance.motionIntensity.value).toInt().coerceAtMost(72)
+                                                (it * 0.16f * appearance.motionIntensity.value).toInt().coerceAtMost(56)
                                             }
                                         ),
                                     exit = androidx.compose.animation.fadeOut(tween(appearance.motionDuration(160)))
@@ -1574,12 +1758,34 @@ fun MessageBubble(
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val appearance = org.groktest.securemessenger.ui.theme.LocalThemeSettings.current
     val quickReaction = appearance.quickReaction.value
-    // Моя текущая реакция на это сообщение (для toggle «снять» и подсветки в пикере)
-    val myReaction = remember(msg.reactions, myId) {
+    val storedReactions = remember(msg.reactions) {
         try {
-            if (msg.reactions.isBlank()) null
-            else org.json.JSONObject(msg.reactions).optString(myId, "").ifBlank { null }
-        } catch (e: Exception) { null }
+            if (msg.reactions.isBlank()) emptyMap()
+            else {
+                val json = org.json.JSONObject(msg.reactions)
+                json.keys().asSequence().associateWith { json.getString(it) }
+            }
+        } catch (_: Exception) { emptyMap() }
+    }
+    val storedMyReaction = storedReactions[myId]
+    var reactionPending by remember(msg.msgId) { mutableStateOf(false) }
+    var optimisticReaction by remember(msg.msgId) { mutableStateOf<String?>(null) }
+    val myReaction = if (reactionPending) optimisticReaction else storedMyReaction
+    val reactionsMap = remember(storedReactions, reactionPending, optimisticReaction, myId) {
+        if (!reactionPending || myId.isBlank()) storedReactions
+        else storedReactions.toMutableMap().apply {
+            if (optimisticReaction == null) remove(myId) else put(myId, optimisticReaction!!)
+        }
+    }
+    LaunchedEffect(storedMyReaction, reactionPending, optimisticReaction) {
+        if (!reactionPending) return@LaunchedEffect
+        val expected = optimisticReaction
+        if (storedMyReaction == expected) {
+            reactionPending = false
+        } else {
+            kotlinx.coroutines.delay(2500)
+            if (reactionPending && optimisticReaction == expected) reactionPending = false
+        }
     }
     // Стекло на пузырях ломает рендер (видео-кружки = SurfaceView + RenderEffect → чёрный/глитч),
     // плюс блюр сплошной ленты делает текст нечитаемым. Стекло применяем только к
@@ -1602,8 +1808,8 @@ fun MessageBubble(
     var reactionBurstEmoji by remember(msg.msgId) { mutableStateOf(quickReaction) }
     val reactionBurst = remember(msg.msgId) { Animatable(1f) }
 
-    LaunchedEffect(reactionBurstTrigger, appearance.animationSpeed.value, appearance.reactionEffects.value) {
-        if (reactionBurstTrigger == 0 || !appearance.reactionEffects.value || appearance.animationSpeed.value <= 0.01f) {
+    LaunchedEffect(reactionBurstTrigger, appearance.experimentalAnimations.value, appearance.animationSpeed.value, appearance.reactionEffects.value) {
+        if (reactionBurstTrigger == 0 || !appearance.reactionEffects.value || !appearance.animationsEnabled()) {
             reactionBurst.snapTo(1f)
             return@LaunchedEffect
         }
@@ -1615,8 +1821,10 @@ fun MessageBubble(
     }
 
     fun react(emoji: String, remove: Boolean) {
+        optimisticReaction = if (remove) null else emoji
+        reactionPending = true
         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-        if (!remove && appearance.reactionEffects.value && appearance.animationSpeed.value > 0.01f) {
+        if (!remove && appearance.reactionEffects.value && appearance.animationsEnabled()) {
             reactionBurstEmoji = emoji
             reactionBurstTrigger++
         }
@@ -1681,7 +1889,7 @@ fun MessageBubble(
                             coroutineScope.launch {
                                 swipeOffset.animateTo(
                                     0f,
-                                    if (appearance.animationSpeed.value <= 0.01f) snap() else spring(
+                                    if (!appearance.animationsEnabled()) snap() else spring(
                                         dampingRatio = 0.82f,
                                         stiffness = 420f * appearance.animationSpeed.value
                                     )
@@ -1804,55 +2012,73 @@ fun MessageBubble(
                             tint = textColor,
                             onDownloadMedia = onDownloadMedia
                         )
-                    } else if (mediaFile != null) {
-                        if (kind == "image" || mimeType.startsWith("image/")) {
-                            var showFullscreen by remember { mutableStateOf(false) }
-                            val imageAspect = remember(mediaText) {
-                                val width = json?.optDouble("width", 0.0) ?: 0.0
-                                val height = json?.optDouble("height", 0.0) ?: 0.0
-                                if (width > 0.0 && height > 0.0) {
-                                    (width / height).toFloat().coerceIn(0.84f, 1.8f)
-                                } else {
-                                    4f / 3f
+                    } else if (kind == "image") {
+                        var showFullscreen by remember { mutableStateOf(false) }
+                        val imageAspect = remember(mediaText) {
+                            val width = json?.optDouble("width", 0.0) ?: 0.0
+                            val height = json?.optDouble("height", 0.0) ?: 0.0
+                            if (width > 0.0 && height > 0.0) {
+                                (width / height).toFloat().coerceIn(0.84f, 1.8f)
+                            } else {
+                                4f / 3f
+                            }
+                        }
+                        Box(
+                            modifier = Modifier
+                                .width(300.dp)
+                                .aspectRatio(imageAspect)
+                                .clip(RoundedCornerShape(AetherStyle.MediaRadius))
+                                .background(textColor.copy(alpha = 0.08f))
+                                .clickable(enabled = mediaFile != null) { showFullscreen = true },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Crossfade(
+                                targetState = mediaFile,
+                                animationSpec = tween(appearance.motionDuration(180)),
+                                label = "messageImage"
+                            ) { imageFile ->
+                                when {
+                                    imageFile != null -> coil.compose.AsyncImage(
+                                        model = imageFile,
+                                        contentDescription = "Вложение",
+                                        modifier = Modifier.fillMaxSize(),
+                                        contentScale = androidx.compose.ui.layout.ContentScale.Crop
+                                    )
+                                    errorMessage != null -> Text(
+                                        errorMessage!!,
+                                        color = MaterialTheme.colorScheme.error,
+                                        fontSize = 12.sp
+                                    )
+                                    else -> CircularProgressIndicator(
+                                        modifier = Modifier.size(24.dp),
+                                        color = textColor
+                                    )
                                 }
                             }
+                        }
+                        val fullscreenFile = mediaFile
+                        if (showFullscreen && fullscreenFile != null) {
+                            FullscreenImageViewer(
+                                imageModel = fullscreenFile,
+                                onClose = { showFullscreen = false }
+                            )
+                        }
+                    } else if (mediaFile != null) {
+                        if (mimeType.startsWith("image/")) {
                             coil.compose.AsyncImage(
                                 model = mediaFile,
                                 contentDescription = "Вложение",
                                 modifier = Modifier
                                     .width(300.dp)
-                                    .aspectRatio(imageAspect)
-                                    .clip(RoundedCornerShape(AetherStyle.MediaRadius))
-                                    // (#A5) Тап — полноэкранный просмотр с зумом
-                                    .clickable { showFullscreen = true },
+                                    .aspectRatio(4f / 3f)
+                                    .clip(RoundedCornerShape(AetherStyle.MediaRadius)),
                                 contentScale = androidx.compose.ui.layout.ContentScale.Crop
                             )
-                            if (showFullscreen) {
-                                FullscreenImageViewer(
-                                    imageModel = mediaFile!!,
-                                    onClose = { showFullscreen = false }
-                                )
-                            }
                         } else {
                             Text("Файл загружен", color = textColor, fontSize = 14.sp)
                         }
                     } else {
-                        if (kind == "image") {
-                            if (isDownloading) {
-                                Box(
-                                    modifier = Modifier
-                                        .width(300.dp)
-                                        .aspectRatio(4f / 3f)
-                                        .clip(RoundedCornerShape(AetherStyle.MediaRadius))
-                                        .background(textColor.copy(alpha = 0.08f)),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    CircularProgressIndicator(modifier = Modifier.size(24.dp), color = textColor)
-                                }
-                            } else if (errorMessage != null) {
-                                Text(errorMessage!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
-                            }
-                        } else if (isDownloading) {
+                        if (isDownloading) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onBackground)
                         } else {
                             Button(
@@ -1897,54 +2123,70 @@ fun MessageBubble(
                     }
                 }
 
-                val reactionsMap = remember(msg.reactions) {
-                    try {
-                        if (msg.reactions.isBlank()) emptyMap<String, String>()
-                        else {
-                            val o = org.json.JSONObject(msg.reactions)
-                            o.keys().asSequence().associateWith { o.getString(it) }
-                        }
-                    } catch (e: Exception) { emptyMap<String, String>() }
+                var renderedReactions by remember(msg.msgId) { mutableStateOf(reactionsMap) }
+                var reactionRevision by remember(msg.msgId) { mutableIntStateOf(0) }
+                var reactionsInitialized by remember(msg.msgId) { mutableStateOf(false) }
+                LaunchedEffect(reactionsMap) {
+                    if (reactionsInitialized) reactionRevision++ else reactionsInitialized = true
+                    if (reactionsMap.isNotEmpty()) {
+                        renderedReactions = reactionsMap
+                    } else {
+                        kotlinx.coroutines.delay(appearance.motionDuration(220).toLong())
+                        renderedReactions = emptyMap()
+                    }
                 }
-                if (reactionsMap.isNotEmpty()) {
-                    val counts = reactionsMap.values.toSet()
+                AnimatedVisibility(
+                    visible = reactionsMap.isNotEmpty(),
+                    enter = fadeIn(tween(appearance.motionDuration(220))) +
+                        androidx.compose.animation.scaleIn(
+                            animationSpec = tween(appearance.motionDuration(280), easing = FastOutSlowInEasing),
+                            initialScale = 0.82f,
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                        ),
+                    exit = fadeOut(tween(appearance.motionDuration(190))) +
+                        androidx.compose.animation.scaleOut(
+                            animationSpec = tween(appearance.motionDuration(240), easing = FastOutSlowInEasing),
+                            targetScale = 0.82f,
+                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
+                        )
+                ) {
+                    val counts = renderedReactions.values.toSet()
                     val chipBg = if (msg.isOut) Color.White.copy(alpha = 0.18f)
                         else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
-                    Spacer(Modifier.height(4.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        counts.forEach { emoji ->
-                            key(emoji) {
-                                val scale = remember(msg.msgId, emoji) { Animatable(1f) }
-                                LaunchedEffect(msg.reactions, appearance.animationSpeed.value, appearance.reactionEffects.value) {
-                                    if (appearance.reactionEffects.value && appearance.animationSpeed.value > 0.01f) {
-                                        scale.snapTo(0.58f)
-                                        scale.animateTo(
-                                            1f,
-                                            spring(
-                                                dampingRatio = (0.72f - appearance.motionIntensity.value * 0.16f).coerceIn(0.42f, 0.72f),
-                                                stiffness = 520f * appearance.animationSpeed.value
+                    Column {
+                        Spacer(Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            counts.forEach { emoji ->
+                                key(emoji) {
+                                    val scale = remember(msg.msgId, emoji) { Animatable(1f) }
+                                    LaunchedEffect(reactionRevision, appearance.experimentalAnimations.value, appearance.animationSpeed.value, appearance.reactionEffects.value) {
+                                        if (reactionRevision > 0 && appearance.reactionEffects.value && appearance.animationsEnabled()) {
+                                            scale.snapTo(0.78f)
+                                            scale.animateTo(
+                                                1f,
+                                                spring(
+                                                    dampingRatio = (0.82f - appearance.motionIntensity.value * 0.1f).coerceIn(0.58f, 0.82f),
+                                                    stiffness = 300f * appearance.animationSpeed.value
+                                                )
                                             )
-                                        )
-                                    } else {
-                                        scale.snapTo(1f)
-                                    }
-                                }
-                                val mineChip = myReaction == emoji
-                                val count = reactionsMap.values.count { it == emoji }
-                                Box(
-                                    modifier = Modifier
-                                        .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
-                                        .clip(RoundedCornerShape(12.dp))
-                                        // Моя реакция чуть ярче; тап по чипу — поставить/снять
-                                        .background(if (mineChip) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else chipBg)
-                                        .clickable {
-                                            react(emoji, mineChip)
+                                        } else {
+                                            scale.snapTo(1f)
                                         }
-                                        .padding(horizontal = 8.dp, vertical = 3.dp)
-                                ) {
-                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                                        Text(emoji, fontSize = 13.sp, color = textColor)
-                                        if (count > 1) Text(count.toString(), fontSize = 11.sp, color = textColor.copy(alpha = 0.75f))
+                                    }
+                                    val mineChip = myReaction == emoji
+                                    val count = renderedReactions.values.count { it == emoji }
+                                    Box(
+                                        modifier = Modifier
+                                            .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
+                                            .clip(RoundedCornerShape(12.dp))
+                                            .background(if (mineChip) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else chipBg)
+                                            .clickable { react(emoji, mineChip) }
+                                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                                    ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
+                                            Text(emoji, fontSize = 13.sp, color = textColor)
+                                            if (count > 1) Text(count.toString(), fontSize = 11.sp, color = textColor.copy(alpha = 0.75f))
+                                        }
                                     }
                                 }
                             }
@@ -1958,7 +2200,7 @@ fun MessageBubble(
                         horizontalArrangement = Arrangement.End,
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        if (msg.isEdited) {
+                        if (msg.isEdited && !isMedia) {
                             Text(
                                 "изм.",
                                 fontSize = 11.sp,
@@ -1975,27 +2217,33 @@ fun MessageBubble(
                         if (isOut) {
                             Spacer(Modifier.width(3.dp))
                             // (#A2) -1 = ошибка отправки, 0 = в очереди (optimistic send)
-                            when {
-                                msg.status == -1 -> Icon(
-                                    Icons.Filled.ErrorOutline,
-                                    contentDescription = "Ошибка отправки",
-                                    tint = MaterialTheme.colorScheme.error,
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                msg.status == 0 -> Icon(
-                                    Icons.Filled.Schedule,
-                                    contentDescription = "Отправляется",
-                                    tint = textColor.copy(alpha = 0.6f),
-                                    modifier = Modifier.size(14.dp)
-                                )
-                                // 1 = отправлено (✓), 2 = доставлено (✓✓ серая),
-                                // 3 = прочитано (✓✓ зелёная) — как в Telegram.
-                                else -> Icon(
-                                    if (msg.status >= 2) Icons.Filled.DoneAll else Icons.Filled.Done,
-                                    contentDescription = null,
-                                    tint = if (msg.status >= 3) Color(0xFF4ADE80) else textColor.copy(alpha = 0.6f),
-                                    modifier = Modifier.size(14.dp)
-                                )
+                            Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+                                Crossfade(
+                                    targetState = msg.status,
+                                    animationSpec = tween(appearance.motionDuration(200)),
+                                    label = "messageStatus"
+                                ) { status ->
+                                    when {
+                                        status == -1 -> Icon(
+                                            Icons.Filled.ErrorOutline,
+                                            contentDescription = "Ошибка отправки",
+                                            tint = MaterialTheme.colorScheme.error,
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        status == 0 -> Icon(
+                                            Icons.Filled.Schedule,
+                                            contentDescription = "Отправляется",
+                                            tint = textColor.copy(alpha = 0.6f),
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                        else -> Icon(
+                                            if (status >= 2) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                            contentDescription = null,
+                                            tint = if (status >= 3) Color(0xFF4ADE80) else textColor.copy(alpha = 0.6f),
+                                            modifier = Modifier.fillMaxSize()
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -2011,7 +2259,7 @@ fun MessageBubble(
             }
             val fade = if (progress < 0.64f) 1f else (1f - (progress - 0.64f) / 0.36f).coerceIn(0f, 1f)
             val radius = with(androidx.compose.ui.platform.LocalDensity.current) {
-                appearance.motionDistance(42f).dp.toPx()
+                appearance.motionDistance(34f).dp.toPx()
             }
             Box(
                 modifier = Modifier
@@ -2019,8 +2267,8 @@ fun MessageBubble(
                     .size(112.dp),
                 contentAlignment = Alignment.Center
             ) {
-                repeat(6) { index ->
-                    val angle = index * 1.0472f - 1.5708f
+                repeat(4) { index ->
+                    val angle = index * 1.5708f - 1.5708f
                     Text(
                         reactionBurstEmoji,
                         fontSize = 12.sp,
@@ -2058,9 +2306,9 @@ fun MessageBubble(
                     val pressed by interaction.collectIsPressedAsState()
                     val sc by animateFloatAsState(
                         targetValue = if (pressed) 1.4f else 1f,
-                        animationSpec = if (appearance.animationSpeed.value <= 0.01f) snap() else spring(
-                            dampingRatio = 0.55f,
-                            stiffness = 520f * appearance.animationSpeed.value
+                        animationSpec = if (!appearance.animationsEnabled()) snap() else spring(
+                            dampingRatio = 0.72f,
+                            stiffness = 340f * appearance.animationSpeed.value
                         ),
                         label = "emojiScale"
                     )
@@ -2072,8 +2320,11 @@ fun MessageBubble(
                             // Подсветка моей выбранной реакции — повторный тап её снимает
                             .background(if (mine) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.Transparent)
                             .clickable(interactionSource = interaction, indication = null) {
-                                react(e, mine)
                                 menuOpen = false
+                                coroutineScope.launch {
+                                    kotlinx.coroutines.delay(100)
+                                    react(e, mine)
+                                }
                             }
                             .padding(horizontal = 6.dp, vertical = 2.dp),
                         contentAlignment = Alignment.Center
@@ -2271,6 +2522,15 @@ fun FullscreenImageViewer(imageModel: Any, onClose: () -> Unit) {
 }
 
 // ---- Хелперы чата (как в Telegram) ----
+
+private fun jumpHistoryWeight(raw: String): Int {
+    if (!raw.trimStart().startsWith("{")) return 1
+    return when (parseMediaPayloadForDisplay(raw)?.optString("kind")) {
+        "image", "video", "video_note", "video_msg", "circle" -> 5
+        "voice", "file", "document" -> 2
+        else -> 1
+    }
+}
 
 private fun parseMediaPayloadForDisplay(raw: String): org.json.JSONObject? {
     val obj = try { org.json.JSONObject(raw) } catch (e: Exception) { return null }

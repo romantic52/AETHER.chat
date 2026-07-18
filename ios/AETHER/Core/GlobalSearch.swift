@@ -91,6 +91,34 @@ enum ChannelDirectory {
     }
 }
 
+// Эмодзи-статусы профилей (ядро про них не знает — ходим напрямую).
+enum ProfileHTTP {
+    static func statusEmoji(_ userId: String) async -> String? {
+        guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
+              let url = URL(string: "\(CoreClient.baseURL)/users/\(userId)/profile") else { return nil }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return obj["status_emoji"] as? String ?? ""
+    }
+
+    /// Пустая строка — снять статус.
+    @discardableResult
+    static func setStatusEmoji(_ emoji: String) async -> Bool {
+        guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
+              let url = URL(string: "\(CoreClient.baseURL)/users/me/profile") else { return false }
+        var req = URLRequest(url: url)
+        req.httpMethod = "PUT"
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        req.httpBody = try? JSONSerialization.data(withJSONObject: ["status_emoji": emoji])
+        guard let (_, resp) = try? await URLSession.shared.data(for: req) else { return false }
+        return (resp as? HTTPURLResponse)?.statusCode == 200
+    }
+}
+
 enum GlobalSearch {
     struct Results: Equatable {
         var users: [FoundUser] = []

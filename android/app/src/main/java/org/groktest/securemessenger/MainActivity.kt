@@ -41,6 +41,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 
+private fun androidx.navigation.NavHostController.navigateSingle(route: String) {
+    navigate(route) { launchSingleTop = true }
+}
+
 class MainActivity : FragmentActivity() {
 
     // (#A2) Вся логика сообщений — в MessageRepository (создаётся после логина,
@@ -67,6 +71,13 @@ class MainActivity : FragmentActivity() {
     @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Один общий загрузчик умеет брать лёгкий первый кадр видео без запуска плеера.
+        coil.Coil.setImageLoader(
+            coil.ImageLoader.Builder(applicationContext)
+                .components { add(coil.decode.VideoFrameDecoder.Factory()) }
+                .build()
+        )
 
         // Замок приложения: если включён PIN — блокируем сразу при старте
         org.groktest.securemessenger.data.AppLock.onStart(this)
@@ -152,15 +163,12 @@ class MainActivity : FragmentActivity() {
                             }
                         ) {
                             composable("login") {
-                        // Миграция: удаляем старый небезопасный "server|username|password"
-                        val legacyPrefs = getSharedPreferences("AetherPrefs", MODE_PRIVATE)
-                        if (legacyPrefs.contains("saved_login")) {
-                            legacyPrefs.edit().remove("saved_login").apply()
-                        }
                         val savedSession = remember { sessionPrefs.load() }
+                        val legacyLogin = remember { sessionPrefs.legacyLogin() }
 
                         LoginScreen(
                             savedSession = savedSession,
+                            legacyLogin = legacyLogin,
                             onLoginSuccess = { prefs, kp, apiInstance, id, rememberMe ->
                                 val accountId = id.lowercase()
                                 if (storeAccount != accountId) {
@@ -191,6 +199,9 @@ class MainActivity : FragmentActivity() {
                                     sessionPrefs.save(prefs.substringBefore("|"), id, token)
                                 } else {
                                     sessionPrefs.clear()
+                                }
+                                if (legacyLogin?.username?.equals(id, ignoreCase = true) == true) {
+                                    sessionPrefs.clearLegacyLogin()
                                 }
 
                                 org.groktest.securemessenger.api.ServerConfig.baseUrl = prefs.substringBefore("|")
@@ -296,7 +307,7 @@ class MainActivity : FragmentActivity() {
                             onChatSelected = { peerId ->
                                 coroutineScope.launch {
                                     withContext(Dispatchers.IO) { store.preloadMessages(peerId) }
-                                    navController.navigate("chat/$peerId")
+                                    navController.navigateSingle("chat/$peerId")
                                 }
                             },
                             onLogout = {
@@ -321,16 +332,16 @@ class MainActivity : FragmentActivity() {
                                 }
                             },
                             onNewChat = {
-                                navController.navigate("search")
+                                navController.navigateSingle("search")
                             },
                             onNavigateToCustomization = {
-                                navController.navigate("customization")
+                                navController.navigateSingle("customization")
                             },
                             onNavigateToSearch = {
-                                navController.navigate("search")
+                                navController.navigateSingle("search")
                             },
                             onCreateGroupClick = { asChannel ->
-                                navController.navigate("create_group?name=&channel=$asChannel")
+                                navController.navigateSingle("create_group?name=&channel=$asChannel")
                             },
                             onAction = { peerId, action ->
                                 coroutineScope.launch(Dispatchers.IO) {
@@ -343,11 +354,11 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
                             },
-                            onNavigateToProfileSettings = { navController.navigate("profile_settings") },
-                            onNavigateToNotificationsSettings = { navController.navigate("notifications_settings") },
-                            onNavigateToPrivacySettings = { navController.navigate("privacy_settings") },
-                            onNavigateToAboutApp = { navController.navigate("about_app") },
-                            onNavigateToSecret = { navController.navigate("secret_settings") },
+                            onNavigateToProfileSettings = { navController.navigateSingle("profile_settings") },
+                            onNavigateToNotificationsSettings = { navController.navigateSingle("notifications_settings") },
+                            onNavigateToPrivacySettings = { navController.navigateSingle("privacy_settings") },
+                            onNavigateToAboutApp = { navController.navigateSingle("about_app") },
+                            onNavigateToExperiments = { navController.navigateSingle("secret_settings") },
                             onStartAudioCall = { peerId -> activeCall = Triple(peerId, false, false) },
                             onStartVideoCall = { peerId -> activeCall = Triple(peerId, true, false) }
                         )
@@ -409,11 +420,12 @@ class MainActivity : FragmentActivity() {
                                 api = apiSafe,
                                 myId = myId,
                                 onBack = { navController.popBackStack() },
-                                onNavigateToProfile = { navController.navigate("profile_settings") },
-                                onNavigateToNotifications = { navController.navigate("notifications_settings") },
-                                onNavigateToPrivacy = { navController.navigate("privacy_settings") },
-                                onNavigateToAbout = { navController.navigate("about_app") },
-                                onNavigateToCustomization = { navController.navigate("customization") }
+                                onNavigateToProfile = { navController.navigateSingle("profile_settings") },
+                                onNavigateToNotifications = { navController.navigateSingle("notifications_settings") },
+                                onNavigateToPrivacy = { navController.navigateSingle("privacy_settings") },
+                                onNavigateToAbout = { navController.navigateSingle("about_app") },
+                                onNavigateToCustomization = { navController.navigateSingle("customization") },
+                                onNavigateToExperiments = { navController.navigateSingle("secret_settings") }
                             )
                         }
                     }
@@ -449,11 +461,11 @@ class MainActivity : FragmentActivity() {
                                             }
                                         }
                                         navController.popBackStack()
-                                        navController.navigate("chat/${Uri.encode(result.userId)}")
+                                        navController.navigateSingle("chat/${Uri.encode(result.userId)}")
                                     }
                                 },
                                 onCreateChannel = { name ->
-                                    navController.navigate("create_group?name=${Uri.encode(name)}&channel=true")
+                                    navController.navigateSingle("create_group?name=${Uri.encode(name)}&channel=true")
                                 }
                             )
                         }
@@ -485,7 +497,7 @@ class MainActivity : FragmentActivity() {
                                 onBack = { navController.popBackStack() },
                                 onGroupCreated = { groupId ->
                                     navController.popBackStack()
-                                    navController.navigate("chat/$groupId")
+                                    navController.navigateSingle("chat/$groupId")
                                 }
                             )
                         }
@@ -524,7 +536,7 @@ class MainActivity : FragmentActivity() {
                                 onAudioCall = { activeCall = Triple(peerId, false, false) },
                                 onVideoCall = { activeCall = Triple(peerId, true, false) },
                                 onOpenSafety = if (peerType == 1 || peerType == 2) null else ({
-                                    navController.navigate("safety/$peerId")
+                                    navController.navigateSingle("safety/$peerId")
                                 }),
                                 fetchPeerPresence = {
                                     withContext(Dispatchers.IO) {
@@ -551,8 +563,8 @@ class MainActivity : FragmentActivity() {
                                 // Тап по шапке: личный чат → профиль контакта,
                                 // группа/канал → экран управления группой.
                                 onOpenProfile = {
-                                    if (peerType == 1 || peerType == 2) navController.navigate("group/$peerId")
-                                    else navController.navigate("contact/$peerId")
+                                    if (peerType == 1 || peerType == 2) navController.navigateSingle("group/$peerId")
+                                    else navController.navigateSingle("contact/$peerId")
                                 },
                                 // (#A3) Плашка для легаси-каналов без E2E
                                 checkNotE2e = { repoSafe.isPeerNotE2E(peerId) },
@@ -561,7 +573,7 @@ class MainActivity : FragmentActivity() {
                                 // (#A6) Кнопка «Обсуждение» под постами канала
                                 onOpenDiscussion = discussionGroupId?.let { gid ->
                                     { _: org.groktest.securemessenger.data.MessageEntity ->
-                                        navController.navigate("chat/$gid")
+                                        navController.navigateSingle("chat/$gid")
                                     }
                                 },
                                 // (#A2) Optimistic send: запись в Room мгновенно (status=0),
@@ -575,8 +587,8 @@ class MainActivity : FragmentActivity() {
                                 onSendFiles = { uris, caption ->
                                     repoSafe.sendFiles(peerId, uris, caption)
                                 },
-                                onSendRecording = { bytes, mime, kind, durationMs ->
-                                    repoSafe.sendRecording(peerId, bytes, mime, kind, durationMs)
+                                onSendRecording = { file, mime, kind, durationMs ->
+                                    repoSafe.sendRecording(peerId, file, mime, kind, durationMs)
                                 },
                                 onDownloadMedia = { jsonText ->
                                     repoSafe.downloadMedia(jsonText)
@@ -676,7 +688,7 @@ class MainActivity : FragmentActivity() {
                                     coroutineScope.launch(Dispatchers.IO) { store.deleteChatAndMessages(peerId) }
                                     navController.navigate("main") { popUpTo("main") { inclusive = true } }
                                 },
-                                onMemberClick = { uid -> navController.navigate("contact/$uid") }
+                                onMemberClick = { uid -> navController.navigateSingle("contact/$uid") }
                             )
                         }
                     }
@@ -696,7 +708,7 @@ class MainActivity : FragmentActivity() {
                                 onMessage = { navController.popBackStack() },
                                 onAudioCall = { activeCall = Triple(peerId, false, false) },
                                 onVideoCall = { activeCall = Triple(peerId, true, false) },
-                                onOpenSafety = { navController.navigate("safety/$peerId") }
+                                onOpenSafety = { navController.navigateSingle("safety/$peerId") }
                             )
                         }
                     }

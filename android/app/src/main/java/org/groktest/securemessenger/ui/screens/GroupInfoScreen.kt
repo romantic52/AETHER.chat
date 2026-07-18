@@ -1,6 +1,7 @@
 package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -34,6 +35,7 @@ import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.data.MessageRepository
 import org.groktest.securemessenger.ui.components.Avatar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 /**
  * Экран информации и управления группой/каналом (телеграм-паттерн):
@@ -50,6 +52,7 @@ fun GroupInfoScreen(
     onLeft: () -> Unit,
     onMemberClick: (String) -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
     val scope = rememberCoroutineScope()
     var refreshKey by remember { mutableStateOf(0) }
     var group by remember { mutableStateOf<RelayApi.GroupInfo?>(null) }
@@ -103,7 +106,11 @@ fun GroupInfoScreen(
             topBar = {
                 TopAppBar(
                     title = {
-                        Crossfade(targetState = collapsed, label = "title") { c ->
+                        Crossfade(
+                            targetState = collapsed,
+                            animationSpec = tween(appearance.motionDuration(170)),
+                            label = "title"
+                        ) { c ->
                             if (c) Text(name, fontWeight = FontWeight.Bold, maxLines = 1)
                             else Text("")
                         }

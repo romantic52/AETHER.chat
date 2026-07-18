@@ -163,7 +163,10 @@ struct AttachmentSheet: View {
                             duration: asset.duration
                         )
                         .onTapGesture { library.toggle(asset, limit: maxSelection) }
-                        .gesture(
+                        // simultaneousGesture, а не gesture: иначе связка long-press+drag
+                        // перехватывала палец и глушила вертикальный скролл сетки
+                        // (а драг утекал в сам sheet — тот резко прыгал между детентами).
+                        .simultaneousGesture(
                             LongPressGesture(minimumDuration: 0.3)
                                 .sequenced(before: DragGesture(minimumDistance: 0))
                                 .onChanged { value in

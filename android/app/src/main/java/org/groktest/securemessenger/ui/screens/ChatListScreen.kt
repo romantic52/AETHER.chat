@@ -196,7 +196,8 @@ fun ChatListScreen(
 fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (String) -> Unit, modifier: Modifier = Modifier) {
     val coroutineScope = rememberCoroutineScope()
     val density = LocalDensity.current
-    val maxSwipePx = with(density) { (-240).dp.toPx() }
+    val isSaved = chatWithMsg.chat.type == 3
+    val maxSwipePx = with(density) { (if (isSaved) 0 else -240).dp.toPx() }
     var offsetX by remember { mutableStateOf(0f) } // px, синхронно за пальцем
     val appearance = LocalThemeSettings.current
 
@@ -262,19 +263,21 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
                 .fillMaxSize()
                 .background(if (offsetX < -1f) MaterialTheme.colorScheme.background else Color.Transparent)
                 .clickable(onClick = onClick)
-                .pointerInput(Unit) {
-                    detectHorizontalDragGestures(
-                        onDragEnd = {
-                            val target = if (offsetX < maxSwipePx / 2) maxSwipePx else 0f
-                            coroutineScope.launch {
-                                animate(offsetX, target, animationSpec = tween(appearance.motionDuration(180), easing = FastOutSlowInEasing)) { v, _ -> offsetX = v }
+                .pointerInput(isSaved) {
+                    if (!isSaved) {
+                        detectHorizontalDragGestures(
+                            onDragEnd = {
+                                val target = if (offsetX < maxSwipePx / 2) maxSwipePx else 0f
+                                coroutineScope.launch {
+                                    animate(offsetX, target, animationSpec = tween(appearance.motionDuration(180), easing = FastOutSlowInEasing)) { v, _ -> offsetX = v }
+                                }
+                            },
+                            onHorizontalDrag = { change, dragAmount ->
+                                change.consume()
+                                offsetX = (offsetX + dragAmount).coerceIn(maxSwipePx, 0f)
                             }
-                        },
-                        onHorizontalDrag = { change, dragAmount ->
-                            change.consume()
-                            offsetX = (offsetX + dragAmount).coerceIn(maxSwipePx, 0f)
-                        }
-                    )
+                        )
+                    }
                 }
                 .padding(horizontal = 16.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -283,7 +286,7 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
             val lastText = chatWithMsg.lastText
             val lastTimestamp = chatWithMsg.lastTimestamp
 
-            val displayName = chat.name
+            val displayName = if (isSaved) "Избранное" else chat.name
 
             org.groktest.securemessenger.ui.components.Avatar(
                 name = chat.name,
@@ -356,7 +359,7 @@ fun ChatListItem(chatWithMsg: ChatListEntry, onClick: () -> Unit, onAction: (Str
                     }
                 }
             }
-            if (chat.isPinned) {
+            if (chat.isPinned && !isSaved) {
                 Spacer(modifier = Modifier.width(8.dp))
                 Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary))
             }
