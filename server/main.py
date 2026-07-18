@@ -141,6 +141,10 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "no-referrer")
     response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
+    # Код веб-клиента без версионирования имён файлов: браузер обязан
+    # ревалидировать (ETag), иначе после деплоя неделями живёт старый app.js.
+    if request.url.path.endswith((".js", ".html", ".css")) or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-cache"
     return response
 
 SESSION_LIFETIME_DAYS = 30

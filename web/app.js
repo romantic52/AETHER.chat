@@ -447,6 +447,10 @@ let olmAccountPickle = '';
 let olmIdentityB64 = '';
 let olmSessions = Object.create(null);
 let olmIdentityPins = Object.create(null);
+// Multi-device: этот браузер — отдельное криптоустройство аккаунта.
+// 'primary' — только если аккаунт ещё нигде не имел Olm-ключей (легаси-совместимость).
+let myDeviceId = '';
+let peerDevicesCache = Object.create(null); // peerId -> {devices, ts}
 let ratchetModulePromise = null;
 let ratchetQueue = Promise.resolve();
 let keyRotationInterval = null;
@@ -499,6 +503,33 @@ function runRatchetSerial(task) {
     return next;
 }
 
+async function getPeerDevices(peerId, force = false) {
+    peerId = peerId.toLowerCase();
+    const cached = peerDevicesCache[peerId];
+    if (!force && cached && Date.now() - cached.ts < 60_000) return cached.devices;
+    const res = await fetch(`${serverUrl}/users/${pathSegment(peerId)}/devices`, { headers: authHeaders() });
+    if (!res.ok) throw new Error('Не удалось получить список устройств собеседника');
+    const devices = (await res.json()).devices || [];
+    peerDevicesCache[peerId] = { devices, ts: Date.now() };
+    return devices;
+}
+
+// Ключ сессии/пина: устройство primary хранится под старым ключом peerId,
+// чтобы существующие локальные сессии не потерялись при апгрейде.
+function deviceKey(peerId, deviceId) {
+    return deviceId === 'primary' ? peerId : `${peerId}::${deviceId}`;
+}
+
+async function resolveMyDeviceId() {
+    const stored = localStorage.getItem(`device_id_${myId}`);
+    if (stored) { myDeviceId = stored; return; }
+    const devices = await getPeerDevices(myId, true);
+    // Пустой список = аккаунт ещё без Olm — занимаем primary (легаси-путь).
+    myDeviceId = devices.length === 0 ? 'primary'
+        : 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem(`device_id_${myId}`, myDeviceId);
+}
+
 function ratchetSlots(peerId) {
     const value = olmSessions[peerId];
     if (!value) return { inbound: null, outbound: null, current: null };
@@ -529,7 +560,9 @@ async function saveRatchetState(updateServerBackup = false) {
     }, myPin, getSalt(myId));
     localStorage.setItem(`ratchet_${myId}`, encrypted);
 
-    if (updateServerBackup) {
+    if (updateServerBackup && myDeviceId === 'primary') {
+        // Бэкап на сервере один на аккаунт — его владелец только primary,
+        // иначе web-устройство затёрло бы pickle телефона.
         const backup = await encryptPrivateKeyB64(olmAccountPickle, myPin);
         const res = await fetch(`${serverUrl}/users/me/olm-backup`, {
             method: 'PUT',
@@ -546,14 +579,28 @@ async function saveRatchetState(updateServerBackup = false) {
 
 async function prepareRatchetState(password) {
     const api = await loadRatchetApi();
-    let serverAccount = '';
-    if (loginEncOlmAccountB64) {
-        serverAccount = await decryptPrivateKeyB64(loginEncOlmAccountB64, password);
-    }
 
     let localState = null;
     const stored = localStorage.getItem(`ratchet_${myId}`);
     if (stored) localState = await decryptPayload(stored, password, getSalt(myId));
+
+    // Устройство: сохранённое → узнать себя по identity в директории →
+    // primary, если аккаунт ещё без ключей → иначе новое web-устройство.
+    if (!localStorage.getItem(`device_id_${myId}`) && localState && localState.account_identity) {
+        try {
+            const devices = await getPeerDevices(myId, true);
+            const mine = devices.find(d => d.identity_key_b64 === localState.account_identity);
+            if (mine) localStorage.setItem(`device_id_${myId}`, mine.device_id);
+        } catch (_) {}
+    }
+    await resolveMyDeviceId();
+
+    let serverAccount = '';
+    // Серверный olm-бэкап принадлежит устройству primary; web-устройство живёт
+    // только на своём локальном pickle.
+    if (loginEncOlmAccountB64 && myDeviceId === 'primary') {
+        serverAccount = await decryptPrivateKeyB64(loginEncOlmAccountB64, password);
+    }
 
     let account = serverAccount || (localState && localState.account_pickle) || api.account_new();
     let identity = api.account_identity(account);
@@ -577,12 +624,15 @@ async function prepareRatchetState(password) {
 
 async function ensureRatchetKeys() {
     const api = await loadRatchetApi();
-    const countRes = await fetch(`${serverUrl}/keys/count`, { headers: authHeaders() });
+    const countRes = await fetch(`${serverUrl}/keys/count?device_id=${pathSegment(myDeviceId)}`, { headers: authHeaders() });
     if (!countRes.ok) throw new Error('Не удалось проверить ключи аккаунта');
     const countData = await countRes.json();
     const serverIdentity = typeof countData.identity_key_b64 === 'string' ? countData.identity_key_b64 : '';
-    if (serverIdentity && serverIdentity !== olmIdentityB64) {
-        throw new Error('Аккаунт уже использует другой Olm-ключ. Для безопасного входа в веб пока нужен отдельный аккаунт.');
+    if (serverIdentity && serverIdentity !== olmIdentityB64 && myDeviceId === 'primary') {
+        // Чужой primary (телефон) перезаписывать нельзя — теряем его E2E.
+        // Переходим в собственное web-устройство и продолжаем.
+        myDeviceId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');
+        localStorage.setItem(`device_id_${myId}`, myDeviceId);
     }
     const serverCount = Number(countData.count) || 0;
     let oneTimeKeys = {};
@@ -598,23 +648,24 @@ async function ensureRatchetKeys() {
     const uploadRes = await fetch(`${serverUrl}/keys/upload`, {
         method: 'PUT',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ identity_key_b64: olmIdentityB64, one_time_keys: oneTimeKeys })
+        body: JSON.stringify({ identity_key_b64: olmIdentityB64, one_time_keys: oneTimeKeys, device_id: myDeviceId })
     });
     if (!uploadRes.ok) throw new Error('Не удалось опубликовать prekeys');
+    peerDevicesCache = Object.create(null);
     await saveRatchetState(accountChanged || !loginEncOlmAccountB64);
 }
 
-async function ratchetEnvelopeFor(peerId, plaintext) {
+async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
     return runRatchetSerial(async () => {
         const api = await loadRatchetApi();
-        const slots = ratchetSlots(peerId);
+        const key = deviceKey(peerId, deviceId);
+        const slots = ratchetSlots(key);
         let slot = slots.inbound ? 'inbound' : slots.outbound ? 'outbound' : 'current';
         let session = slots[slot];
         if (!session) {
-            const claimRes = await fetch(`${serverUrl}/keys/claim/${pathSegment(peerId)}`, {
-                method: 'POST',
-                headers: authHeaders()
-            });
+            const claimRes = await fetch(
+                `${serverUrl}/keys/claim/${pathSegment(peerId)}?device_id=${pathSegment(deviceId)}`,
+                { method: 'POST', headers: authHeaders() });
             if (!claimRes.ok) {
                 const data = await claimRes.json().catch(() => ({}));
                 throw new Error(formatServerError(data, 'У получателя нет доступных prekeys'));
@@ -625,21 +676,22 @@ async function ratchetEnvelopeFor(peerId, plaintext) {
                 bundle.identity_key_b64,
                 bundle.one_time_key.key_b64
             );
-            const pinned = olmIdentityPins[peerId];
+            const pinned = olmIdentityPins[key];
             if (pinned && pinned !== bundle.identity_key_b64) {
                 throw new Error('Identity-ключ собеседника изменился');
             }
-            olmIdentityPins[peerId] = bundle.identity_key_b64;
+            olmIdentityPins[key] = bundle.identity_key_b64;
             slot = 'outbound';
         }
 
         const encrypted = JSON.parse(api.encrypt(session, plaintext));
         slots[slot] = encrypted.session_pickle;
-        saveRatchetSlots(peerId, slots);
+        saveRatchetSlots(key, slots);
         await saveRatchetState();
         return {
             ratchet: '1',
             olm_identity: olmIdentityB64,
+            sender_device: myDeviceId,
             type: encrypted.message_type,
             body_b64: encrypted.body_b64
         };
@@ -650,14 +702,28 @@ async function openRatchetEnvelope(peerId, envelope) {
     return runRatchetSerial(async () => {
         const api = await loadRatchetApi();
         const identity = String(envelope.olm_identity || '');
-        const pinned = olmIdentityPins[peerId];
-        if (!identity || (pinned && pinned !== identity)) {
-            throw new Error('Identity-ключ собеседника изменился или отсутствует');
+        if (!identity) throw new Error('Identity-ключ собеседника отсутствует');
+        // Устройство отправителя: из конверта (новые клиенты) или по identity
+        // в директории устройств (легаси-конверты без sender_device).
+        let senderDevice = String(envelope.sender_device || '');
+        if (!senderDevice) {
+            let devs = await getPeerDevices(peerId);
+            let match = devs.find(d => d.identity_key_b64 === identity);
+            if (!match) {
+                devs = await getPeerDevices(peerId, true);
+                match = devs.find(d => d.identity_key_b64 === identity);
+            }
+            senderDevice = match ? match.device_id : 'primary';
         }
-        olmIdentityPins[peerId] = identity;
+        const key = deviceKey(peerId, senderDevice);
+        const pinned = olmIdentityPins[key];
+        if (pinned && pinned !== identity) {
+            throw new Error('Identity-ключ собеседника изменился');
+        }
+        olmIdentityPins[key] = identity;
 
         let plaintext;
-        const slots = ratchetSlots(peerId);
+        const slots = ratchetSlots(key);
         const candidates = [['inbound', slots.inbound], ['outbound', slots.outbound], ['current', slots.current]];
         let lastError = null;
         for (const [slot, session] of candidates) {
@@ -665,7 +731,7 @@ async function openRatchetEnvelope(peerId, envelope) {
             try {
                 const result = JSON.parse(api.decrypt(session, Number(envelope.type), envelope.body_b64));
                 slots[slot] = result.session_pickle;
-                saveRatchetSlots(peerId, slots);
+                saveRatchetSlots(key, slots);
                 plaintext = result.plaintext;
                 break;
             } catch (error) {
@@ -683,7 +749,7 @@ async function openRatchetEnvelope(peerId, envelope) {
             ));
             olmAccountPickle = result.account_pickle;
             slots.inbound = result.session_pickle;
-            saveRatchetSlots(peerId, slots);
+            saveRatchetSlots(key, slots);
             plaintext = result.plaintext;
             await saveRatchetState(true);
             try { await ensureRatchetKeys(); }
@@ -1788,24 +1854,49 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                     ciphertext_b64: enc.ciphertext_b64
                 };
             } else {
-                // Direct message: canonical Olm/X3DH + Double Ratchet. No box downgrade.
-                envelope = await ratchetEnvelopeFor(targetPeer, wireJson);
+                // Direct message: Olm/X3DH + Double Ratchet, копия каждому
+                // устройству получателя (multi-device fanout).
+                const devices = await getPeerDevices(targetPeer);
+                if (!devices.length) throw new Error('У получателя нет Olm-устройств');
+                let firstData = null;
+                for (const dev of devices) {
+                    const devEnvelope = await ratchetEnvelopeForDevice(targetPeer, dev.device_id, wireJson);
+                    const res = await fetch(`${serverUrl}/messages`, {
+                        method: 'POST',
+                        headers: authHeaders({ 'Content-Type': 'application/json' }),
+                        body: JSON.stringify({
+                            sender_id: myId,
+                            recipient_id: targetPeer,
+                            envelope: devEnvelope,
+                            client_id: firstData ? crypto.randomUUID() : clientId,
+                            target_device_id: dev.device_id
+                        })
+                    });
+                    if (!res.ok) {
+                        if (firstData) { console.error('Fanout copy failed for', dev.device_id, res.status); continue; }
+                        throw new Error('Ошибка отправки');
+                    }
+                    if (!firstData) firstData = await res.json();
+                }
+                var directData = firstData;
             }
 
-            const res = await fetch(`${serverUrl}/messages`, {
-                method: 'POST',
-                headers: authHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({
-                    sender_id: myId,
-                    recipient_id: targetPeer,
-                    envelope: envelope,
-                    client_id: clientId
-                })
-            });
+            let res = null;
+            if (envelope) {
+                res = await fetch(`${serverUrl}/messages`, {
+                    method: 'POST',
+                    headers: authHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({
+                        sender_id: myId,
+                        recipient_id: targetPeer,
+                        envelope: envelope,
+                        client_id: clientId
+                    })
+                });
+                if (!res.ok) throw new Error('Ошибка отправки');
+            }
 
-            if (!res.ok) throw new Error('Ошибка отправки');
-
-            const data = await res.json();
+            const data = envelope ? await res.json() : directData;
             
             if (isStoreType && tempId) {
                 // Ищем наше временное сообщение и обновляем его статус и ID
@@ -1911,7 +2002,7 @@ async function pollInbox() {
     try {
         // The server keeps messages until an explicit ACK. Do not use a local
         // timestamp cursor: a failed decrypt must remain retryable.
-        const res = await fetch(`${serverUrl}/messages/inbox/${pathSegment(myId)}`, {
+        const res = await fetch(`${serverUrl}/messages/inbox/${pathSegment(myId)}?device_id=${pathSegment(myDeviceId || 'primary')}`, {
             headers: authHeaders()
         });
         if (!res.ok) return;
@@ -2282,7 +2373,7 @@ async function pollInbox() {
             const ackRes = await fetch(`${serverUrl}/messages/ack`, {
                 method: 'POST',
                 headers: authHeaders({ 'Content-Type': 'application/json' }),
-                body: JSON.stringify({ message_ids: batch })
+                body: JSON.stringify({ message_ids: batch, device_id: myDeviceId || 'primary' })
             });
             if (!ackRes.ok) console.error('Message ACK failed:', ackRes.status);
         }
