@@ -854,6 +854,8 @@ function getContactDisplayName(userId) {
     if (userId === myId) return 'Избранное';
     const names = getCustomContactNames();
     if (Object.prototype.hasOwnProperty.call(names, userId) && typeof names[userId] === 'string' && names[userId]) return names[userId];
+    const group = myGroupsCache[userId];
+    if (group && typeof group.name === 'string' && group.name) return group.name;
     const prof = profileCache[userId];
     if (prof && typeof prof.display_name === 'string' && prof.display_name) return prof.display_name;
     return userId;
@@ -3047,7 +3049,7 @@ function renderContactsList() {
         }
         
         const prof = profileCache[contactId];
-        if (!prof) fetchPeerProfile(contactId);
+        if (!prof && !myGroupsCache[contactId]) fetchPeerProfile(contactId);
         
         let dName = getContactDisplayName(contactId);
         
