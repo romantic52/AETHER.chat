@@ -34,22 +34,86 @@ import org.groktest.securemessenger.ui.components.GlassBackground
 @Composable
 fun LoginScreen(
     savedSession: SessionPrefs.Session?,
+    legacyLogin: SessionPrefs.LegacyLogin? = null,
     onLoginSuccess: (String, E2ECrypto.KeyPair, RelayApi, String, Boolean) -> Unit
 ) {
-    var server by remember { mutableStateOf(ServerConfig.DEFAULT_BASE_URL) }
-    var username by remember { mutableStateOf("") }
-    var password by remember { mutableStateOf("") }
+    var server by remember { mutableStateOf(legacyLogin?.server ?: ServerConfig.DEFAULT_BASE_URL) }
+    var username by remember { mutableStateOf(legacyLogin?.username.orEmpty()) }
+    var password by remember { mutableStateOf(legacyLogin?.password.orEmpty()) }
     var isRegister by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var showSettings by remember { mutableStateOf(false) }
     var rememberMe by remember { mutableStateOf(true) }
+    var isSubmitting by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
     val crypto = remember { E2ECrypto() }
     val context = androidx.compose.ui.platform.LocalContext.current
 
-    // Авто-вход по сохранённому токену сессии (пароль на устройстве не хранится).
-    LaunchedEffect(savedSession) {
+    suspend fun submit(register: Boolean) {
+        if (isSubmitting) return
+        isSubmitting = true
+        error = null
+        try {
+            val normalizedServer = ServerConfig.normalizeBaseUrl(server)
+            val normalizedUsername = username.trim().lowercase()
+            if (!normalizedServer.startsWith("http://") &&
+                !normalizedServer.startsWith("https://")
+            ) throw IllegalArgumentException("Адрес сервера должен начинаться с http:// или https://")
+            if (normalizedUsername.length !in 2..64) {
+                throw IllegalArgumentException("Имя пользователя должно содержать от 2 до 64 символов")
+            }
+            if (register && password.length < 8) {
+                throw IllegalArgumentException("Пароль должен быть не короче 8 символов")
+            }
+            if (!register && password.isEmpty()) throw IllegalArgumentException("Введите пароль")
+
+            server = normalizedServer
+            username = normalizedUsername
+            val api = RelayApi(normalizedServer)
+            val keyPair = if (register) {
+                val generated = crypto.generateKeyPair()
+                val encryptedPrivateKey = crypto.encryptPrivateKey(generated.privateB64, password)
+                withContext(Dispatchers.IO) {
+                    api.register(normalizedUsername, generated.publicB64, encryptedPrivateKey, password)
+                    SecurePrefs(context, normalizedUsername).saveKeys(generated)
+                }
+                generated
+            } else {
+                val result = withContext(Dispatchers.IO) { api.login(normalizedUsername, password) }
+                val secure = SecurePrefs(context, normalizedUsername)
+                val restored = if (result.encryptedPrivateKeyB64.isNotEmpty() &&
+                    result.encryptedPrivateKeyB64 != "null"
+                ) {
+                    val privateKey = crypto.decryptPrivateKey(result.encryptedPrivateKeyB64, password)
+                    val publicKey = withContext(Dispatchers.IO) { api.getPublicKey(normalizedUsername) }
+                    E2ECrypto.KeyPair(privateKey, publicKey)
+                } else {
+                    withContext(Dispatchers.IO) { secure.loadKeys() }
+                        ?: throw IllegalStateException(
+                            "На сервере нет резервной копии ключа, локальные ключи тоже не найдены. " +
+                                "Восстановите ключ с прежнего устройства."
+                        )
+                }
+                withContext(Dispatchers.IO) { secure.saveKeys(restored) }
+                restored
+            }
+            onLoginSuccess(
+                "$normalizedServer|$normalizedUsername",
+                keyPair,
+                api,
+                normalizedUsername,
+                rememberMe,
+            )
+        } catch (e: Exception) {
+            error = e.message ?: "Ошибка сети"
+        } finally {
+            isSubmitting = false
+        }
+    }
+
+    // Token first; the old password record is consumed only after a successful migration.
+    LaunchedEffect(savedSession, legacyLogin) {
         if (savedSession != null) {
             val sessionServer = ServerConfig.normalizeBaseUrl(savedSession.server)
             val sessionUsername = savedSession.username.trim().lowercase()
@@ -63,17 +127,21 @@ fun LoginScreen(
                     SecurePrefs(context, savedSession.username).loadKeys()
                 }
                 if (tokenValid && kp != null) {
-                    val prefs = "$sessionServer|$sessionUsername"
-                    withContext(Dispatchers.Main) {
-                        onLoginSuccess(prefs, kp, api, sessionUsername, true)
-                    }
-                } else {
-                    error = if (!tokenValid) "Сессия истекла — войдите заново"
-                            else "Локальные ключи не найдены — войдите заново"
+                    onLoginSuccess("$sessionServer|$sessionUsername", kp, api, sessionUsername, true)
+                    return@LaunchedEffect
                 }
+                error = if (!tokenValid) "Сессия истекла — выполняю восстановление"
+                else "Локальные ключи не найдены — выполняю восстановление"
             } catch (e: Exception) {
-                error = "Auto-login failed: ${e.message ?: "Network Error"}"
+                error = e.message ?: "Не удалось восстановить сессию"
             }
+        }
+        if (legacyLogin != null) {
+            server = legacyLogin.server
+            username = legacyLogin.username
+            password = legacyLogin.password
+            rememberMe = true
+            submit(register = false)
         }
     }
 
@@ -179,76 +247,9 @@ fun LoginScreen(
 
                 Button(
                     onClick = {
-                        coroutineScope.launch {
-                            error = null
-                            val normalizedServer = ServerConfig.normalizeBaseUrl(server)
-                            val normalizedUsername = username.trim().lowercase()
-                            if (!normalizedServer.startsWith("http://") &&
-                                !normalizedServer.startsWith("https://")) {
-                                error = "Адрес сервера должен начинаться с http:// или https://"
-                                return@launch
-                            }
-                            if (normalizedUsername.length !in 2..64) {
-                                error = "Имя пользователя должно содержать от 2 до 64 символов"
-                                return@launch
-                            }
-                            if (isRegister && password.length < 8) {
-                                error = "Пароль должен быть не короче 8 символов"
-                                return@launch
-                            }
-                            if (!isRegister && password.isEmpty()) {
-                                error = "Введите пароль"
-                                return@launch
-                            }
-                            try {
-                                server = normalizedServer
-                                username = normalizedUsername
-                                val api = RelayApi(normalizedServer)
-                                if (isRegister) {
-                                    val pubkey = crypto.generateKeyPair()
-                                    val encPriv = crypto.encryptPrivateKey(pubkey.privateB64, password)
-
-                                    withContext(Dispatchers.IO) {
-                                        api.register(normalizedUsername, pubkey.publicB64, encPriv, password)
-                                        SecurePrefs(context, normalizedUsername).saveKeys(pubkey)
-                                    }
-
-                                    val prefs = "$normalizedServer|$normalizedUsername"
-                                    withContext(Dispatchers.Main) {
-                                        onLoginSuccess(prefs, pubkey, api, normalizedUsername, rememberMe)
-                                    }
-                                } else {
-                                    val result = withContext(Dispatchers.IO) {
-                                        api.login(normalizedUsername, password)
-                                    }
-
-                                    val secure = SecurePrefs(context, normalizedUsername)
-                                    val kp = if (!result.encryptedPrivateKeyB64.isNullOrEmpty() && result.encryptedPrivateKeyB64 != "null") {
-                                        val priv = crypto.decryptPrivateKey(result.encryptedPrivateKeyB64, password)
-                                        val pubKeyStr = withContext(Dispatchers.IO) { api.getPublicKey(normalizedUsername) }
-                                        E2ECrypto.KeyPair(priv, pubKeyStr)
-                                    } else {
-                                        // P3.9: НЕ генерируем новую пару молча — она не совпадёт с
-                                        // публичным ключом на сервере и переписка перестанет читаться.
-                                        withContext(Dispatchers.IO) { secure.loadKeys() }
-                                            ?: throw IllegalStateException(
-                                                "На сервере нет резервной копии ключа, локальных ключей тоже нет. " +
-                                                "Вход без ключа невозможен — восстановите ключ с другого устройства " +
-                                                "или зарегистрируйте новый аккаунт."
-                                            )
-                                    }
-                                    withContext(Dispatchers.IO) { secure.saveKeys(kp) }
-
-                                    val prefs = "$normalizedServer|$normalizedUsername"
-                                    withContext(Dispatchers.Main) {
-                                        onLoginSuccess(prefs, kp, api, normalizedUsername, rememberMe)
-                                    }
-                                }
-                            } catch (e: Exception) {
-                                error = e.message ?: "Network Error / Timeout"
-                            }
-                        }
+                        coroutineScope.launch { submit(isRegister) }
                     },
+                    enabled = !isSubmitting,
                     modifier = Modifier.fillMaxWidth().height(56.dp),
                     shape = RoundedCornerShape(16.dp),
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)

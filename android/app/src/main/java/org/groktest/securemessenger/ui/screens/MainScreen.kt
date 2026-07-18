@@ -1,6 +1,7 @@
 package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.Crossfade
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
@@ -11,7 +12,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -47,7 +49,6 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import kotlinx.coroutines.withTimeoutOrNull
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.data.ChatListEntry
@@ -84,7 +85,7 @@ fun MainScreen(
     onNavigateToNotificationsSettings: () -> Unit,
     onNavigateToPrivacySettings: () -> Unit,
     onNavigateToAboutApp: () -> Unit,
-    onNavigateToSecret: () -> Unit = {},
+    onNavigateToExperiments: () -> Unit = {},
     onStartAudioCall: (String) -> Unit = {},
     onStartVideoCall: (String) -> Unit = {}
 ) {
@@ -101,8 +102,23 @@ fun MainScreen(
     val chats by chatListFlow.collectAsState()
     val appearance = LocalThemeSettings.current
     var dockDragCenterPx by remember { mutableFloatStateOf(Float.NaN) }
-    var dockSettlingPosition by remember { mutableFloatStateOf(Float.NaN) }
     var dockScrollJob by remember { mutableStateOf<Job?>(null) }
+
+    fun moveToPage(index: Int, duration: Int = 320, holdIndicator: Boolean = false) {
+        if (!holdIndicator) dockDragCenterPx = Float.NaN
+        dockScrollJob?.cancel()
+        dockScrollJob = coroutineScope.launch {
+            if (appearance.animationsEnabled()) {
+                pagerState.animateScrollToPage(
+                    index,
+                    animationSpec = tween(appearance.motionDuration(duration), easing = FastOutSlowInEasing)
+                )
+            } else {
+                pagerState.scrollToPage(index)
+            }
+            dockDragCenterPx = Float.NaN
+        }
+    }
 
     GlassBackground {
         Box(modifier = Modifier.fillMaxSize()) {
@@ -140,7 +156,6 @@ fun MainScreen(
                         val tabWidthPx = with(density) { tabWidth.toPx() }
                         val dockWidthPx = with(density) { maxWidth.toPx() }
                         val isDockDragging = !dockDragCenterPx.isNaN()
-                        val isDockSettling = !dockSettlingPosition.isNaN()
                         val pagerPosition = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
                             .coerceIn(0f, tabs.lastIndex.toFloat())
                         val dragPosition = if (isDockDragging) {
@@ -149,15 +164,9 @@ fun MainScreen(
                             null
                         }
                         val indicatorPosition by animateFloatAsState(
-                            targetValue = dragPosition
-                                ?: dockSettlingPosition.takeIf { isDockSettling }
-                                ?: pagerPosition,
+                            targetValue = dragPosition ?: pagerPosition,
                             animationSpec = when {
-                                appearance.animationSpeed.value <= 0.01f || isDockDragging -> snap()
-                                isDockSettling -> spring(
-                                    dampingRatio = (0.94f - appearance.motionIntensity.value * 0.12f).coerceIn(0.72f, 0.94f),
-                                    stiffness = 360f * appearance.animationSpeed.value.coerceAtLeast(0.2f)
-                                )
+                                !appearance.animationsEnabled() || isDockDragging -> snap()
                                 pagerState.isScrollInProgress -> snap()
                                 else -> spring(
                                     dampingRatio = 0.88f,
@@ -192,27 +201,16 @@ fun MainScreen(
                                     detectHorizontalDragGestures(
                                         onDragStart = { offset ->
                                             dockScrollJob?.cancel()
-                                            dockSettlingPosition = Float.NaN
                                             dockDragCenterPx = offset.x.coerceIn(0f, dockWidthPx)
                                         },
                                         onDragCancel = {
                                             dockDragCenterPx = Float.NaN
-                                            dockSettlingPosition = Float.NaN
                                         },
                                         onDragEnd = {
                                             val target = ((if (dockDragCenterPx.isNaN()) 0f else dockDragCenterPx) / tabWidthPx)
                                                 .toInt()
                                                 .coerceIn(0, tabs.lastIndex)
-                                            dockDragCenterPx = Float.NaN
-                                            dockSettlingPosition = target.toFloat()
-                                            dockScrollJob?.cancel()
-                                            dockScrollJob = coroutineScope.launch {
-                                                pagerState.animateScrollToPage(
-                                                    target,
-                                                    animationSpec = tween(appearance.motionDuration(320), easing = FastOutSlowInEasing)
-                                                )
-                                                dockSettlingPosition = Float.NaN
-                                            }
+                                            moveToPage(target, holdIndicator = true)
                                         },
                                         onHorizontalDrag = { change, dragAmount ->
                                             change.consume()
@@ -233,44 +231,16 @@ fun MainScreen(
                                 )
                                 val scale by animateFloatAsState(
                                     targetValue = if (selected) 1.08f else 1f,
-                                    animationSpec = if (appearance.animationSpeed.value <= 0.01f) snap() else spring(
+                                    animationSpec = if (!appearance.animationsEnabled()) snap() else spring(
                                         dampingRatio = (0.78f - appearance.motionIntensity.value * 0.16f).coerceIn(0.48f, 0.78f),
                                         stiffness = 420f * appearance.animationSpeed.value
                                     ),
                                     label = "mainTabScale"
                                 )
-                                val tabGesture = if (index == 3) {
-                                    Modifier.pointerInput(Unit) {
-                                        detectTapGestures(
-                                            onTap = {
-                                                dockDragCenterPx = Float.NaN
-                                                dockSettlingPosition = index.toFloat()
-                                                dockScrollJob?.cancel()
-                                                dockScrollJob = coroutineScope.launch {
-                                                    pagerState.animateScrollToPage(index, animationSpec = tween(appearance.motionDuration(320), easing = FastOutSlowInEasing))
-                                                    dockSettlingPosition = Float.NaN
-                                                }
-                                            },
-                                            onPress = {
-                                                val released = withTimeoutOrNull(10_000L) { tryAwaitRelease() }
-                                                if (released == null) onNavigateToSecret()
-                                            }
-                                        )
-                                    }
-                                } else {
-                                    Modifier.clickable(
-                                        interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                        indication = null
-                                    ) {
-                                        dockDragCenterPx = Float.NaN
-                                        dockSettlingPosition = index.toFloat()
-                                        dockScrollJob?.cancel()
-                                        dockScrollJob = coroutineScope.launch {
-                                            pagerState.animateScrollToPage(index, animationSpec = tween(appearance.motionDuration(320), easing = FastOutSlowInEasing))
-                                            dockSettlingPosition = Float.NaN
-                                        }
-                                    }
-                                }
+                                val tabGesture = Modifier.clickable(
+                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
+                                    indication = null
+                                ) { moveToPage(index) }
 
                                 Box(
                                     modifier = Modifier
@@ -315,11 +285,7 @@ fun MainScreen(
                         onOpenChat = onChatSelected,
                         onAudioCall = onStartAudioCall,
                         onVideoCall = onStartVideoCall,
-                        onFindPeople = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(0, animationSpec = tween(appearance.motionDuration(260), easing = FastOutSlowInEasing))
-                            }
-                        }
+                        onFindPeople = { moveToPage(0, 260) }
                     )
                     2 -> ChatListScreen(
                         myId = myId,
@@ -332,26 +298,19 @@ fun MainScreen(
                         onSearchClick = onNavigateToSearch,
                         onCreateGroup = { onCreateGroupClick(false) },
                         onCreateChannel = { onCreateGroupClick(true) },
-                        onCallsClick = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(1, animationSpec = tween(appearance.motionDuration(280), easing = FastOutSlowInEasing))
-                            }
-                        },
+                        onCallsClick = { moveToPage(1, 280) },
                         onAction = onAction
                     )
                     3 -> SettingsScreen(
                         api = api,
                         myId = myId,
-                        onBack = {
-                            coroutineScope.launch {
-                                pagerState.animateScrollToPage(2, animationSpec = tween(appearance.motionDuration(280), easing = FastOutSlowInEasing))
-                            }
-                        },
+                        onBack = { moveToPage(2, 280) },
                         onNavigateToProfile = onNavigateToProfileSettings,
                         onNavigateToNotifications = onNavigateToNotificationsSettings,
                         onNavigateToPrivacy = onNavigateToPrivacySettings,
                         onNavigateToAbout = onNavigateToAboutApp,
                         onNavigateToCustomization = onNavigateToCustomization,
+                        onNavigateToExperiments = onNavigateToExperiments,
                         onSavedMessages = { onChatSelected(myId) },
                         onLogout = onLogout,
                         showBack = false
@@ -371,7 +330,8 @@ private fun ContactsTab(
     onUserSelected: (String) -> Unit,
     onNewContact: () -> Unit
 ) {
-    val edgeDimHeight = LocalThemeSettings.current.edgeDimLength.value.dp
+    val appearance = LocalThemeSettings.current
+    val edgeDimHeight = appearance.edgeDimLength.value.dp
     var query by remember { mutableStateOf("") }
     var results by remember { mutableStateOf<List<RelayApi.UserSearchResult>>(emptyList()) }
     var isLoading by remember { mutableStateOf(false) }
@@ -413,15 +373,19 @@ private fun ContactsTab(
             },
             placeholder = "Поиск..."
         )
-        if (isLoading) {
-            LinearProgressIndicator(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(top = 8.dp),
-                color = MaterialTheme.colorScheme.primary
-            )
-        } else {
-            Spacer(Modifier.height(8.dp))
+        Box(Modifier.fillMaxWidth().height(12.dp)) {
+            Crossfade(
+                targetState = isLoading,
+                animationSpec = tween(appearance.motionDuration(120)),
+                label = "contactSearchProgress"
+            ) { loading ->
+                if (loading) {
+                    LinearProgressIndicator(
+                        modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
         }
 
         val recentContacts = remember(chats) { chats.filter { it.chat.type == 0 } }
@@ -626,11 +590,24 @@ private fun RoundActionButton(
     contentDescription: String,
     onClick: () -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
+    val interaction = remember { MutableInteractionSource() }
+    val pressed by interaction.collectIsPressedAsState()
+    val scale by animateFloatAsState(
+        targetValue = if (pressed) 0.9f else 1f,
+        animationSpec = tween(appearance.motionDuration(if (pressed) 90 else 180)),
+        label = "callButtonScale"
+    )
     Box(
         modifier = Modifier
             .size(AetherStyle.SmallControlSize)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .aetherCircle(fillAlpha = AetherStyle.DockFillAlpha, strokeAlpha = 0.58f)
-            .clickable { onClick() },
+            .clickable(
+                interactionSource = interaction,
+                indication = null,
+                onClick = onClick
+            ),
         contentAlignment = Alignment.Center
     ) {
         Icon(icon, contentDescription = contentDescription, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))

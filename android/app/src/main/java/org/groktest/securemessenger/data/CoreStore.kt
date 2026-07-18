@@ -2,6 +2,8 @@ package org.groktest.securemessenger.data
 
 import android.content.Context
 import android.content.SharedPreferences
+import android.database.Cursor
+import android.database.sqlite.SQLiteDatabase
 import android.util.Base64
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -27,7 +29,12 @@ import uniffi.sm_core.WireMessage
  * The UI keeps using the existing MessageEntity and ChatEntity models while the
  * persisted representation is the canonical cross-platform wire JSON.
  */
-class CoreStore private constructor(context: Context, encKeyB64: String, accountKey: String) {
+class CoreStore private constructor(
+    context: Context,
+    private val encKeyB64: String,
+    private val accountId: String,
+    private val accountKey: String,
+) {
     private val appContext = context.applicationContext
     private val meta: SharedPreferences =
         appContext.getSharedPreferences("sm_core_android_meta_$accountKey", Context.MODE_PRIVATE)
@@ -42,6 +49,7 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
     private val messageStreams = java.util.concurrent.ConcurrentHashMap<String, MessageStream>()
 
     init {
+        migrateLegacyRoomStore()
         hydrateMigratedAndroidMeta()
         refreshChats()
         scope.launch {
@@ -151,6 +159,11 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
             )
         }
         store.updateText(msgId, payload)
+        store.peerOf(msgId)?.let(::refreshChatPreview)
+    }
+
+    suspend fun updatePayload(msgId: String, payload: String) = withContext(Dispatchers.IO) {
+        store.updatePayload(msgId, payload)
         store.peerOf(msgId)?.let(::refreshChatPreview)
     }
 
@@ -283,6 +296,160 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
         store.olmSessionSet(peerId.lowercase(), session)
     }
 
+    /** Imports the pre-core Room database once, into the account that owned it. */
+    private fun migrateLegacyRoomStore() {
+        val migration = appContext.getSharedPreferences("sm_core_store_migration", Context.MODE_PRIVATE)
+        val marker = "legacy_room_v1_$accountKey"
+        if (migration.getBoolean(marker, false)) {
+            if (!migration.contains("legacy_room_owner")) {
+                migration.edit().putString("legacy_room_owner", accountKey).apply()
+            }
+            return
+        }
+        val assignedOwner = migration.getString("legacy_room_owner", null)
+        if (assignedOwner != null && assignedOwner != accountKey) return
+
+        val legacyFile = appContext.getDatabasePath("secure_messenger_db")
+        if (!legacyFile.exists()) {
+            migration.edit().putBoolean(marker, true).apply()
+            return
+        }
+
+        val legacy = runCatching {
+            SQLiteDatabase.openDatabase(legacyFile.absolutePath, null, SQLiteDatabase.OPEN_READONLY)
+        }.getOrNull() ?: return
+
+        legacy.use { db ->
+            if (!db.hasColumn("messages", "msgId") || !db.hasColumn("chats", "peerId")) {
+                migration.edit().putBoolean(marker, true).apply()
+                return
+            }
+
+            val owners = mutableSetOf<String>()
+            db.rawQuery("SELECT peerId FROM chats WHERE type = 3", null).use { cursor ->
+                while (cursor.moveToNext()) cursor.string("peerId")?.let(owners::add)
+            }
+            if (owners.isNotEmpty() && owners.none { it.equals(accountId, ignoreCase = true) }) return
+            if (owners.isEmpty() && migration.getString("legacy_owner", null) != accountKey) return
+
+            val touchedPeers = mutableSetOf<String>()
+            val metaEditor = meta.edit()
+            db.rawQuery(
+                "SELECT peerId,name,type,isPinned,isMuted,isArchived,unreadCount,avatarFileId FROM chats",
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val peerId = cursor.string("peerId") ?: continue
+                    val type = cursor.int("type")
+                    if (!meta.contains(typeKey(peerId))) metaEditor.putInt(typeKey(peerId), type)
+                    cursor.string("avatarFileId")?.takeIf(String::isNotBlank)?.let {
+                        if (!meta.contains(avatarKey(peerId))) metaEditor.putString(avatarKey(peerId), it)
+                    }
+                    if (coreChat(peerId) == null) {
+                        store.upsertChat(
+                            CoreChat(
+                                peerId = peerId,
+                                isGroup = type in 1..2,
+                                title = cursor.string("name").orEmpty().ifBlank { peerId },
+                                lastText = "",
+                                lastTs = 0L,
+                                unread = cursor.int("unreadCount"),
+                                pinned = cursor.bool("isPinned"),
+                                muted = cursor.bool("isMuted"),
+                                archived = cursor.bool("isArchived"),
+                            )
+                        )
+                    }
+                    touchedPeers += peerId
+                }
+            }
+            metaEditor.apply()
+
+            db.rawQuery(
+                """SELECT msgId,peerId,isOut,text,timestamp,replyToId,replyToText,
+                          reactions,status,isEdited,forwardedFrom FROM messages ORDER BY timestamp""",
+                null,
+            ).use { cursor ->
+                while (cursor.moveToNext()) {
+                    val msgId = cursor.string("msgId") ?: continue
+                    if (store.getMessage(msgId) != null) continue
+                    val peerId = cursor.string("peerId") ?: continue
+                    val text = legacyPlaintext(cursor.string("text")).orEmpty()
+                    store.insertMessage(
+                        MessageEntity(
+                            msgId = msgId,
+                            peerId = peerId,
+                            isOut = cursor.bool("isOut"),
+                            text = text,
+                            timestamp = cursor.long("timestamp"),
+                            replyToId = cursor.string("replyToId"),
+                            replyToText = legacyPlaintext(cursor.string("replyToText")),
+                            reactions = legacyPlaintext(cursor.string("reactions")).orEmpty(),
+                            status = cursor.int("status"),
+                            isEdited = cursor.bool("isEdited"),
+                            forwardedFrom = cursor.string("forwardedFrom"),
+                        ).toCore()
+                    )
+                    if (coreChat(peerId) == null) {
+                        metaEditor.putInt(typeKey(peerId), if (isGroupLike(peerId)) 1 else 0)
+                        store.upsertChat(
+                            CoreChat(
+                                peerId = peerId,
+                                isGroup = isGroupLike(peerId),
+                                title = peerId,
+                                lastText = text,
+                                lastTs = cursor.long("timestamp"),
+                                unread = 0,
+                                pinned = false,
+                                muted = false,
+                                archived = false,
+                            )
+                        )
+                    }
+                    touchedPeers += peerId
+                }
+            }
+            metaEditor.apply()
+
+            if (db.hasColumn("pinned_keys", "peerId")) {
+                db.rawQuery(
+                    "SELECT peerId,publicKeyB64,pinnedAt,verified,previousKeyB64,changedAt FROM pinned_keys",
+                    null,
+                ).use { cursor ->
+                    while (cursor.moveToNext()) {
+                        val peerId = cursor.string("peerId") ?: continue
+                        if (store.pinGet(peerId) != null) continue
+                        store.pinUpsert(peerId, cursor.string("publicKeyB64").orEmpty(), cursor.long("pinnedAt"))
+                        if (cursor.bool("verified")) store.pinSetVerified(peerId, true)
+                        cursor.string("previousKeyB64")?.let { metaEditor.putString(previousKey(peerId), it) }
+                        cursor.nullableLong("changedAt")?.let { metaEditor.putLong(changedKey(peerId), it) }
+                    }
+                }
+                metaEditor.apply()
+            }
+
+            touchedPeers.forEach(::refreshChatPreview)
+        }
+        migration.edit()
+            .putBoolean(marker, true)
+            .putString("legacy_room_owner", accountKey)
+            .apply()
+    }
+
+    private fun legacyPlaintext(value: String?): String? {
+        if (value == null) return null
+        val separator = value.indexOf(':')
+        if (separator <= 0 || separator == value.lastIndex) return value
+        val nonce = value.substring(0, separator)
+        val encoded = value.substring(separator + 1)
+        val ciphertext = runCatching {
+            Base64.decode(encoded, Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP)
+        }.recoverCatching { Base64.decode(encoded, Base64.DEFAULT) }.getOrNull() ?: return value
+        return runCatching {
+            String(uniffi.sm_core.aesDecrypt(encKeyB64, nonce, ciphertext), Charsets.UTF_8)
+        }.getOrDefault(value)
+    }
+
     private fun hydrateMigratedAndroidMeta() {
         val editor = meta.edit()
         var changed = false
@@ -355,7 +522,12 @@ class CoreStore private constructor(context: Context, encKeyB64: String, account
             if (accountId != "__anonymous__") {
                 migrateLegacyStore(context, accountKey)
             }
-            return CoreStore(context, dbKey(context), accountKey)
+            return CoreStore(
+                context = context,
+                encKeyB64 = dbKey(context),
+                accountId = accountId.trim().lowercase(),
+                accountKey = accountKey,
+            )
         }
 
         private fun accountKey(accountId: String): String =
@@ -557,3 +729,26 @@ private fun avatarKey(peerId: String) = "avatar_${normalized(peerId)}"
 private fun statusEmojiKey(peerId: String) = "status_emoji_${normalized(peerId)}"
 private fun previousKey(peerId: String) = "pin_previous_${normalized(peerId)}"
 private fun changedKey(peerId: String) = "pin_changed_${normalized(peerId)}"
+
+private fun SQLiteDatabase.hasColumn(table: String, column: String): Boolean =
+    rawQuery("PRAGMA table_info(`$table`)", null).use { cursor ->
+        val name = cursor.getColumnIndex("name")
+        while (cursor.moveToNext()) {
+            if (name >= 0 && cursor.getString(name) == column) return@use true
+        }
+        false
+    }
+
+private fun Cursor.string(column: String): String? =
+    getColumnIndex(column).takeIf { it >= 0 && !isNull(it) }?.let(::getString)
+
+private fun Cursor.int(column: String): Int =
+    getColumnIndex(column).takeIf { it >= 0 && !isNull(it) }?.let(::getInt) ?: 0
+
+private fun Cursor.long(column: String): Long =
+    getColumnIndex(column).takeIf { it >= 0 && !isNull(it) }?.let(::getLong) ?: 0L
+
+private fun Cursor.nullableLong(column: String): Long? =
+    getColumnIndex(column).takeIf { it >= 0 && !isNull(it) }?.let(::getLong)
+
+private fun Cursor.bool(column: String): Boolean = int(column) != 0

@@ -47,6 +47,12 @@ struct HomeView: View {
         .environmentObject(messaging)
         .environmentObject(chrome)
         .overlay { CallOverlay(calls: messaging.calls) }
+        .overlay { GroupCallOverlay(calls: messaging.groupCalls) }
+        .overlay(alignment: .top) {
+            GroupCallInviteBanner(call: messaging.groupCalls)
+                .animation(.spring(response: 0.35, dampingFraction: 0.85),
+                           value: messaging.groupCalls.pendingInvite)
+        }
         .onAppear {
             messaging.rebind(session: session)
             AppRefresh.shared.poll = { [weak messaging] in await messaging?.pollInbox() }
@@ -83,6 +89,18 @@ struct HomeView: View {
                        value: active)
             .allowsHitTesting(active)
             .accessibilityHidden(!active)
+    }
+}
+
+// Групповой звонок поверх всего (наблюдаем менеджер напрямую, как CallOverlay).
+struct GroupCallOverlay: View {
+    @ObservedObject var calls: GroupCallManager
+    var body: some View {
+        if calls.isActive {
+            GroupCallView(call: calls)
+                .transition(.opacity)
+                .zIndex(100)
+        }
     }
 }
 

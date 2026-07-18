@@ -82,8 +82,10 @@ struct ChatView: View {
     }
 
     private var title: String {
-        if peerId == session.myId.lowercased() { return "Избранное" }
+        if peerId == session.myId.lowercased() { return String(localized: "Избранное") }
         let chatTitle = messaging.chats.first { $0.peerId == peerId }?.title ?? ""
+        // 1:1 — display name из профиля.
+        if !isGroup { return messaging.displayName(peerId, fallback: chatTitle) }
         if !chatTitle.isEmpty { return chatTitle }
         // Чат ещё не создан локально (вход из поиска): имя группы/канала из инфо.
         if let name = messaging.groups.info(peerId)?.name, !name.isEmpty { return name }
@@ -289,6 +291,9 @@ struct ChatView: View {
             )
             .presentationDetents([.fraction(0.62), .large])
             .presentationDragIndicator(.hidden)
+            // Скролл сетки фото имеет приоритет над ресайзом шторки: тянешь фото —
+            // листается контент, а не дёргается детент.
+            .presentationContentInteraction(.scrolls)
         }
         .fullScreenCover(isPresented: $showCamera) {
             CameraCaptureView { picked in sendPicked([picked]) }
@@ -465,8 +470,13 @@ struct ChatView: View {
                     showAvatarMenu = true
                 }
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).font(.system(size: 16, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
+                HStack(spacing: 4) {
+                    Text(title).font(.system(size: 16, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    if !isGroup, !isSaved, let status = messaging.statusEmoji(peerId) {
+                        Text(status).font(.system(size: 13))
+                    }
+                }
                 if !subtitle.isEmpty {
                     Text(subtitle)
                         .font(.system(size: 12))

@@ -50,6 +50,8 @@ final class Messaging: ObservableObject {
     @Published var totalUnread: Int64 = 0
     @Published var typingPeers: Set<String> = []
     @Published var profiles: [String: Profile] = [:]
+    /// Эмодзи-статусы (рядом с ником, как в Telegram). Ключ — user_id.
+    @Published var statusEmojis: [String: String] = [:]
     @Published private(set) var realtimeConnected = false
 
     private weak var session: Session?
@@ -84,6 +86,9 @@ final class Messaging: ObservableObject {
     /// Менеджер E2E-групп и каналов.
     let groups = GroupsManager()
 
+    /// Групповые звонки (mesh, аудио).
+    let groupCalls = GroupCallManager()
+
     init() {
         calls.sendSignal = { [weak self] type, recipient, extra in
             guard let self, let ws = self.ws, ws.isActive() else { return false }
@@ -97,6 +102,19 @@ final class Messaging: ObservableObject {
             }
         }
         calls.signalingAvailable = { [weak self] in self?.ws?.isActive() == true }
+        groupCalls.sendSignal = { [weak self] type, recipient, extra in
+            guard let self, let ws = self.ws, ws.isActive() else { return false }
+            let json = (try? JSONSerialization.data(withJSONObject: extra))
+                .flatMap { String(data: $0, encoding: .utf8) } ?? "{}"
+            do {
+                try ws.sendWebrtcSignal(signalType: type, recipientId: recipient, extraJson: json)
+                return true
+            } catch {
+                return false
+            }
+        }
+        groupCalls.isBusyElsewhere = { [weak self] in self?.calls.isBusy ?? false }
+        groupCalls.myId = { [weak self] in self?.myId ?? "" }
     }
 
     /// Привязать к сессии (после логина/бутстрапа). Идемпотентно.
@@ -122,6 +140,7 @@ final class Messaging: ObservableObject {
         shouldRun = true
         reconnectAttempt = 0
         startupTask = Task {
+            await core.ensureOlmKeys()   // опубликовать/пополнить prekeys для Double Ratchet
             await refreshChats()
             await groups.load()
             await flushOutgoing()
@@ -247,7 +266,14 @@ final class Messaging: ObservableObject {
             typingPeers.remove(sender)
         case "new_message": Task { await pollInbox() }
         case "webrtc_offer", "webrtc_answer", "webrtc_ice", "webrtc_hangup", "webrtc_busy":
-            calls.handleSignal(type: type, sender: sender, payload: obj)
+            // SDP/ICE группового звонка помечены group_call — в свой менеджер.
+            if (obj["group_call"] as? Bool) == true || (obj["group_call"] as? Int) == 1 {
+                groupCalls.handleSignal(type: type, sender: sender, payload: obj)
+            } else {
+                calls.handleSignal(type: type, sender: sender, payload: obj)
+            }
+        case "group_call_start", "group_call_join", "group_call_leave":
+            groupCalls.handleSignal(type: type, sender: sender, payload: obj)
         default: break
         }
     }
@@ -486,6 +512,7 @@ final class Messaging: ObservableObject {
 
     func openChat(_ peerId: String, isGroup: Bool) async {
         activePeer = peerId
+        if !isGroup { refreshStatusEmoji(peerId) }
         prefetchMedia(for: peerId)
         await core.clearUnread(peerId)
         await refreshChats()
@@ -793,7 +820,28 @@ final class Messaging: ObservableObject {
         return URL(string: "\(CoreClient.baseURL)/avatars/\(fid)")
     }
 
+    func statusEmoji(_ peer: String) -> String? {
+        let s = statusEmojis[peer.lowercased()]
+        return (s?.isEmpty ?? true) ? nil : s
+    }
+
+    /// Отображаемое имя собеседника: display name из профиля, иначе title чата.
+    func displayName(_ peer: String, fallback: String) -> String {
+        let id = peer.lowercased()
+        if let dn = profiles[id]?.displayName, !dn.isEmpty { return dn }
+        return fallback.isEmpty ? id : fallback
+    }
+
+    /// Принудительно обновить статус (вход в чат/профиль — без ожидания кэша).
+    func refreshStatusEmoji(_ peer: String) {
+        let id = peer.lowercased()
+        guard !id.isEmpty, !id.hasPrefix("grp_"), !id.hasPrefix("group_"),
+              !id.hasPrefix("chn_"), !id.hasPrefix("channel_") else { return }
+        Task { statusEmojis[id] = await ProfileHTTP.statusEmoji(id) ?? "" }
+    }
+
     private var profileRequests: Set<String> = []
+    private var statusRequests: Set<String> = []
 
     /// Догрузить профиль для строки списка, если его ещё нет в кэше.
     /// Групповые id пропускаем — у групп нет пользовательского профиля.
@@ -802,6 +850,12 @@ final class Messaging: ObservableObject {
         guard !id.isEmpty,
               !id.hasPrefix("group_"), !id.hasPrefix("channel_"),
               !id.hasPrefix("grp_"), !id.hasPrefix("chn_") else { return }
+        // Статус тянем НЕЗАВИСИМО от кэша профиля: профиль мог загрузиться
+        // раньше (для presence), а статус — новое поле.
+        if statusEmojis[id] == nil, !statusRequests.contains(id) {
+            statusRequests.insert(id)
+            Task { statusEmojis[id] = await ProfileHTTP.statusEmoji(id) ?? "" }
+        }
         guard profiles[id] == nil, !profileRequests.contains(id) else { return }
         profileRequests.insert(id)
         Task { await loadProfile(id) }
@@ -813,17 +867,32 @@ final class Messaging: ObservableObject {
         return Date().timeIntervalSince(d) < 75
     }
 
-    /// «был(а) N минут назад» или «в сети».
+    private static let presenceClock: DateFormatter = {
+        let f = DateFormatter(); f.locale = .current; f.dateFormat = "HH:mm"; return f
+    }()
+    private static let presenceDate: DateFormatter = {
+        let f = DateFormatter(); f.locale = .current; f.dateFormat = "dd.MM.yyyy"; return f
+    }()
+
+    /// Telegram-стиль: «в сети», «только что», «N мин назад», дальше — точное
+    /// время: «сегодня в 14:20», «вчера в 9:15», «был(а) 12.05.2026».
     func presenceText(_ peer: String) -> String {
         if isOnline(peer) { return String(localized: "в сети") }
-        guard let iso = profiles[peer.lowercased()]?.lastActive else { return "" }
-        guard let d = Self.isoFractional.date(from: iso) ?? Self.isoBasic.date(from: iso) else { return "" }
+        guard let iso = profiles[peer.lowercased()]?.lastActive,
+              let d = Self.isoFractional.date(from: iso) ?? Self.isoBasic.date(from: iso) else { return "" }
         let mins = Int(Date().timeIntervalSince(d) / 60)
-        if mins < 1 { return "был(а) только что" }
-        if mins < 60 { return "был(а) \(mins) мин назад" }
-        let hours = mins / 60
-        if hours < 24 { return "был(а) \(hours) ч назад" }
-        return "был(а) давно"
+        if mins < 1 { return String(localized: "был(а) только что") }
+        if mins < 60 {
+            return String(format: String(localized: "был(а) %lld мин назад"), mins)
+        }
+        let cal = Calendar.current
+        if cal.isDateInToday(d) {
+            return String(format: String(localized: "был(а) сегодня в %@"), Self.presenceClock.string(from: d))
+        }
+        if cal.isDateInYesterday(d) {
+            return String(format: String(localized: "был(а) вчера в %@"), Self.presenceClock.string(from: d))
+        }
+        return String(format: String(localized: "был(а) %@"), Self.presenceDate.string(from: d))
     }
 }
 

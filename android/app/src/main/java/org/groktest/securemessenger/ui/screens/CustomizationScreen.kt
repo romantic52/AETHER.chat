@@ -1,6 +1,11 @@
 package org.groktest.securemessenger.ui.screens
 
 import android.net.Uri
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.snap
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -38,10 +43,12 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -112,12 +119,6 @@ fun CustomizationScreen(onBack: () -> Unit) {
                         onChange = themeSettings::setSurfaceTransparency
                     )
                     SettingSwitch(
-                        title = "Жидкое стекло",
-                        subtitle = "Размытие обоев под плавающими панелями",
-                        checked = themeSettings.liquidGlassEnabled.value,
-                        onCheckedChange = themeSettings::setLiquidGlassEnabled
-                    )
-                    SettingSwitch(
                         title = "Затемнение краёв",
                         subtitle = "Мягкий градиент вместо сплошных верхних и нижних панелей",
                         checked = themeSettings.edgeDimEnabled.value,
@@ -136,33 +137,6 @@ fun CustomizationScreen(onBack: () -> Unit) {
                         valueLabel = "${themeSettings.edgeDimLength.value.toInt()} dp",
                         range = 112f..240f,
                         onChange = themeSettings::setEdgeDimLength
-                    )
-                }
-
-                item { SoftDivider() }
-
-                item {
-                    SectionTitle("Движение", "Плавность интерфейса, реакций и появления новых сообщений")
-                    Spacer(Modifier.height(12.dp))
-                    SettingSlider(
-                        title = "Скорость анимаций",
-                        value = themeSettings.animationSpeed.value,
-                        valueLabel = if (themeSettings.animationSpeed.value <= 0.01f) "Выкл." else "${(themeSettings.animationSpeed.value * 100).toInt()}%",
-                        range = 0f..2f,
-                        onChange = themeSettings::setAnimationSpeed
-                    )
-                    SettingSlider(
-                        title = "Выразительность",
-                        value = themeSettings.motionIntensity.value,
-                        valueLabel = "${(themeSettings.motionIntensity.value * 100).toInt()}%",
-                        range = 0f..1.5f,
-                        onChange = themeSettings::setMotionIntensity
-                    )
-                    SettingSwitch(
-                        title = "Эффекты реакций",
-                        subtitle = "Вспышка эмодзи и мягкие частицы при выборе реакции",
-                        checked = themeSettings.reactionEffects.value,
-                        onCheckedChange = themeSettings::setReactionEffects
                     )
                 }
 
@@ -319,22 +293,38 @@ private fun ThemePreviewCard(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
     val outerShape = RoundedCornerShape(AetherStyle.IslandRadius)
     val previewShape = RoundedCornerShape(AetherStyle.MediaRadius)
+    val fill by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f),
+        tween(appearance.motionDuration(180)),
+        label = "themeFill"
+    )
+    val stroke by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.76f)
+        else MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+        tween(appearance.motionDuration(180)),
+        label = "themeStroke"
+    )
+    val scale by animateFloatAsState(
+        if (selected) 1f else 0.985f,
+        if (appearance.animationsEnabled()) spring(dampingRatio = 0.82f, stiffness = 520f) else snap(),
+        label = "themeScale"
+    )
+    val checkScale by animateFloatAsState(
+        if (selected) 1f else 0f,
+        tween(appearance.motionDuration(160)),
+        label = "themeCheck"
+    )
     Column(
         modifier = Modifier
             .width(138.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(outerShape)
-            .background(
-                MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (selected) 0.68f else 0.36f),
-                outerShape
-            )
-            .border(
-                AetherStyle.Stroke,
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.76f)
-                else MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
-                outerShape
-            )
+            .background(fill, outerShape)
+            .border(AetherStyle.Stroke, stroke, outerShape)
             .clickable(onClick = onClick)
             .padding(10.dp)
     ) {
@@ -374,23 +364,26 @@ private fun ThemePreviewCard(
                     MiniDot(palette.scheme.tertiary)
                 }
             }
-            if (selected) {
-                Box(
-                    modifier = Modifier
-                        .align(Alignment.TopEnd)
-                        .padding(8.dp)
-                        .size(24.dp)
-                        .clip(CircleShape)
-                        .background(palette.scheme.primary),
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        Icons.Default.Check,
-                        contentDescription = null,
-                        tint = palette.scheme.onPrimary,
-                        modifier = Modifier.size(16.dp)
-                    )
-                }
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(8.dp)
+                    .size(24.dp)
+                    .graphicsLayer {
+                        alpha = checkScale
+                        scaleX = checkScale
+                        scaleY = checkScale
+                    }
+                    .clip(CircleShape)
+                    .background(palette.scheme.primary),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(
+                    Icons.Default.Check,
+                    contentDescription = null,
+                    tint = palette.scheme.onPrimary,
+                    modifier = Modifier.size(16.dp)
+                )
             }
         }
         Spacer(Modifier.height(9.dp))
@@ -426,21 +419,29 @@ private fun ChoicePill(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
     val shape = RoundedCornerShape(AetherStyle.PillRadius)
+    val fill by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
+        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f),
+        tween(appearance.motionDuration(160)),
+        label = "pillFill"
+    )
+    val stroke by animateColorAsState(
+        MaterialTheme.colorScheme.primary.copy(alpha = if (selected) 0.74f else 0.22f),
+        tween(appearance.motionDuration(160)),
+        label = "pillStroke"
+    )
+    val content by animateColorAsState(
+        if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+        tween(appearance.motionDuration(160)),
+        label = "pillContent"
+    )
     Box(
         modifier = Modifier
             .clip(shape)
-            .background(
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-                else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f),
-                shape
-            )
-            .border(
-                AetherStyle.Stroke,
-                if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.74f)
-                else MaterialTheme.colorScheme.primary.copy(alpha = 0.22f),
-                shape
-            )
+            .background(fill, shape)
+            .border(AetherStyle.Stroke, stroke, shape)
             .clickable(onClick = onClick)
             .padding(horizontal = 15.dp, vertical = 9.dp),
         contentAlignment = Alignment.Center
@@ -449,7 +450,7 @@ private fun ChoicePill(
             text = label,
             fontSize = 14.sp,
             fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-            color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground,
+            color = content,
             maxLines = 1
         )
     }
@@ -461,12 +462,29 @@ private fun ReactionButton(
     selected: Boolean,
     onClick: () -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
+    val fillAlpha by animateFloatAsState(
+        if (selected) 0.28f else AetherStyle.SoftIslandFillAlpha,
+        tween(appearance.motionDuration(160)),
+        label = "reactionFill"
+    )
+    val strokeAlpha by animateFloatAsState(
+        if (selected) 0.76f else AetherStyle.SoftStrokeAlpha,
+        tween(appearance.motionDuration(160)),
+        label = "reactionStroke"
+    )
+    val scale by animateFloatAsState(
+        if (selected) 1.1f else 1f,
+        if (appearance.animationsEnabled()) spring(dampingRatio = 0.62f, stiffness = 620f) else snap(),
+        label = "reactionScale"
+    )
     Box(
         modifier = Modifier
             .size(52.dp)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .aetherCircle(
-                fillAlpha = if (selected) 0.28f else AetherStyle.SoftIslandFillAlpha,
-                strokeAlpha = if (selected) 0.76f else AetherStyle.SoftStrokeAlpha
+                fillAlpha = fillAlpha,
+                strokeAlpha = strokeAlpha
             )
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center

@@ -1,5 +1,12 @@
 package org.groktest.securemessenger.ui.screens
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.biometric.BiometricManager
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -23,6 +30,7 @@ import org.groktest.securemessenger.data.LockPrefs
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -34,6 +42,7 @@ fun PrivacySettingsScreen(
     var lockEnabled by remember { mutableStateOf(prefs.enabled) }
     var biometricOn by remember { mutableStateOf(prefs.biometricEnabled) }
     var showSetPin by remember { mutableStateOf(false) }
+    val appearance = LocalThemeSettings.current
 
     val biometricAvailable = remember {
         BiometricManager.from(context).canAuthenticate(BiometricManager.Authenticators.BIOMETRIC_WEAK) == BiometricManager.BIOMETRIC_SUCCESS
@@ -69,29 +78,39 @@ fun PrivacySettingsScreen(
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                 )
 
-                if (lockEnabled) {
-                    ListItem(
-                        headlineContent = { Text("Сменить код-пароль") },
-                        leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                        modifier = Modifier.clickable { showSetPin = true },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                AnimatedVisibility(
+                    visible = lockEnabled,
+                    enter = fadeIn(tween(appearance.motionDuration(150))) + expandVertically(
+                        animationSpec = tween(appearance.motionDuration(200), easing = FastOutSlowInEasing)
+                    ),
+                    exit = fadeOut(tween(appearance.motionDuration(110))) + shrinkVertically(
+                        animationSpec = tween(appearance.motionDuration(170), easing = FastOutSlowInEasing)
                     )
-                    ListItem(
-                        headlineContent = { Text("Разблокировка по отпечатку/лицу") },
-                        supportingContent = { Text(if (biometricAvailable) "Биометрия вместо ввода PIN" else "Биометрия недоступна на устройстве") },
-                        leadingContent = { Icon(Icons.Default.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                        trailingContent = {
-                            Switch(
-                                checked = biometricOn,
-                                enabled = biometricAvailable,
-                                onCheckedChange = {
-                                    biometricOn = it
-                                    prefs.biometricEnabled = it
-                                }
-                            )
-                        },
-                        colors = ListItemDefaults.colors(containerColor = Color.Transparent)
-                    )
+                ) {
+                    Column {
+                        ListItem(
+                            headlineContent = { Text("Сменить код-пароль") },
+                            leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            modifier = Modifier.clickable { showSetPin = true },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+                        ListItem(
+                            headlineContent = { Text("Разблокировка по отпечатку/лицу") },
+                            supportingContent = { Text(if (biometricAvailable) "Биометрия вместо ввода PIN" else "Биометрия недоступна на устройстве") },
+                            leadingContent = { Icon(Icons.Default.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            trailingContent = {
+                                Switch(
+                                    checked = biometricOn,
+                                    enabled = biometricAvailable,
+                                    onCheckedChange = {
+                                        biometricOn = it
+                                        prefs.biometricEnabled = it
+                                    }
+                                )
+                            },
+                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        )
+                    }
                 }
 
                 Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f), modifier = Modifier.padding(vertical = 8.dp))
@@ -105,25 +124,31 @@ fun PrivacySettingsScreen(
                     modifier = Modifier.clickable { showBlocked = !showBlocked },
                     colors = ListItemDefaults.colors(containerColor = Color.Transparent)
                 )
-                if (showBlocked) {
-                    if (blocked.isEmpty()) {
-                        Text(
-                            "Здесь будут пользователи, которых вы заблокировали (в профиле собеседника).",
-                            fontSize = 13.sp,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-                        )
-                    } else {
-                        blocked.toList().forEach { id ->
-                            ListItem(
-                                headlineContent = { Text(id) },
-                                trailingContent = {
-                                    TextButton(onClick = { org.groktest.securemessenger.data.BlockStore.unblock(context, id) }) {
-                                        Text("Разблокировать")
-                                    }
-                                },
-                                colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                AnimatedVisibility(
+                    visible = showBlocked,
+                    enter = fadeIn(tween(appearance.motionDuration(140))) + expandVertically(tween(appearance.motionDuration(190))),
+                    exit = fadeOut(tween(appearance.motionDuration(100))) + shrinkVertically(tween(appearance.motionDuration(160)))
+                ) {
+                    Column {
+                        if (blocked.isEmpty()) {
+                            Text(
+                                "Здесь будут пользователи, которых вы заблокировали (в профиле собеседника).",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
                             )
+                        } else {
+                            blocked.toList().forEach { id ->
+                                ListItem(
+                                    headlineContent = { Text(id) },
+                                    trailingContent = {
+                                        TextButton(onClick = { org.groktest.securemessenger.data.BlockStore.unblock(context, id) }) {
+                                            Text("Разблокировать")
+                                        }
+                                    },
+                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                )
+                            }
                         }
                     }
                 }

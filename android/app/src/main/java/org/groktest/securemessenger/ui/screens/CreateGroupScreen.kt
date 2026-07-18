@@ -6,6 +6,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -26,6 +28,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -34,6 +37,7 @@ import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.data.MessageRepository
 import org.groktest.securemessenger.ui.components.Avatar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 /**
  * (#A3) Создание группы или канала с честным E2E. Телеграм-флоу в два шага:
@@ -52,6 +56,7 @@ fun CreateGroupScreen(
     onBack: () -> Unit,
     onGroupCreated: (String) -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
     var step by remember { mutableStateOf(0) }
     var name by remember { mutableStateOf(initialName) }
     var description by remember { mutableStateOf("") }
@@ -168,10 +173,14 @@ fun CreateGroupScreen(
             AnimatedContent(
                 targetState = step,
                 transitionSpec = {
+                    val move = tween<IntOffset>(appearance.motionDuration(260), easing = FastOutSlowInEasing)
+                    val fade = tween<Float>(appearance.motionDuration(170))
                     if (targetState > initialState)
-                        (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it } + fadeOut())
+                        (slideInHorizontally(animationSpec = move) { it } + fadeIn(fade)) togetherWith
+                            (slideOutHorizontally(animationSpec = move) { -it } + fadeOut(fade))
                     else
-                        (slideInHorizontally { -it } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
+                        (slideInHorizontally(animationSpec = move) { -it } + fadeIn(fade)) togetherWith
+                            (slideOutHorizontally(animationSpec = move) { it } + fadeOut(fade))
                 },
                 label = "step",
                 modifier = Modifier.fillMaxSize().padding(padding)

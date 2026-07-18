@@ -36,9 +36,22 @@ struct SettingsView: View {
             VStack(spacing: 8) {
                 Avatar(id: session.myId, name: session.myDisplayName, size: 82, avatarURL: session.myAvatarURL)
                 VStack(spacing: 3) {
-                    Text(session.myDisplayName.isEmpty ? session.myId : session.myDisplayName)
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(palette.textPrimary)
+                    HStack(spacing: 6) {
+                        Text(session.myDisplayName.isEmpty ? session.myId : session.myDisplayName)
+                            .font(.system(size: 20, weight: .semibold))
+                            .foregroundStyle(palette.textPrimary)
+                        // Эмодзи-статус: тап — выбор/смена.
+                        Button { showStatusPicker = true } label: {
+                            if session.myStatusEmoji.isEmpty {
+                                Image(systemName: "face.smiling")
+                                    .font(.system(size: 17))
+                                    .foregroundStyle(palette.textSecondary.opacity(0.7))
+                            } else {
+                                Text(session.myStatusEmoji).font(.system(size: 19))
+                            }
+                        }
+                        .buttonStyle(.plain)
+                    }
                     Text(session.myUsername.isEmpty ? "@\(session.myId)" : "@\(session.myUsername)")
                         .font(.subheadline).foregroundStyle(palette.textSecondary)
                 }
@@ -50,6 +63,58 @@ struct SettingsView: View {
             }
         }
         .listRowBackground(palette.surface)
+    }
+
+    // MARK: - Эмодзи-статус
+
+    @State private var showStatusPicker = false
+
+    private var statusPickerSheet: some View {
+        let emojis = ["😀","😎","🥳","😴","🤒","🏝","💻","📵","🎮","🎧","📚","🏋️","☕️","🍕","❤️","🔥",
+                      "⭐️","🌙","⚡️","🎯","🚀","🧘","🐱","🐶","🌈","🍀","🎵","💤","🤫","👑","🫡","🥷"]
+        return NavigationStack {
+            ZStack {
+                palette.background.ignoresSafeArea()
+                VStack(spacing: 16) {
+                    LazyVGrid(columns: Array(repeating: GridItem(.flexible()), count: 8), spacing: 14) {
+                        ForEach(emojis, id: \.self) { e in
+                            Button {
+                                Task { await session.setMyStatusEmoji(e) }
+                                showStatusPicker = false
+                                UISelectionFeedbackGenerator().selectionChanged()
+                            } label: {
+                                Text(e).font(.system(size: 30))
+                                    .frame(maxWidth: .infinity)
+                                    .padding(.vertical, 4)
+                                    .background(session.myStatusEmoji == e
+                                                ? palette.accent.opacity(0.22) : .clear,
+                                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(.horizontal, 16)
+                    if !session.myStatusEmoji.isEmpty {
+                        Button(role: .destructive) {
+                            Task { await session.setMyStatusEmoji("") }
+                            showStatusPicker = false
+                        } label: {
+                            Text("Убрать статус").font(.subheadline.weight(.medium))
+                        }
+                    }
+                    Spacer()
+                }
+                .padding(.top, 8)
+            }
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top) {
+                FloatingHeader(title: "Статус", large: false,
+                               trailing: AnyView(Button("Готово") { showStatusPicker = false }
+                                   .foregroundStyle(palette.accent)))
+                    .padding(.top, 10)
+            }
+        }
+        .presentationDetents([.medium])
     }
 
     // MARK: - Аккаунты (мультиаккаунт, до 5)
@@ -90,6 +155,7 @@ struct SettingsView: View {
         } footer: {
             Text("До \(Session.maxAccounts) аккаунтов на устройстве. Переписка и настройки каждого хранятся отдельно.")
         }
+        .sheet(isPresented: $showStatusPicker) { statusPickerSheet }
         .sheet(isPresented: $showAddAccount) {
             // Тот же экран входа/регистрации; успешный вход добавляет аккаунт
             // и сразу делает его активным (шторка закрывается по смене myId).

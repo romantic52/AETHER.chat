@@ -607,6 +607,16 @@ def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_cu
 @app.put("/keys/upload")
 def upload_keys(body: UploadKeysRequest, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
+        cur.execute(
+            "SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s) FOR UPDATE",
+            (current_user,),
+        )
+        row = cur.fetchone()
+        previous_identity = row["olm_identity_key"] if row else None
+        if previous_identity != body.identity_key_b64:
+            # OTKs are bound to their Olm identity. Keeping old OTKs after an
+            # account restore creates bundles that no client can decrypt.
+            cur.execute("DELETE FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
         cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
                     (body.identity_key_b64, current_user))
         for key_id, key_b64 in body.one_time_keys.items():
@@ -622,7 +632,9 @@ def keys_count(current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute("SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
         n = cur.fetchone()["n"]
-    return {"count": n}
+        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+    return {"count": n, "identity_key_b64": row["olm_identity_key"] if row else None}
 
 
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же

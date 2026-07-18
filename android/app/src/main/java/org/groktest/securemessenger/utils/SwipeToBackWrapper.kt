@@ -1,7 +1,6 @@
 package org.groktest.securemessenger.utils
 
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.animate
 import androidx.compose.animation.core.tween
 import androidx.compose.ui.draw.drawBehind
@@ -18,6 +17,8 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Job
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import kotlin.math.roundToInt
 
 /**
@@ -38,6 +39,7 @@ fun SwipeToBackWrapper(
 
     val density = LocalDensity.current
     val configuration = LocalConfiguration.current
+    val appearance = LocalThemeSettings.current
     val screenWidthPx: Float = with(density) { configuration.screenWidthDp.dp.toPx() }
 
     // Назад — свайп с левой половины экрана. Свайп-ответ на сообщении имеет
@@ -50,6 +52,7 @@ fun SwipeToBackWrapper(
     // Синхронное смещение: контент двигается мгновенно вслед за пальцем
     var offsetX by remember { mutableStateOf(0f) }
     val scope = rememberCoroutineScope()
+    var settleJob by remember { mutableStateOf<Job?>(null) }
     var dragStartedInEdge by remember { mutableStateOf(false) }
 
     Box(
@@ -66,31 +69,28 @@ fun SwipeToBackWrapper(
             modifier = Modifier
                 .fillMaxSize()
                 .offset { IntOffset(offsetX.roundToInt(), 0) }
-                .pointerInput(Unit) {
+                .pointerInput(appearance.experimentalAnimations.value, appearance.animationSpeed.value) {
                     detectHorizontalDragGestures(
                         onDragStart = { offset ->
+                            settleJob?.cancel()
                             dragStartedInEdge = offset.x <= edgeZonePx
                         },
                         onDragEnd = {
                             if (dragStartedInEdge) {
                                 if (offsetX > triggerThreshold) {
-                                    // Быстро уезжаем за экран и уходим назад
-                                    scope.launch {
-                                        animate(
-                                            initialValue = offsetX,
-                                            targetValue = screenWidthPx,
-                                            animationSpec = tween(150, easing = LinearEasing)
-                                        ) { v, _ -> offsetX = v }
-                                        onBack()
-                                    }
+                                    // Оставшийся путь рисует единственный pop-переход NavHost.
+                                    onBack()
                                 } else {
-                                    // Быстрый возврат на место, без пружинного отскока
-                                    scope.launch {
-                                        animate(
-                                            initialValue = offsetX,
-                                            targetValue = 0f,
-                                            animationSpec = tween(170, easing = FastOutSlowInEasing)
-                                        ) { v, _ -> offsetX = v }
+                                    settleJob = scope.launch {
+                                        if (appearance.animationsEnabled()) {
+                                            animate(
+                                                initialValue = offsetX,
+                                                targetValue = 0f,
+                                                animationSpec = tween(appearance.motionDuration(170), easing = FastOutSlowInEasing)
+                                            ) { v, _ -> offsetX = v }
+                                        } else {
+                                            offsetX = 0f
+                                        }
                                     }
                                 }
                             }
@@ -98,12 +98,17 @@ fun SwipeToBackWrapper(
                         },
                         onDragCancel = {
                             dragStartedInEdge = false
-                            scope.launch {
-                                animate(
-                                    initialValue = offsetX,
-                                    targetValue = 0f,
-                                    animationSpec = tween(150, easing = FastOutSlowInEasing)
-                                ) { v, _ -> offsetX = v }
+                            settleJob?.cancel()
+                            settleJob = scope.launch {
+                                if (appearance.animationsEnabled()) {
+                                    animate(
+                                        initialValue = offsetX,
+                                        targetValue = 0f,
+                                        animationSpec = tween(appearance.motionDuration(150), easing = FastOutSlowInEasing)
+                                    ) { v, _ -> offsetX = v }
+                                } else {
+                                    offsetX = 0f
+                                }
                             }
                         },
                         onHorizontalDrag = { change, dragAmount ->
