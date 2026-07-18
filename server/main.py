@@ -277,8 +277,9 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS message_receipts (
                 message_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT 'primary',
                 acked_at TEXT NOT NULL,
-                PRIMARY KEY (message_id, user_id)
+                PRIMARY KEY (message_id, user_id, device_id)
             );
             -- Просмотры постов каналов: уникальный зритель на сообщение.
             CREATE TABLE IF NOT EXISTS post_views (
@@ -300,9 +301,10 @@ def init_db() -> None:
             -- одноразовый: при claim удаляется, чтобы обеспечить forward secrecy.
             CREATE TABLE IF NOT EXISTS one_time_keys (
                 user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT 'primary',
                 key_id TEXT NOT NULL,
                 key_b64 TEXT NOT NULL,
-                PRIMARY KEY (user_id, key_id)
+                PRIMARY KEY (user_id, device_id, key_id)
             );
             """
         )
@@ -399,6 +401,45 @@ def init_db() -> None:
         )
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN encrypted_olm_account_b64 TEXT")
+
+        # Multi-device (v1): устройство = свой Olm-аккаунт. Всё, что было
+        # загружено до этой миграции, становится устройством 'primary' —
+        # старые клиенты продолжают работать, не зная о девайсах.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS crypto_devices (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                identity_key_b64 TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, device_id)
+            )"""
+        )
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='one_time_keys' AND column_name='device_id')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE one_time_keys ADD COLUMN device_id TEXT NOT NULL DEFAULT 'primary'")
+            cur.execute("ALTER TABLE one_time_keys DROP CONSTRAINT one_time_keys_pkey")
+            cur.execute("ALTER TABLE one_time_keys ADD PRIMARY KEY (user_id, device_id, key_id)")
+        # ACK'и — per-device: иначе подтверждение с одного устройства прятало бы
+        # групповые сообщения от остальных устройств того же аккаунта.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='message_receipts' AND column_name='device_id')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE message_receipts ADD COLUMN device_id TEXT NOT NULL DEFAULT 'primary'")
+            cur.execute("ALTER TABLE message_receipts DROP CONSTRAINT message_receipts_pkey")
+            cur.execute("ALTER TABLE message_receipts ADD PRIMARY KEY (message_id, user_id, device_id)")
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='messages' AND column_name='recipient_device_id')""")
+        if not cur.fetchone()[0]:
+            # NULL = адресовано аккаунту целиком (группы, legacy-клиенты).
+            cur.execute("ALTER TABLE messages ADD COLUMN recipient_device_id TEXT")
+        cur.execute(
+            """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64, created_at)
+               SELECT LOWER(user_id), 'primary', olm_identity_key, %s FROM users
+               WHERE olm_identity_key IS NOT NULL
+               ON CONFLICT (user_id, device_id) DO NOTHING""",
+            (_utc_now(),),
+        )
             
         # Check username
         cur.execute(
@@ -483,10 +524,10 @@ def init_db() -> None:
         # (#A1) Миграция: старые личные сообщения с delivered=1 считаем подтверждёнными,
         # иначе после перехода на ACK они приедут получателям повторно.
         cur.execute(
-            """INSERT INTO message_receipts (message_id, user_id, acked_at)
-               SELECT m.id, LOWER(m.recipient_id), %s FROM messages m
+            """INSERT INTO message_receipts (message_id, user_id, device_id, acked_at)
+               SELECT m.id, LOWER(m.recipient_id), 'primary', %s FROM messages m
                WHERE m.delivered = 1
-               ON CONFLICT (message_id, user_id) DO NOTHING""",
+               ON CONFLICT (message_id, user_id, device_id) DO NOTHING""",
             (_utc_now(),),
         )
 
@@ -510,6 +551,8 @@ class UploadKeysRequest(BaseModel):
     identity_key_b64: str = Field(min_length=16, max_length=128)
     # {key_id: key_b64}
     one_time_keys: dict[str, str] = Field(default_factory=dict, max_length=100)
+    # Multi-device: старые клиенты поле не шлют и остаются устройством 'primary'.
+    device_id: str = Field(default="primary", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 class UpdateOlmBackupRequest(BaseModel):
@@ -523,6 +566,9 @@ class SendMessageRequest(BaseModel):
     # (#A2) Идемпотентность: клиент генерирует UUID сам (паттерн random_id
     # Telegram). Повторная отправка после обрыва сети не создаёт дубликат.
     client_id: Optional[str] = Field(default=None, max_length=64)
+    # Multi-device: копия для конкретного устройства получателя. None — всему
+    # аккаунту (группы, legacy-отправители → устройство 'primary').
+    target_device_id: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 class UpdateKeyRequest(BaseModel):
     public_key_b64: str = Field(min_length=16, max_length=128)
@@ -713,25 +759,34 @@ def _validate_ratchet_envelope(envelope: dict) -> None:
 def upload_keys(body: UploadKeysRequest, request: Request,
                 current_user: str = Depends(get_current_user)) -> dict:
     _validate_key_b64(body.identity_key_b64, "identity_key_b64")
+    device_id = body.device_id
     with db_conn() as cur:
-        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s) FOR UPDATE",
-                    (current_user,))
+        cur.execute(
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
+            (current_user, device_id))
         previous = cur.fetchone()
-        if (previous and previous["olm_identity_key"]
-                and previous["olm_identity_key"] != body.identity_key_b64):
+        if previous and previous["identity_key_b64"] != body.identity_key_b64:
             # OTKs are bound to the identity that generated them. A rotated
             # account must not leave stale OTKs for the next claimant.
-            cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
-        cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
-                    (body.identity_key_b64, current_user))
+            cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
+                        (current_user, device_id))
+        cur.execute(
+            """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64, created_at)
+               VALUES (LOWER(%s), %s, %s, %s)
+               ON CONFLICT (user_id, device_id) DO UPDATE SET identity_key_b64 = EXCLUDED.identity_key_b64""",
+            (current_user, device_id, body.identity_key_b64, _utc_now()))
+        if device_id == "primary":
+            # Legacy-клиенты и старый claim читают identity из users — держим в синхроне.
+            cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
+                        (body.identity_key_b64, current_user))
         for key_id, key_b64 in body.one_time_keys.items():
             if len(str(key_id)) > 128 or len(key_b64) > 128:
                 raise HTTPException(400, "Invalid one-time key")
             _validate_key_b64(key_b64, "one_time_key")
             cur.execute(
-                "INSERT INTO one_time_keys (user_id, key_id, key_b64) VALUES (%s, %s, %s) "
-                "ON CONFLICT (user_id, key_id) DO NOTHING",
-                (current_user.lower(), str(key_id), str(key_b64)))
+                "INSERT INTO one_time_keys (user_id, device_id, key_id, key_b64) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (user_id, device_id, key_id) DO NOTHING",
+                (current_user.lower(), device_id, str(key_id), str(key_b64)))
     return {"ok": True}
 
 
@@ -746,18 +801,29 @@ def update_olm_backup(body: UpdateOlmBackupRequest, current_user: str = Depends(
 
 
 @app.get("/keys/count")
-def keys_count(current_user: str = Depends(get_current_user)) -> dict:
+def keys_count(device_id: str = "primary", current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            """SELECT COUNT(k.key_id) AS n, u.olm_identity_key
-               FROM users u LEFT JOIN one_time_keys k ON k.user_id = u.user_id
-               WHERE LOWER(u.user_id) = LOWER(%s)
-               GROUP BY u.olm_identity_key""",
-            (current_user.lower(),),
-        )
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        dev = cur.fetchone()
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
         row = cur.fetchone()
     return {"count": row["n"] if row else 0,
-            "identity_key_b64": row["olm_identity_key"] if row else None}
+            "identity_key_b64": dev["identity_key_b64"] if dev else None}
+
+
+@app.get("/users/{user_id}/devices")
+def list_devices(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    """Все крипто-устройства пользователя: отправитель шифрует копию каждому."""
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT device_id, identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
+            (user_id,))
+        rows = cur.fetchall()
+    return {"devices": [{"device_id": r["device_id"], "identity_key_b64": r["identity_key_b64"]} for r in rows]}
 
 
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
@@ -765,22 +831,25 @@ def keys_count(current_user: str = Depends(get_current_user)) -> dict:
 # достался один и тот же OTK.
 @app.post("/keys/claim/{user_id}")
 @limiter.limit("60/minute")
-def claim_keys(user_id: str, request: Request,
+def claim_keys(user_id: str, request: Request, device_id: str = "primary",
                current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,))
+        cur.execute(
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (user_id, device_id))
         row = cur.fetchone()
-        if row is None or not row["olm_identity_key"]:
+        if row is None:
             raise HTTPException(404, "No Olm identity for user")
         cur.execute(
             "DELETE FROM one_time_keys WHERE ctid IN "
-            "(SELECT ctid FROM one_time_keys WHERE user_id = %s LIMIT 1) "
+            "(SELECT ctid FROM one_time_keys WHERE user_id = %s AND device_id = %s LIMIT 1) "
             "RETURNING key_id, key_b64",
-            (user_id.lower(),))
+            (user_id.lower(), device_id))
         otk = cur.fetchone()
     if otk is None:
         raise HTTPException(409, "No one-time keys available")
-    return {"user_id": user_id.lower(), "identity_key_b64": row["olm_identity_key"],
+    return {"user_id": user_id.lower(), "device_id": device_id,
+            "identity_key_b64": row["identity_key_b64"],
             "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"]}}
 
 
@@ -1192,8 +1261,8 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     
             # (#A2) ON CONFLICT: повтор с тем же client_id — не ошибка, а дубликат.
             cur.execute(
-                """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at, recipient_device_id)
+                   VALUES (%s, %s, %s, %s, %s, %s)
                    ON CONFLICT (id) DO NOTHING""",
                 (
                     msg_id,
@@ -1201,6 +1270,7 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     body.recipient_id.lower(),
                     json.dumps(body.envelope),
                     _utc_now(),
+                    body.target_device_id if is_user else None,
                 ),
             )
             if cur.rowcount == 0:
@@ -1316,6 +1386,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
 
 class AckMessagesRequest(BaseModel):
     message_ids: list[str] = Field(min_length=1, max_length=500)
+    device_id: str = Field(default="primary", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 @app.post("/messages/ack")
@@ -1326,18 +1397,21 @@ def ack_messages(body: AckMessagesRequest, current_user: str = Depends(get_curre
     now = _utc_now()
     with db_conn() as cur:
         cur.executemany(
-            """INSERT INTO message_receipts (message_id, user_id, acked_at)
-               VALUES (%s, %s, %s) ON CONFLICT (message_id, user_id) DO NOTHING""",
-            [(mid, current_user.lower(), now) for mid in body.message_ids],
+            """INSERT INTO message_receipts (message_id, user_id, device_id, acked_at)
+               VALUES (%s, %s, %s, %s) ON CONFLICT (message_id, user_id, device_id) DO NOTHING""",
+            [(mid, current_user.lower(), body.device_id, now) for mid in body.message_ids],
         )
     return {"ok": True, "acked": len(body.message_ids)}
 
 
 @app.get("/messages/inbox/{user_id}")
-def inbox(user_id: str, since: str = None, current_user: str = Depends(get_current_user)) -> dict:
+def inbox(user_id: str, since: str = None, device_id: str = "primary",
+          current_user: str = Depends(get_current_user)) -> dict:
     if user_id.lower() != current_user.lower():
         raise HTTPException(403, "Cannot read another user's inbox")
 
+    # Multi-device: NULL recipient_device_id = всему аккаунту (группы, legacy).
+    # Копии для чужих устройств в этот inbox не попадают.
     with db_conn() as cur:
         if since:
             cur.execute(
@@ -1345,9 +1419,10 @@ def inbox(user_id: str, since: str = None, current_user: str = Depends(get_curre
                    FROM messages m
                    WHERE (LOWER(m.recipient_id) = LOWER(%s) OR LOWER(m.recipient_id) IN (
                        SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
-                   )) AND m.created_at > %s
+                   )) AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
+                   AND m.created_at > %s
                    ORDER BY m.created_at ASC""",
-                (user_id, user_id, since),
+                (user_id, user_id, device_id, since),
             )
             rows = cur.fetchall()
         else:
@@ -1365,13 +1440,15 @@ def inbox(user_id: str, since: str = None, current_user: str = Depends(get_curre
                            AND LOWER(m.sender_id) != LOWER(%s)
                        )
                    )
+                   AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
                    AND NOT EXISTS (
                        SELECT 1 FROM message_receipts r
                        WHERE r.message_id = m.id AND LOWER(r.user_id) = LOWER(%s)
+                             AND r.device_id = %s
                    )
                    ORDER BY m.created_at ASC
                    LIMIT 200""",
-                (user_id, user_id, user_id, user_id),
+                (user_id, user_id, user_id, device_id, user_id, device_id),
             )
             rows = cur.fetchall()
     messages = [
