@@ -62,6 +62,13 @@ pub struct PrekeyState {
     pub identity_key_b64: Option<String>,
 }
 
+/// Крипто-устройство аккаунта (multi-device): свой Olm-аккаунт на устройство.
+#[derive(uniffi::Record)]
+pub struct DeviceInfo {
+    pub device_id: String,
+    pub identity_key_b64: String,
+}
+
 #[derive(uniffi::Object)]
 pub struct ApiClient {
     base: String,
@@ -349,6 +356,98 @@ impl ApiClient {
 
     pub fn delete_history(&self, peer_id: String) -> Result<(), CoreError> {
         self.delete(&format!("/messages/history/{peer_id}")).map(|_| ())
+    }
+
+    // --- Multi-device: device-aware варианты. Старые методы выше остаются
+    // для клиентов-однодевайсников (сервер маппит их на device 'primary'). ---
+
+    /// Все крипто-устройства пользователя (для fanout-шифрования).
+    pub fn list_devices(&self, user_id: String) -> Result<Vec<DeviceInfo>, CoreError> {
+        let v = self.get(&format!("/users/{user_id}/devices"))?;
+        let devices = v["devices"].as_array().cloned().unwrap_or_default();
+        Ok(devices
+            .iter()
+            .map(|d| DeviceInfo {
+                device_id: d["device_id"].as_str().unwrap_or_default().to_string(),
+                identity_key_b64: d["identity_key_b64"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect())
+    }
+
+    pub fn upload_keys_device(
+        &self,
+        identity_key_b64: String,
+        one_time_keys_json: String,
+        device_id: String,
+    ) -> Result<(), CoreError> {
+        let otks: serde_json::Value = serde_json::from_str(&one_time_keys_json).map_err(CoreError::bad)?;
+        self.put("/keys/upload", serde_json::json!({
+            "identity_key_b64": identity_key_b64,
+            "one_time_keys": otks,
+            "device_id": device_id,
+        }))
+        .map(|_| ())
+    }
+
+    pub fn keys_count_device(&self, device_id: String) -> Result<u32, CoreError> {
+        let v = self.get(&format!("/keys/count?device_id={}", urlencode(&device_id)))?;
+        Ok(v["count"].as_u64().unwrap_or(0) as u32)
+    }
+
+    pub fn claim_keys_device(&self, user_id: String, device_id: String) -> Result<PrekeyBundle, CoreError> {
+        let v = self.post(
+            &format!("/keys/claim/{user_id}?device_id={}", urlencode(&device_id)),
+            serde_json::json!({}),
+        )?;
+        Ok(PrekeyBundle {
+            identity_key_b64: v["identity_key_b64"].as_str().unwrap_or_default().to_string(),
+            one_time_key_id: v["one_time_key"]["key_id"].as_str().unwrap_or_default().to_string(),
+            one_time_key_b64: v["one_time_key"]["key_b64"].as_str().unwrap_or_default().to_string(),
+        })
+    }
+
+    /// Отправка адресной копии конверта устройству получателя.
+    pub fn send_message_device(
+        &self,
+        recipient_id: String,
+        envelope_json: String,
+        client_id: Option<String>,
+        target_device_id: String,
+    ) -> Result<String, CoreError> {
+        let envelope: serde_json::Value = serde_json::from_str(&envelope_json).map_err(CoreError::bad)?;
+        let mut body = serde_json::json!({
+            "sender_id": self.me()?,
+            "recipient_id": recipient_id,
+            "envelope": envelope,
+            "target_device_id": target_device_id,
+        });
+        if let Some(cid) = client_id {
+            body["client_id"] = cid.into();
+        }
+        let v = self.post("/messages", body)?;
+        v["message_id"]
+            .as_str()
+            .map(str::to_string)
+            .ok_or(CoreError::Api { status: 500, msg: format!("нет message_id: {v}") })
+    }
+
+    pub fn fetch_inbox_device(&self, since: Option<String>, device_id: String) -> Result<Vec<InboxItem>, CoreError> {
+        let me = self.me()?;
+        let dev = urlencode(&device_id);
+        let path = match since {
+            Some(s) => format!("/messages/inbox/{me}?since={}&device_id={dev}", urlencode(&s)),
+            None => format!("/messages/inbox/{me}?device_id={dev}"),
+        };
+        let v = self.get(&path)?;
+        serde_json::from_value(v["messages"].clone()).map_err(CoreError::bad)
+    }
+
+    pub fn ack_messages_device(&self, message_ids: Vec<String>, device_id: String) -> Result<(), CoreError> {
+        if message_ids.is_empty() {
+            return Ok(());
+        }
+        self.post("/messages/ack", serde_json::json!({ "message_ids": message_ids, "device_id": device_id }))
+            .map(|_| ())
     }
 
     // Группы: формы ответов гибкие, отдаём JSON-строки — парсит Swift.

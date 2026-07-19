@@ -167,6 +167,98 @@ class RelayApi(baseUrl: String) {
         }
     }
 
+    // --- Multi-device: device-aware варианты. Сервер маппит старые вызовы
+    // на устройство 'primary', эти — адресуют конкретное устройство. ---
+
+    fun listDevices(userId: String, peerId: String): List<uniffi.sm_core.DeviceInfo> {
+        restoreSession(userId)
+        try {
+            return core.listDevices(peerId.lowercase())
+        } catch (e: Exception) {
+            throw asHttpError("Список устройств", e)
+        }
+    }
+
+    fun uploadOlmKeysDevice(userId: String, identityKeyB64: String, oneTimeKeysJson: String, deviceId: String) {
+        restoreSession(userId)
+        try {
+            core.uploadKeysDevice(identityKeyB64, oneTimeKeysJson, deviceId)
+        } catch (e: Exception) {
+            throw asHttpError("Публикация защищённых ключей", e)
+        }
+    }
+
+    fun olmKeysCountDevice(userId: String, deviceId: String): UInt {
+        restoreSession(userId)
+        try {
+            return core.keysCountDevice(deviceId)
+        } catch (e: Exception) {
+            throw asHttpError("Проверка защищённых ключей", e)
+        }
+    }
+
+    fun claimOlmKeysDevice(userId: String, peerId: String, deviceId: String): uniffi.sm_core.PrekeyBundle {
+        restoreSession(userId)
+        try {
+            return core.claimKeysDevice(peerId.lowercase(), deviceId)
+        } catch (e: Exception) {
+            throw asHttpError("Собеседник не поддерживает защищённое шифрование", e)
+        }
+    }
+
+    fun sendMessageDevice(
+        senderId: String,
+        recipientId: String,
+        envelope: Map<String, Any>,
+        clientMsgId: String?,
+        targetDeviceId: String,
+    ): String {
+        restoreSession(senderId)
+        val envelopeJson = JSONObject().apply {
+            envelope.forEach { (key, value) -> put(key, value) }
+        }.toString()
+        try {
+            return core.sendMessageDevice(recipientId, envelopeJson, clientMsgId, targetDeviceId)
+        } catch (e: uniffi.sm_core.CoreException.Api) {
+            val detail = try {
+                JSONObject(e.msg).optString("detail").ifBlank { e.msg.take(200) }
+            } catch (_: Exception) {
+                e.msg.take(200)
+            }
+            throw HttpError(e.status.toInt(), "Отправка [$senderId -> $recipientId]: $detail")
+        }
+    }
+
+    fun fetchInboxDevice(userId: String, deviceId: String): List<InboxMessage> {
+        restoreSession(userId)
+        return core.fetchInboxDevice(null, deviceId).map { item ->
+            val envelope = JSONObject(item.envelope)
+            val isGroup = envelope.optBoolean("is_group", false) ||
+                envelope.optString("is_group") == "1"
+            InboxMessage(
+                id = item.id,
+                senderId = item.senderId,
+                recipientId = item.recipientId,
+                envelopeJson = item.envelope,
+                senderPubkeyB64 = envelope.optString("sender_pubkey_b64"),
+                nonceB64 = envelope.optString("nonce_b64"),
+                ciphertextB64 = envelope.optString("ciphertext_b64"),
+                createdAtMs = parseUtcIso(item.createdAt),
+                isGroupEnvelope = isGroup,
+                isRatchetEnvelope = envelope.optString("ratchet") == "1",
+            )
+        }
+    }
+
+    fun ackMessagesDevice(messageIds: List<String>, deviceId: String) {
+        if (messageIds.isEmpty()) return
+        try {
+            core.ackMessagesDevice(messageIds, deviceId)
+        } catch (e: Exception) {
+            throw IllegalStateException("Подтверждение сообщений: ${apiErrorDetail(e)}")
+        }
+    }
+
     private fun asHttpError(action: String, error: Exception): RuntimeException =
         if (error is uniffi.sm_core.CoreException.Api) {
             HttpError(error.status.toInt(), "$action: ${apiErrorDetail(error)}")
