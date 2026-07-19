@@ -1518,6 +1518,7 @@ async function prepareLoginState(password) {
     await fetchChatSettings();
     await fetchMyProfile();
     await fetchMyGroups();
+    await fetchServerDialogs();
     
     loginScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
@@ -3041,12 +3042,26 @@ function scrollToBottom() {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
+// 1:1-диалоги с сервера (метаданные): новое устройство видит список чатов
+// сразу, не дожидаясь первой входящей переписки.
+let serverDialogPeers = [];
+async function fetchServerDialogs() {
+    try {
+        const res = await fetch(`${serverUrl}/users/me/dialogs`, { headers: authHeaders() });
+        if (!res.ok) return;
+        const data = await res.json();
+        serverDialogPeers = (data.dialogs || []).map(d => String(d.peer_id || '').toLowerCase()).filter(Boolean);
+        renderContactsList();
+    } catch (_) {}
+}
+
 function renderContactsList() {
     contactsContainer.innerHTML = '';
     const contactsSet = new Set();
     messages.forEach(m => {
         if (m.peer) contactsSet.add(m.peer.toLowerCase());
     });
+    serverDialogPeers.forEach(p => contactsSet.add(p));
     
     const customList = getCustomContactsList();
     customList.forEach(c => {

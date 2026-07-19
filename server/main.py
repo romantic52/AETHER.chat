@@ -819,6 +819,31 @@ def keys_count(device_id: str = "primary", current_user: str = Depends(get_curre
             "identity_key_b64": dev["identity_key_b64"] if dev else None}
 
 
+@app.get("/users/me/dialogs")
+def my_dialogs(current_user: str = Depends(get_current_user)) -> dict:
+    """1:1-диалоги по метаданным маршрутизации (сервер их и так видит).
+    Новое устройство получает список чатов без переноса истории;
+    содержимое переписки остаётся E2E-недоступным серверу."""
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT CASE WHEN LOWER(m.sender_id) = LOWER(%s)
+                           THEN LOWER(m.recipient_id) ELSE LOWER(m.sender_id) END AS peer,
+                      MAX(m.created_at) AS last_at
+               FROM messages m
+               WHERE (LOWER(m.sender_id) = LOWER(%s) OR LOWER(m.recipient_id) = LOWER(%s))
+                 AND EXISTS (SELECT 1 FROM users u
+                             WHERE LOWER(u.user_id) = CASE WHEN LOWER(m.sender_id) = LOWER(%s)
+                                   THEN LOWER(m.recipient_id) ELSE LOWER(m.sender_id) END)
+               GROUP BY peer
+               ORDER BY last_at DESC
+               LIMIT 200""",
+            (current_user, current_user, current_user, current_user),
+        )
+        rows = cur.fetchall()
+    return {"dialogs": [{"peer_id": r["peer"], "last_at": r["last_at"]}
+                        for r in rows if r["peer"] != current_user.lower()]}
+
+
 @app.get("/users/{user_id}/devices")
 def list_devices(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
     """Все крипто-устройства пользователя: отправитель шифрует копию каждому."""
