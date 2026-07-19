@@ -2124,7 +2124,7 @@ body.theme-glass .tg-chat-list-view { background: rgba(255,255,255,0.28) !import
 .tg-logo {
     background: var(--accent-color) !important;
     border: none !important;
-    color: #fff !important;
+    color: var(--accent-contrast, #fff) !important;
     box-shadow: 0 6px 20px rgba(var(--accent-color-rgb), 0.4) !important;
 }
 .tg-auth-box h2 { color: var(--text-primary); }
@@ -2266,10 +2266,10 @@ button.tg-btn-primary:hover,
 .tg-btn-icon:hover { color: var(--accent-color) !important; background: var(--hover-bg); }
 .tg-send-btn {
     background: var(--accent-color) !important;
-    color: #fff !important;
+    color: var(--accent-contrast, #fff) !important;
     width: 44px; height: 44px;
 }
-.tg-send-btn:hover { background: var(--accent-hover) !important; color: #fff !important; }
+.tg-send-btn:hover { background: var(--accent-hover) !important; color: var(--accent-contrast, #fff) !important; }
 
 /* — Статус собеседника — */
 .tg-peer-info h3 { color: var(--text-primary) !important; }
