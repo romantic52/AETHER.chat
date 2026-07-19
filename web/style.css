@@ -2446,3 +2446,21 @@ button.tg-btn-primary:hover,
 @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
 }
+
+/* Настройки → Безопасность и приватность */
+.tg-input-group label.sec-toggle-row,
+.sec-toggle-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 0;
+    font-size: 14px;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.sec-toggle-row input[type="checkbox"] {
+    width: 18px;
+    height: 18px;
+    accent-color: var(--accent-color);
+    flex-shrink: 0;
+}
