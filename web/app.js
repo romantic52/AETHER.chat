@@ -560,7 +560,7 @@ async function saveRatchetState(updateServerBackup = false) {
     }, myPin, getSalt(myId));
     localStorage.setItem(`ratchet_${myId}`, encrypted);
 
-    if (updateServerBackup && myDeviceId === 'primary') {
+    if (updateServerBackup && myDeviceId === 'primary' && secOn('olmBackup')) {
         // Бэкап на сервере один на аккаунт — его владелец только primary,
         // иначе web-устройство затёрло бы pickle телефона.
         const backup = await encryptPrivateKeyB64(olmAccountPickle, myPin);
@@ -1161,7 +1161,48 @@ if(uploadAvatarBtn) uploadAvatarBtn.addEventListener('click', () => avatarInput.
 if(avatarInput) avatarInput.addEventListener('change', handleAvatarSelect);
 if(saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsToServer);
 
+// --- Безопасность и приватность: локальные настройки устройства (не секрет,
+// хранятся открыто; вся крипта от них не зависит). Дефолт каждого — включено.
+function getSecSettings() {
+    try {
+        const parsed = JSON.parse(localStorage.getItem(`sec_settings_${myId}`));
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (_) { return {}; }
+}
+function secOn(key) {
+    return getSecSettings()[key] !== false;
+}
+function loadSecSettingsToUI() {
+    const el = id => document.getElementById(id);
+    if (!el('sec-store-history')) return;
+    el('sec-device-id').textContent = myDeviceId || 'primary';
+    el('sec-store-history').checked = secOn('storeHistory');
+    el('sec-olm-backup').checked = secOn('olmBackup');
+    el('sec-read-receipts').checked = secOn('readReceipts');
+    el('sec-typing').checked = secOn('typing');
+}
+function saveSecSettingsFromUI() {
+    const el = id => document.getElementById(id);
+    if (!el('sec-store-history')) return;
+    const s = {
+        storeHistory: el('sec-store-history').checked,
+        olmBackup: el('sec-olm-backup').checked,
+        readReceipts: el('sec-read-receipts').checked,
+        typing: el('sec-typing').checked
+    };
+    localStorage.setItem(`sec_settings_${myId}`, JSON.stringify(s));
+    if (!s.storeHistory) localStorage.removeItem(`messages_${myId}`);
+}
+const secWipeBtn = document.getElementById('sec-wipe-btn');
+if (secWipeBtn) secWipeBtn.addEventListener('click', () => {
+    if (!confirm('Стереть на этом устройстве историю, ключи шифрования и настройки? Аккаунт на сервере не удаляется, но этот браузер станет новым устройством.')) return;
+    const mine = Object.keys(localStorage).filter(k => k.endsWith(`_${myId}`) || k === 'token');
+    mine.forEach(k => localStorage.removeItem(k));
+    location.reload();
+});
+
 function loadProfileToSettings() {
+    loadSecSettingsToUI();
     settingsNameInput.value = myProfile.display_name || '';
     settingsUsernameInput.value = myProfile.username || '';
     if (myProfile.avatar_data) {
@@ -1189,6 +1230,7 @@ async function saveSettingsToServer() {
     saveSettingsBtn.disabled = true;
     settingsStatus.textContent = 'Сохранение...';
     settingsStatus.className = 'tg-status';
+    saveSecSettingsFromUI();
     
     myProfile.display_name = settingsNameInput.value.trim();
     myProfile.username = settingsUsernameInput.value.trim().toLowerCase();
@@ -1791,6 +1833,8 @@ async function sendMessage() {
 
 async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
     if (!targetPeer) return false;
+    // Приватность: отчёты о прочтении отключаемы в настройках безопасности.
+    if (payloadObj && payloadObj.type === 'read_receipt' && !secOn('readReceipts')) return false;
     targetPeer = targetPeer.toLowerCase();
     const clientId = window.crypto.randomUUID();
     
@@ -2398,6 +2442,10 @@ async function pollInbox() {
 }
 
 async function saveMessagesLocally() {
+    if (!secOn('storeHistory')) {
+        localStorage.removeItem(`messages_${myId}`);
+        return;
+    }
     const salt = getSalt(myId);
     const payload = { messages: messages };
     const encrypted = await encryptPayload(payload, myPin, salt);
@@ -5624,6 +5672,7 @@ function handleRealtimeMessage(m) {
 
 function sendTypingSignal() {
     if (!selectedPeer || selectedPeer === myId) return;
+    if (!secOn('typing')) return; // приватность: отключаемо в настройках
     if (myGroupsCache[selectedPeer]) return; // индикатор только в личных чатах
     const now = Date.now();
     if (now - lastTypingSent < 2500) return; // throttle

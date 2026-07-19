@@ -8,7 +8,7 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="style.css?v=3.7.0">
+    <link rel="stylesheet" href="style.css?v=3.7.1">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <script src="vendor/nacl.min.js"></script>
     <link rel="manifest" href="manifest.json">
@@ -156,6 +156,15 @@
                                 <option value="😢">😢 Грусть</option>
                                 <option value="🙏">🙏 Спасибо</option>
                             </select>
+                        </div>
+                        <div class="tg-input-group" style="border-top:1px solid var(--border-color); padding-top:14px;">
+                            <label style="font-size:15px; font-weight:600;"><i class="fas fa-shield-halved"></i> Безопасность и приватность</label>
+                            <div style="font-size:12px; color: var(--text-secondary); margin:4px 0 10px;">Это устройство: <span id="sec-device-id">—</span></div>
+                            <label class="sec-toggle-row"><input type="checkbox" id="sec-store-history"> Хранить историю в этом браузере (зашифровано паролем)</label>
+                            <label class="sec-toggle-row"><input type="checkbox" id="sec-olm-backup"> Бэкап ключа шифрования на сервере (вход после переустановки)</label>
+                            <label class="sec-toggle-row"><input type="checkbox" id="sec-read-receipts"> Отправлять отчёты о прочтении</label>
+                            <label class="sec-toggle-row"><input type="checkbox" id="sec-typing"> Показывать собеседникам «печатает…»</label>
+                            <button id="sec-wipe-btn" class="tg-btn-secondary" style="margin-top:10px; color:#e53935;">Стереть все данные на этом устройстве</button>
                         </div>
                         <button id="save-settings-btn" class="tg-btn-primary">Сохранить</button>
                         <p id="settings-status" class="tg-status"></p>
@@ -647,6 +656,6 @@
         </div>
     </div>
     
-    <script src="app.js?v=5.0.1"></script>
+    <script src="app.js?v=5.1.0"></script>
 </body>
 </html>
