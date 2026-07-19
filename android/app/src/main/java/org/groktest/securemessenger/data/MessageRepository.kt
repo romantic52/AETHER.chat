@@ -207,17 +207,60 @@ class MessageRepository(
 
     suspend fun myOlmIdentity(): String = ratchetMutex.withLock { myOlmIdentityLocked() }
 
+    // --- Multi-device: это устройство — отдельный Olm-аккаунт. Существующая
+    // установка узнаёт себя по identity в директории (обычно 'primary'),
+    // свежая при живом аккаунте занимает новый слот 'android-xxx'. ---
+    private var cachedDeviceId: String = ""
+
+    private suspend fun myDeviceIdLocked(): String {
+        if (cachedDeviceId.isNotBlank()) return cachedDeviceId
+        store.metaGet("device_id")?.takeIf(String::isNotBlank)?.let {
+            cachedDeviceId = it
+            return it
+        }
+        // Сетевая ошибка здесь пробрасывается: нельзя вслепую занять 'primary'
+        // и затереть ключи телефона-владельца.
+        val devices = api.listDevices(myId, myId)
+        val identity = myOlmIdentityLocked()
+        val resolved = when {
+            devices.isEmpty() -> "primary"
+            devices.any { it.identityKeyB64 == identity } ->
+                devices.first { it.identityKeyB64 == identity }.deviceId
+            else -> "android-" + java.util.UUID.randomUUID().toString().replace("-", "").take(10)
+        }
+        cachedDeviceId = resolved
+        store.metaSet("device_id", resolved)
+        return resolved
+    }
+
+    suspend fun myDeviceId(): String = ratchetMutex.withLock { myDeviceIdLocked() }
+
+    /** Ключ Olm-сессии в сторадже: primary — под старым ключом peerId
+     * (существующие сессии переживают апгрейд), остальные — peer::device. */
+    private fun sessionKeyOf(peerId: String, deviceId: String) =
+        if (deviceId == "primary") peerId else "$peerId::$deviceId"
+
+    private val peerDevicesCache = mutableMapOf<String, Pair<List<uniffi.sm_core.DeviceInfo>, Long>>()
+
+    private fun peerDevices(peerId: String, force: Boolean = false): List<uniffi.sm_core.DeviceInfo> {
+        val id = peerId.lowercase()
+        peerDevicesCache[id]?.let { (cached, at) ->
+            if (!force && System.currentTimeMillis() - at < 60_000) return cached
+        }
+        val devices = api.listDevices(myId, id)
+        peerDevicesCache[id] = devices to System.currentTimeMillis()
+        return devices
+    }
+
     private suspend fun ensureOlmKeysLocked() {
         val account = olmAccountLocked()
-        val localIdentity = myOlmIdentityLocked()
-        val serverState = api.olmKeysState(myId)
-        if ((serverState.identityKeyB64 == null || serverState.identityKeyB64 == localIdentity) &&
-            serverState.count >= 20u
-        ) return
+        val device = myDeviceIdLocked()
+        if (api.olmKeysCountDevice(myId, device) >= 20u) return
         val published = uniffi.sm_core.olmAccountGenerateOtks(account, 40u)
         store.metaSet("olm_account", published.accountPickle)
         cachedOlmIdentity = published.identityKeyB64
-        api.uploadOlmKeys(myId, published.identityKeyB64, published.oneTimeKeysJson)
+        api.uploadOlmKeysDevice(myId, published.identityKeyB64, published.oneTimeKeysJson, device)
+        peerDevicesCache.clear()
     }
 
     suspend fun ensureOlmKeys() = ratchetMutex.withLock { ensureOlmKeysLocked() }
@@ -232,38 +275,63 @@ class MessageRepository(
     }
 
     /** Личные сообщения идут только через общее Rust Olm-ядро; box остаётся у групповых ключей. */
-    private suspend fun encryptWireFor(peerId: String, wire: String): Map<String, Any> {
-        return if (isGroupPeer(peerId)) {
-            val gk = groupKeyFor(peerId) ?: throw GroupKeyUnavailableException(peerId)
-            val env = crypto.encryptFile(wire.toByteArray(Charsets.UTF_8), gk.key)
-            mapOf(
-                "is_group" to "1",
-                "nonce_b64" to env.nonceB64,
-                "ciphertext_b64" to env.ciphertextB64,
+    private suspend fun encryptGroupWire(peerId: String, wire: String): Map<String, Any> {
+        val gk = groupKeyFor(peerId) ?: throw GroupKeyUnavailableException(peerId)
+        val env = crypto.encryptFile(wire.toByteArray(Charsets.UTF_8), gk.key)
+        return mapOf(
+            "is_group" to "1",
+            "nonce_b64" to env.nonceB64,
+            "ciphertext_b64" to env.ciphertextB64,
+        )
+    }
+
+    private suspend fun encryptDirectForDeviceLocked(id: String, deviceId: String, wire: String): Map<String, Any> {
+        val key = sessionKeyOf(id, deviceId)
+        var session = olmSession(key)
+        if (session == null) {
+            val bundle = api.claimOlmKeysDevice(myId, id, deviceId)
+            olmTrustStore.checkForSending(key, bundle.identityKeyB64)
+            session = uniffi.sm_core.olmCreateOutbound(
+                olmAccountLocked(),
+                bundle.identityKeyB64,
+                bundle.oneTimeKeyB64,
             )
-        } else {
-            ratchetMutex.withLock {
-                val id = peerId.lowercase()
-                var session = olmSession(id)
-                if (session == null) {
-                    val bundle = api.claimOlmKeys(myId, id)
-                    olmTrustStore.checkForSending(id, bundle.identityKeyB64)
-                    session = uniffi.sm_core.olmCreateOutbound(
-                        olmAccountLocked(),
-                        bundle.identityKeyB64,
-                        bundle.oneTimeKeyB64,
-                    )
-                }
-                val encrypted = uniffi.sm_core.olmEncrypt(session, wire)
-                saveOlmSession(id, encrypted.sessionPickle)
-                mapOf(
-                    "ratchet" to "1",
-                    "olm_identity" to myOlmIdentityLocked(),
-                    "type" to encrypted.messageType.toInt(),
-                    "body_b64" to encrypted.bodyB64,
-                )
+        }
+        val encrypted = uniffi.sm_core.olmEncrypt(session, wire)
+        saveOlmSession(key, encrypted.sessionPickle)
+        return mapOf(
+            "ratchet" to "1",
+            "olm_identity" to myOlmIdentityLocked(),
+            "sender_device" to myDeviceIdLocked(),
+            "type" to encrypted.messageType.toInt(),
+            "body_b64" to encrypted.bodyB64,
+        )
+    }
+
+    /** Единая отправка wire-нагрузки: группа — общий ключ, личка — Olm-копия
+     * каждому устройству получателя (multi-device fanout). Возвращает message_id
+     * первой копии. */
+    private suspend fun sendWire(peerId: String, wire: String, clientMsgId: String? = null): String {
+        if (isGroupPeer(peerId)) {
+            return api.sendMessage(myId, peerId, encryptGroupWire(peerId, wire), clientMsgId = clientMsgId)
+        }
+        val id = peerId.lowercase()
+        val devices = try { peerDevices(id) } catch (_: Exception) { emptyList() }
+            .ifEmpty { listOf(uniffi.sm_core.DeviceInfo("primary", "")) }
+        var firstId: String? = null
+        var firstError: Exception? = null
+        for (dev in devices) {
+            try {
+                val envelope = ratchetMutex.withLock { encryptDirectForDeviceLocked(id, dev.deviceId, wire) }
+                val cid = if (firstId == null) clientMsgId else java.util.UUID.randomUUID().toString()
+                val mid = api.sendMessageDevice(myId, peerId, envelope, cid, dev.deviceId)
+                if (firstId == null) firstId = mid
+            } catch (e: Exception) {
+                // Одно недоступное устройство не роняет отправку остальным.
+                if (firstError == null) firstError = e
             }
         }
+        return firstId ?: throw (firstError ?: IllegalStateException("У получателя нет доступных устройств"))
     }
 
     // ------------------------------------------------------------------
@@ -336,7 +404,8 @@ class MessageRepository(
     suspend fun syncInbox() {
         inboxMutex.lock()
         try {
-            val msgs = api.fetchInbox(myId)
+            val device = myDeviceId()
+            val msgs = api.fetchInboxDevice(myId, device)
             val ackIds = mutableListOf<String>()
             for (m in msgs) {
                 try {
@@ -346,7 +415,7 @@ class MessageRepository(
                         // этими действиями отправитель навсегда останется с одной галочкой.
                         try {
                             val wire = JSONObject().put("type", "delivered").toString()
-                            api.sendMessage(myId, deliveryPeer, encryptWireFor(deliveryPeer, wire))
+                            sendWire(deliveryPeer, wire)
                         } catch (_: Exception) {
                             continue
                         }
@@ -381,7 +450,7 @@ class MessageRepository(
                 }
             }
             if (ackIds.isNotEmpty()) {
-                try { api.ackMessages(ackIds) } catch (e: Exception) {
+                try { api.ackMessagesDevice(ackIds, device) } catch (e: Exception) {
                     // ACK не дошёл — дедупликация по msgId отбросит повторы
                 }
             }
@@ -404,6 +473,21 @@ class MessageRepository(
     private fun timestampOf(m: RelayApi.InboxMessage) =
         if (m.createdAtMs > 0) m.createdAtMs else System.currentTimeMillis()
 
+    /** Устройство отправителя: из конверта (новые клиенты) или по identity в
+     * директории устройств (легаси-конверты без sender_device → primary). */
+    private fun senderDeviceOf(m: RelayApi.InboxMessage, senderIdentity: String): String {
+        JSONObject(m.envelopeJson).optString("sender_device").takeIf(String::isNotBlank)?.let { return it }
+        return try {
+            var devices = peerDevices(m.senderId)
+            if (devices.none { it.identityKeyB64 == senderIdentity }) {
+                devices = peerDevices(m.senderId, force = true)
+            }
+            devices.firstOrNull { it.identityKeyB64 == senderIdentity }?.deviceId ?: "primary"
+        } catch (_: Exception) {
+            "primary"
+        }
+    }
+
     private suspend fun decryptRatchet(m: RelayApi.InboxMessage): String {
         val envelope = JSONObject(m.envelopeJson)
         val senderIdentity = envelope.optString("olm_identity")
@@ -412,10 +496,11 @@ class MessageRepository(
         require(senderIdentity.isNotBlank() && body.isNotBlank() && type in 0..1) {
             "Некорректный Ratchet-конверт"
         }
+        val senderDevice = senderDeviceOf(m, senderIdentity)
 
         var consumedOneTimeKey = false
         val plaintext = ratchetMutex.withLock {
-            val peer = m.senderId.lowercase()
+            val peer = sessionKeyOf(m.senderId.lowercase(), senderDevice)
             olmSession(peer)?.let { session ->
                 runCatching { uniffi.sm_core.olmDecrypt(session, type.toUInt(), body) }
                     .getOrNull()
@@ -476,7 +561,12 @@ class MessageRepository(
                 m.senderPubkeyB64
             }
             val trust = if (m.isRatchetEnvelope) {
-                olmTrustStore.checkIncoming(m.senderId, envelopeKey)
+                // Пин per (отправитель, устройство): у одного аккаунта легально
+                // несколько identity-ключей — по одному на устройство.
+                olmTrustStore.checkIncoming(
+                    sessionKeyOf(m.senderId.lowercase(), senderDeviceOf(m, envelopeKey)),
+                    envelopeKey,
+                )
             } else {
                 trustStore.checkIncoming(m.senderId, envelopeKey)
             }
@@ -704,8 +794,7 @@ class MessageRepository(
                     if (localId != null) {
                         uploadLocalRecording(msg)
                     } else {
-                        val envelope = encryptWireFor(msg.peerId, buildWire(msg))
-                        api.sendMessage(myId, msg.peerId, envelope, clientMsgId = msg.msgId)
+                        sendWire(msg.peerId, buildWire(msg), clientMsgId = msg.msgId)
                         store.updateStatus(msg.msgId, 1)
                     }
                     attempts.remove(msg.msgId)
@@ -836,7 +925,7 @@ class MessageRepository(
                 }
 
                 val clientId = UUID.randomUUID().toString()
-                api.sendMessage(myId, peerId, encryptWireFor(peerId, jsonText), clientMsgId = clientId)
+                sendWire(peerId, jsonText, clientMsgId = clientId)
 
                 ensureChatExists(peerId)
                 store.insertMessage(
@@ -933,12 +1022,7 @@ class MessageRepository(
         // После upload сообщение уже пригодно для обычного сетевого retry.
         store.updatePayload(msg.msgId, wireJson)
         source.delete()
-        api.sendMessage(
-            myId,
-            msg.peerId,
-            encryptWireFor(msg.peerId, wireJson),
-            clientMsgId = msg.msgId
-        )
+        sendWire(msg.peerId, wireJson, clientMsgId = msg.msgId)
         store.updateStatus(msg.msgId, 1)
     }
     private data class MediaRef(
@@ -1172,7 +1256,7 @@ class MessageRepository(
             }
             // Wire-нагрузку собирает общее ядро (Rust) — единый протокол для всех платформ
             val wire = uniffi.sm_core.wireEncode(uniffi.sm_core.WireMessage.Reaction(target = targetMsgId, emoji = emoji))
-            api.sendMessage(myId, peerId, encryptWireFor(peerId, wire))
+            sendWire(peerId, wire)
         } catch (e: Exception) {}
     }
 
@@ -1189,7 +1273,7 @@ class MessageRepository(
             if (isGroupPeer(peerId)) return
             if (unread == 0) return
             val wire = JSONObject().put("type", "read")
-            api.sendMessage(myId, peerId, encryptWireFor(peerId, wire.toString()))
+            sendWire(peerId, wire.toString())
         } catch (e: Exception) {}
     }
 
@@ -1200,7 +1284,7 @@ class MessageRepository(
                 .put("type", "edit")
                 .put("target", msgId)
                 .put("text", newText)
-            api.sendMessage(myId, peerId, encryptWireFor(peerId, wire.toString()))
+            sendWire(peerId, wire.toString())
             store.updateText(msgId, newText)
             null
         } catch (e: Exception) { e }
@@ -1227,14 +1311,20 @@ class MessageRepository(
                     .put("target_ts", original.timestamp)
                     .put("target_is_out", original.isOut)
             }
-            api.sendMessage(myId, peerId, encryptWireFor(peerId, wire.toString()))
+            sendWire(peerId, wire.toString())
             store.deleteByMsgId(msgId)
             null
         } catch (e: Exception) { e }
     }
 
     suspend fun encryptForPeer(peerId: String, wireJson: String): Map<String, Any> =
-        encryptWireFor(peerId, wireJson)
+        if (isGroupPeer(peerId)) {
+            encryptGroupWire(peerId, wireJson)
+        } else {
+            // ponytail: отложенные сообщения шифруются заранее одной копией на
+            // primary; fanout для scheduled — вместе с переносом истории
+            ratchetMutex.withLock { encryptDirectForDeviceLocked(peerId.lowercase(), "primary", wireJson) }
+        }
 
     // ------------------------------------------------------------------
     // Вспомогательное

@@ -989,6 +989,20 @@ internal open class UniffiVTableCallbackInterfaceWsListener(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1058,11 +1072,15 @@ fun uniffi_sm_core_checksum_func_wrap_group_key(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_ack_messages(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_ack_messages_device(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_add_group_member(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_avatar_url(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_claim_keys(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_claim_keys_device(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_create_group(
 ): Short
@@ -1073,6 +1091,8 @@ fun uniffi_sm_core_checksum_method_apiclient_delete_history(
 fun uniffi_sm_core_checksum_method_apiclient_download(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_fetch_inbox(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_fetch_inbox_device(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_get_group_members(
 ): Short
@@ -1088,9 +1108,13 @@ fun uniffi_sm_core_checksum_method_apiclient_heartbeat(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_keys_count(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_keys_count_device(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_keys_state(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_leave_group(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_list_devices(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_login(
 ): Short
@@ -1103,6 +1127,8 @@ fun uniffi_sm_core_checksum_method_apiclient_remove_group_member(
 fun uniffi_sm_core_checksum_method_apiclient_search_users(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_send_message(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_send_message_device(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_set_session(
 ): Short
@@ -1119,6 +1145,8 @@ fun uniffi_sm_core_checksum_method_apiclient_upload(
 fun uniffi_sm_core_checksum_method_apiclient_upload_avatar(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_upload_keys(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_upload_keys_device(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_clear_unread(
 ): Short
@@ -1281,11 +1309,15 @@ fun uniffi_sm_core_fn_constructor_apiclient_new(`baseUrl`: RustBuffer.ByValue,un
 ): Pointer
 fun uniffi_sm_core_fn_method_apiclient_ack_messages(`ptr`: Pointer,`messageIds`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_apiclient_ack_messages_device(`ptr`: Pointer,`messageIds`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_apiclient_add_group_member(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`encryptedKeyB64`: RustBuffer.ByValue,`role`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_avatar_url(`ptr`: Pointer,`fileId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_claim_keys(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_claim_keys_device(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_create_group(`ptr`: Pointer,`id`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`description`: RustBuffer.ByValue,`isChannel`: Byte,`encryptedKeyB64`: RustBuffer.ByValue,`linkedGroupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1296,6 +1328,8 @@ fun uniffi_sm_core_fn_method_apiclient_delete_history(`ptr`: Pointer,`peerId`: R
 fun uniffi_sm_core_fn_method_apiclient_download(`ptr`: Pointer,`fileId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_fetch_inbox(`ptr`: Pointer,`since`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_fetch_inbox_device(`ptr`: Pointer,`since`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_get_group_members(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1311,10 +1345,14 @@ fun uniffi_sm_core_fn_method_apiclient_heartbeat(`ptr`: Pointer,uniffi_out_err: 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_keys_count(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
+fun uniffi_sm_core_fn_method_apiclient_keys_count_device(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Int
 fun uniffi_sm_core_fn_method_apiclient_keys_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_leave_group(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_apiclient_list_devices(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_login(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_logout(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1326,6 +1364,8 @@ fun uniffi_sm_core_fn_method_apiclient_remove_group_member(`ptr`: Pointer,`group
 fun uniffi_sm_core_fn_method_apiclient_search_users(`ptr`: Pointer,`query`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_send_message(`ptr`: Pointer,`recipientId`: RustBuffer.ByValue,`envelopeJson`: RustBuffer.ByValue,`clientId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_send_message_device(`ptr`: Pointer,`recipientId`: RustBuffer.ByValue,`envelopeJson`: RustBuffer.ByValue,`clientId`: RustBuffer.ByValue,`targetDeviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_set_session(`ptr`: Pointer,`token`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1342,6 +1382,8 @@ fun uniffi_sm_core_fn_method_apiclient_upload(`ptr`: Pointer,`data`: RustBuffer.
 fun uniffi_sm_core_fn_method_apiclient_upload_avatar(`ptr`: Pointer,`data`: RustBuffer.ByValue,`mime`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_upload_keys(`ptr`: Pointer,`identityKeyB64`: RustBuffer.ByValue,`oneTimeKeysJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_apiclient_upload_keys_device(`ptr`: Pointer,`identityKeyB64`: RustBuffer.ByValue,`oneTimeKeysJson`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_clone_corestore(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
@@ -1704,6 +1746,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_ack_messages() != 41352.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_ack_messages_device() != 42712.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_add_group_member() != 8249.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1711,6 +1756,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_claim_keys() != 26061.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_claim_keys_device() != 7349.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_create_group() != 28719.toShort()) {
@@ -1726,6 +1774,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_fetch_inbox() != 35051.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_fetch_inbox_device() != 22530.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_get_group_members() != 46384.toShort()) {
@@ -1749,10 +1800,16 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_keys_count() != 1386.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_keys_count_device() != 6249.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_keys_state() != 3011.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_leave_group() != 41179.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_list_devices() != 53939.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_login() != 31932.toShort()) {
@@ -1771,6 +1828,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_send_message() != 61093.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_send_message_device() != 17048.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_set_session() != 9045.toShort()) {
@@ -1795,6 +1855,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_upload_keys() != 17466.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_upload_keys_device() != 51388.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_clear_unread() != 41306.toShort()) {
@@ -2441,6 +2504,8 @@ public interface ApiClientInterface {
     
     fun `ackMessages`(`messageIds`: List<kotlin.String>)
     
+    fun `ackMessagesDevice`(`messageIds`: List<kotlin.String>, `deviceId`: kotlin.String)
+    
     fun `addGroupMember`(`groupId`: kotlin.String, `userId`: kotlin.String, `encryptedKeyB64`: kotlin.String, `role`: kotlin.String?)
     
     fun `avatarUrl`(`fileId`: kotlin.String): kotlin.String
@@ -2449,6 +2514,8 @@ public interface ApiClientInterface {
      * Забрать prekey-bundle пира (identity + один OTK, сервер его удаляет).
      */
     fun `claimKeys`(`userId`: kotlin.String): PrekeyBundle
+    
+    fun `claimKeysDevice`(`userId`: kotlin.String, `deviceId`: kotlin.String): PrekeyBundle
     
     fun `createGroup`(`id`: kotlin.String, `name`: kotlin.String, `description`: kotlin.String?, `isChannel`: kotlin.Boolean, `encryptedKeyB64`: kotlin.String, `linkedGroupId`: kotlin.String?): kotlin.String
     
@@ -2459,6 +2526,8 @@ public interface ApiClientInterface {
     fun `download`(`fileId`: kotlin.String): kotlin.ByteArray
     
     fun `fetchInbox`(`since`: kotlin.String?): List<InboxItem>
+    
+    fun `fetchInboxDevice`(`since`: kotlin.String?, `deviceId`: kotlin.String): List<InboxItem>
     
     fun `getGroupMembers`(`groupId`: kotlin.String): kotlin.String
     
@@ -2480,6 +2549,8 @@ public interface ApiClientInterface {
      */
     fun `keysCount`(): kotlin.UInt
     
+    fun `keysCountDevice`(`deviceId`: kotlin.String): kotlin.UInt
+    
     /**
      * Server-side prekey state. The identity is needed when restoring an old
      * account: a stale server bundle must not be mixed with a new local Olm account.
@@ -2487,6 +2558,11 @@ public interface ApiClientInterface {
     fun `keysState`(): PrekeyState
     
     fun `leaveGroup`(`groupId`: kotlin.String)
+    
+    /**
+     * Все крипто-устройства пользователя (для fanout-шифрования).
+     */
+    fun `listDevices`(`userId`: kotlin.String): List<DeviceInfo>
     
     fun `login`(`userId`: kotlin.String, `password`: kotlin.String): AuthSession
     
@@ -2502,6 +2578,11 @@ public interface ApiClientInterface {
      * Отправка конверта. `envelope_json` — от protocol::seal_*. Возвращает message_id.
      */
     fun `sendMessage`(`recipientId`: kotlin.String, `envelopeJson`: kotlin.String, `clientId`: kotlin.String?): kotlin.String
+    
+    /**
+     * Отправка адресной копии конверта устройству получателя.
+     */
+    fun `sendMessageDevice`(`recipientId`: kotlin.String, `envelopeJson`: kotlin.String, `clientId`: kotlin.String?, `targetDeviceId`: kotlin.String): kotlin.String
     
     fun `setSession`(`token`: kotlin.String, `userId`: kotlin.String)
     
@@ -2531,6 +2612,8 @@ public interface ApiClientInterface {
      * Опубликовать Olm identity + пачку one-time keys (JSON {key_id: pub_b64}).
      */
     fun `uploadKeys`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String)
+    
+    fun `uploadKeysDevice`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String, `deviceId`: kotlin.String)
     
     companion object
 }
@@ -2637,6 +2720,18 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     
 
     
+    @Throws(CoreException::class)override fun `ackMessagesDevice`(`messageIds`: List<kotlin.String>, `deviceId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_ack_messages_device(
+        it, FfiConverterSequenceString.lower(`messageIds`),FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
+    
+
+    
     @Throws(CoreException::class)override fun `addGroupMember`(`groupId`: kotlin.String, `userId`: kotlin.String, `encryptedKeyB64`: kotlin.String, `role`: kotlin.String?)
         = 
     callWithPointer {
@@ -2670,6 +2765,19 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_claim_keys(
         it, FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `claimKeysDevice`(`userId`: kotlin.String, `deviceId`: kotlin.String): PrekeyBundle {
+            return FfiConverterTypePrekeyBundle.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_claim_keys_device(
+        it, FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),_status)
 }
     }
     )
@@ -2733,6 +2841,19 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_fetch_inbox(
         it, FfiConverterOptionalString.lower(`since`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `fetchInboxDevice`(`since`: kotlin.String?, `deviceId`: kotlin.String): List<InboxItem> {
+            return FfiConverterSequenceTypeInboxItem.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_fetch_inbox_device(
+        it, FfiConverterOptionalString.lower(`since`),FfiConverterString.lower(`deviceId`),_status)
 }
     }
     )
@@ -2835,6 +2956,19 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     
 
     
+    @Throws(CoreException::class)override fun `keysCountDevice`(`deviceId`: kotlin.String): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_keys_count_device(
+        it, FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     /**
      * Server-side prekey state. The identity is needed when restoring an old
      * account: a stale server bundle must not be mixed with a new local Olm account.
@@ -2861,6 +2995,22 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
 }
     }
     
+    
+
+    
+    /**
+     * Все крипто-устройства пользователя (для fanout-шифрования).
+     */
+    @Throws(CoreException::class)override fun `listDevices`(`userId`: kotlin.String): List<DeviceInfo> {
+            return FfiConverterSequenceTypeDeviceInfo.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_list_devices(
+        it, FfiConverterString.lower(`userId`),_status)
+}
+    }
+    )
+    }
     
 
     
@@ -2936,6 +3086,22 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_send_message(
         it, FfiConverterString.lower(`recipientId`),FfiConverterString.lower(`envelopeJson`),FfiConverterOptionalString.lower(`clientId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Отправка адресной копии конверта устройству получателя.
+     */
+    @Throws(CoreException::class)override fun `sendMessageDevice`(`recipientId`: kotlin.String, `envelopeJson`: kotlin.String, `clientId`: kotlin.String?, `targetDeviceId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_send_message_device(
+        it, FfiConverterString.lower(`recipientId`),FfiConverterString.lower(`envelopeJson`),FfiConverterOptionalString.lower(`clientId`),FfiConverterString.lower(`targetDeviceId`),_status)
 }
     }
     )
@@ -3046,6 +3212,18 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_upload_keys(
         it, FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`oneTimeKeysJson`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `uploadKeysDevice`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String, `deviceId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_upload_keys_device(
+        it, FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`oneTimeKeysJson`),FfiConverterString.lower(`deviceId`),_status)
 }
     }
     
@@ -4349,6 +4527,41 @@ public object FfiConverterTypeChat: FfiConverterRustBuffer<Chat> {
             FfiConverterBoolean.write(value.`pinned`, buf)
             FfiConverterBoolean.write(value.`muted`, buf)
             FfiConverterBoolean.write(value.`archived`, buf)
+    }
+}
+
+
+
+/**
+ * Крипто-устройство аккаунта (multi-device): свой Olm-аккаунт на устройство.
+ */
+data class DeviceInfo (
+    var `deviceId`: kotlin.String, 
+    var `identityKeyB64`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
+    override fun read(buf: ByteBuffer): DeviceInfo {
+        return DeviceInfo(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DeviceInfo) = (
+            FfiConverterString.allocationSize(value.`deviceId`) +
+            FfiConverterString.allocationSize(value.`identityKeyB64`)
+    )
+
+    override fun write(value: DeviceInfo, buf: ByteBuffer) {
+            FfiConverterString.write(value.`deviceId`, buf)
+            FfiConverterString.write(value.`identityKeyB64`, buf)
     }
 }
 
@@ -5708,6 +5921,34 @@ public object FfiConverterSequenceTypeChat: FfiConverterRustBuffer<List<Chat>> {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeChat.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeDeviceInfo: FfiConverterRustBuffer<List<DeviceInfo>> {
+    override fun read(buf: ByteBuffer): List<DeviceInfo> {
+        val len = buf.getInt()
+        return List<DeviceInfo>(len) {
+            FfiConverterTypeDeviceInfo.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DeviceInfo>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDeviceInfo.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DeviceInfo>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDeviceInfo.write(it, buf)
         }
     }
 }
