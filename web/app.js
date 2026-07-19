@@ -46,6 +46,15 @@ function safeBlobMime(value, fallback = 'application/octet-stream') {
         ? raw : fallback;
 }
 
+// Аватары нового формата: сервер отдаёт avatar_file_id (файл на /avatars/…),
+// а весь UI исторически читает avatar_data. Нормализуем на входе.
+function normalizeAvatar(profile) {
+    if (profile && typeof profile === 'object' && !profile.avatar_data && profile.avatar_file_id) {
+        profile.avatar_data = `${serverUrl}/avatars/${encodeURIComponent(profile.avatar_file_id)}`;
+    }
+    return profile;
+}
+
 function setSafeBackgroundImage(element, value) {
     const raw = String(value || '').trim();
     if (!raw) {
@@ -1421,7 +1430,7 @@ async function fetchMyProfile() {
     try {
         const res = await fetch(`${serverUrl}/users/${pathSegment(myId)}/profile`, { headers: authHeaders() });
         if (res.ok) {
-            const data = await res.json();
+            const data = normalizeAvatar(await res.json());
             myProfile.username = data.username || '';
             myProfile.display_name = data.display_name || '';
             myProfile.avatar_data = data.avatar_data || '';
@@ -2465,7 +2474,7 @@ function renderSearchResults(users, groups = []) {
     }
     
     users.filter(u => u.user_id !== myId).forEach(u => {
-        profileCache[u.user_id] = u;
+        profileCache[u.user_id] = normalizeAvatar(u);
         
         const dName = String(u.display_name || u.user_id);
         const item = document.createElement('div');
@@ -2534,9 +2543,9 @@ async function fetchPeerProfile(peerId) {
         try {
             const res = await fetch(`${serverUrl}/users/${pathSegment(peerId)}/profile`, { headers: authHeaders() });
             if (res.ok) {
-                const data = await res.json();
+                const data = normalizeAvatar(await res.json());
                 profileCache[peerId] = data;
-                renderContactsList(); 
+                renderContactsList();
                 if (selectedPeer === peerId) {
                     updateActiveChatHeader(peerId);
                 }
@@ -3262,7 +3271,7 @@ async function fetchAndRenderGlobalUsers() {
             const uid = user.user_id.toLowerCase();
             // Don't overwrite our own full profile with local copy if it's already there
             if (uid !== myId) {
-                profileCache[uid] = user;
+                profileCache[uid] = normalizeAvatar(user);
                 cacheUpdated = true;
             }
         });
@@ -3274,6 +3283,7 @@ async function fetchAndRenderGlobalUsers() {
         if (globalUsersContainer) {
             globalUsersContainer.innerHTML = '';
             data.users.filter(u => u.user_id !== myId).forEach(user => {
+                normalizeAvatar(user);
                 const u = user.user_id;
                 const dName = String(user.display_name || u);
                 const item = document.createElement('div');
