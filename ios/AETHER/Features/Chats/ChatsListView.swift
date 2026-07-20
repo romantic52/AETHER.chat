@@ -432,7 +432,7 @@ struct ChatsListView: View {
         flyProgress = 0
         Task { await messaging.setPinned(chat.peerId, true) }
         DispatchQueue.main.async {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { flyProgress = 1 }
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.85)) { flyProgress = 1 }
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { flying = nil }
     }
