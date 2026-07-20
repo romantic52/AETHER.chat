@@ -5,10 +5,14 @@ Relay-сервер: хранит только публичные ключи и �
 
 from __future__ import annotations
 
+import base64
+import hmac
 import json
 import os
 import psycopg2
 import psycopg2.extras
+import struct
+import time
 import uuid
 import hashlib
 import secrets
@@ -461,6 +465,21 @@ def init_db() -> None:
                ON CONFLICT (user_id, device_id) DO NOTHING""",
             (_utc_now(),),
         )
+
+        # Контроль сессий: сессия привязывается к крипто-устройству (клиент
+        # сообщает device_id после логина) — чтобы можно было выкинуть
+        # конкретное устройство. 2FA: TOTP-секрет на аккаунт.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='sessions' AND column_name='device_id')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
+        for col, ddl in [("totp_secret", "TEXT"),
+                         ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")]:
+            cur.execute(
+                """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='users' AND column_name=%s)""", (col,))
+            if not cur.fetchone()[0]:
+                cur.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
             
         # Check username
         cur.execute(
@@ -566,6 +585,29 @@ class LoginRequest(BaseModel):
     # stricter for all new ids/passwords.
     user_id: str = Field(min_length=2, max_length=64)
     password: str = Field(min_length=1, max_length=256)
+    # 2FA: обязателен, когда на аккаунте включён TOTP.
+    totp_code: Optional[str] = Field(default=None, max_length=10)
+
+
+# --- TOTP (RFC 6238, sha1/30s/6 цифр — совместимо с любым аутентификатором) ---
+
+def _totp_at(secret_b32: str, at: float, step: int = 30) -> str:
+    key = base64.b32decode(secret_b32)
+    msg = struct.pack(">Q", int(at // step))
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    off = digest[-1] & 0x0F
+    code = (int.from_bytes(digest[off:off + 4], "big") & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}"
+
+
+def _totp_valid(secret_b32: str, code: Optional[str]) -> bool:
+    supplied = str(code or "").strip()
+    if len(supplied) != 6 or not supplied.isdigit():
+        return False
+    now = time.time()
+    # ±1 шаг — терпимость к рассинхрону часов.
+    return any(hmac.compare_digest(_totp_at(secret_b32, now + drift * 30), supplied)
+               for drift in (-1, 0, 1))
 
 
 class UploadKeysRequest(BaseModel):
@@ -657,7 +699,7 @@ def login_user(body: LoginRequest, request: Request) -> dict:
     with db_conn() as cur:
         cur.execute(
             """SELECT password_hash, public_key_b64, encrypted_private_key_b64,
-                      encrypted_olm_account_b64, user_id
+                      encrypted_olm_account_b64, user_id, totp_secret, totp_enabled
                FROM users WHERE LOWER(user_id) = LOWER(%s)""",
             (body.user_id,),
         )
@@ -666,6 +708,12 @@ def login_user(body: LoginRequest, request: Request) -> dict:
         raise HTTPException(401, "Invalid username or password")
     if not verify_password(body.password, row["password_hash"]):
         raise HTTPException(401, "Invalid username or password")
+    # 2FA: пароль верный, но без валидного кода сессия не выдаётся.
+    if row["totp_enabled"] and row["totp_secret"]:
+        if not body.totp_code:
+            raise HTTPException(401, "totp_required")
+        if not _totp_valid(row["totp_secret"], body.totp_code):
+            raise HTTPException(401, "totp_invalid")
     
     # Generate session token with expiry
     token = secrets.token_hex(32)
@@ -694,6 +742,198 @@ async def logout(authorization: str = Header(None), current_user: str = Depends(
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
     await manager.close_for_token(token)
     return {"ok": True}
+
+
+# --- Контроль сессий (multi-device) ---
+
+class BindDeviceRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class TotpCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=10)
+
+
+class WipeRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+@app.put("/sessions/me/device")
+def bind_session_device(body: BindDeviceRequest, authorization: str = Header(None),
+                        current_user: str = Depends(get_current_user)) -> dict:
+    """Клиент после логина сообщает своё крипто-устройство: сессия становится
+    выкидываемой адресно (экран «Сессии»)."""
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute("UPDATE sessions SET device_id = %s WHERE token = %s", (body.device_id, token))
+    return {"ok": True}
+
+
+KICK_MIN_DEVICE_AGE_HOURS = 12
+
+
+def _device_age_hours(cur, user_id: str, device_id: Optional[str]) -> Optional[float]:
+    if not device_id:
+        return None
+    cur.execute(
+        "SELECT created_at FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+        (user_id, device_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        created = datetime.fromisoformat(row["created_at"])
+    except (ValueError, TypeError):
+        return None
+    return (datetime.now(timezone.utc) - created).total_seconds() / 3600
+
+
+@app.get("/sessions/me")
+def list_sessions(authorization: str = Header(None),
+                  current_user: str = Depends(get_current_user)) -> dict:
+    """Устройства аккаунта + их активные сессии. current — сессия запроса."""
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT device_id, created_at FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
+            (current_user,))
+        devices = {r["device_id"]: {"device_id": r["device_id"], "device_created_at": r["created_at"],
+                                    "sessions": 0, "current": False} for r in cur.fetchall()}
+        cur.execute(
+            "SELECT token, device_id, created_at FROM sessions WHERE LOWER(user_id) = LOWER(%s)",
+            (current_user,))
+        unbound = 0
+        my_device = None
+        for s in cur.fetchall():
+            dev = s["device_id"]
+            if dev in devices:
+                devices[dev]["sessions"] += 1
+                if s["token"] == token:
+                    devices[dev]["current"] = True
+                    my_device = dev
+            else:
+                unbound += 1
+        my_age = _device_age_hours(cur, current_user, my_device)
+    can_kick = my_age is not None and my_age >= KICK_MIN_DEVICE_AGE_HOURS
+    return {"devices": list(devices.values()), "unbound_sessions": unbound,
+            "can_kick": can_kick, "kick_min_hours": KICK_MIN_DEVICE_AGE_HOURS}
+
+
+@app.delete("/sessions/device/{device_id}")
+async def kick_device(device_id: str, authorization: str = Header(None),
+                      current_user: str = Depends(get_current_user)) -> dict:
+    """Выкинуть устройство: отозвать его сессии, закрыть WS, удалить его
+    Olm-устройство и prekeys. Анти-вор: с недавно добавленного устройства
+    (моложе 12 часов) выкидывать другие нельзя."""
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
+        me = cur.fetchone()
+        my_device = me["device_id"] if me else None
+        if device_id != my_device:
+            age = _device_age_hours(cur, current_user, my_device)
+            if age is None or age < KICK_MIN_DEVICE_AGE_HOURS:
+                raise HTTPException(
+                    403,
+                    f"С нового устройства выкидывать другие можно через {KICK_MIN_DEVICE_AGE_HOURS} ч.")
+        cur.execute(
+            "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s RETURNING token",
+            (current_user, device_id))
+        revoked = [r["token"] for r in cur.fetchall()]
+        cur.execute(
+            "DELETE FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        cur.execute(
+            "DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        if device_id == "primary":
+            # Легаси-поля primary тоже гасим, иначе старый клиент продолжит claim.
+            cur.execute("UPDATE users SET olm_identity_key = NULL WHERE LOWER(user_id) = LOWER(%s)",
+                        (current_user,))
+    for t in revoked:
+        await manager.close_for_token(t)
+    return {"ok": True, "revoked_sessions": len(revoked)}
+
+
+# --- 2FA (TOTP) ---
+
+@app.get("/2fa/status")
+def totp_status(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT totp_enabled FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+    return {"enabled": bool(row and row["totp_enabled"])}
+
+
+@app.post("/2fa/setup")
+def totp_setup(current_user: str = Depends(get_current_user)) -> dict:
+    """Выдать новый секрет (2FA ещё не включена — до подтверждения кодом)."""
+    secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+    with db_conn() as cur:
+        cur.execute(
+            "UPDATE users SET totp_secret = %s, totp_enabled = 0 WHERE LOWER(user_id) = LOWER(%s)",
+            (secret, current_user))
+    uri = f"otpauth://totp/AETHER:{current_user}?secret={secret}&issuer=AETHER"
+    return {"secret": secret, "otpauth_uri": uri}
+
+
+@app.post("/2fa/enable")
+def totp_enable(body: TotpCodeRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT totp_secret FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+        if not row or not row["totp_secret"]:
+            raise HTTPException(400, "Сначала запросите секрет: POST /2fa/setup")
+        if not _totp_valid(row["totp_secret"], body.code):
+            raise HTTPException(400, "Неверный код")
+        cur.execute("UPDATE users SET totp_enabled = 1 WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+    return {"ok": True}
+
+
+@app.post("/2fa/disable")
+def totp_disable(body: TotpCodeRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT totp_secret, totp_enabled FROM users WHERE LOWER(user_id) = LOWER(%s)",
+                    (current_user,))
+        row = cur.fetchone()
+        if not row or not row["totp_enabled"]:
+            return {"ok": True}
+        if not _totp_valid(row["totp_secret"], body.code):
+            raise HTTPException(400, "Неверный код")
+        cur.execute(
+            "UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE LOWER(user_id) = LOWER(%s)",
+            (current_user,))
+    return {"ok": True}
+
+
+# --- Паника: удалить всё ---
+
+@app.post("/users/me/wipe")
+async def wipe_account(body: WipeRequest, authorization: str = Header(None),
+                       current_user: str = Depends(get_current_user)) -> dict:
+    """«Удалить всё»: подчистить сообщения на сервере, выйти из всех групп и
+    каналов, отозвать все сессии кроме текущей. Аккаунт и ключи остаются."""
+    with db_conn() as cur:
+        cur.execute("SELECT password_hash FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+    if not row or not verify_password(body.password, row["password_hash"]):
+        raise HTTPException(401, "Неверный пароль")
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute(
+            "DELETE FROM messages WHERE LOWER(sender_id) = LOWER(%s) OR LOWER(recipient_id) = LOWER(%s)",
+            (current_user, current_user))
+        purged = cur.rowcount
+        cur.execute("DELETE FROM group_members WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        left_groups = cur.rowcount
+        cur.execute(
+            "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND token != %s RETURNING token",
+            (current_user, token))
+        revoked = [r["token"] for r in cur.fetchall()]
+    for t in revoked:
+        await manager.close_for_token(t)
+    return {"ok": True, "purged_messages": purged, "left_groups": left_groups,
+            "revoked_sessions": len(revoked)}
 
 
 # (#A4) Только с авторизацией: иначе перечисление пользователей без токена
@@ -859,8 +1099,23 @@ def my_dialogs(current_user: str = Depends(get_current_user)) -> dict:
             (current_user, current_user, current_user, current_user),
         )
         rows = cur.fetchall()
-    return {"dialogs": [{"peer_id": r["peer"], "last_at": r["last_at"]}
-                        for r in rows if r["peer"] != current_user.lower()]}
+        # Группы/каналы: членство + последняя активность — раскладка чатов
+        # на новом устройстве совпадает с основным.
+        cur.execute(
+            """SELECT LOWER(gm.group_id) AS peer,
+                      COALESCE(MAX(m.created_at), '') AS last_at
+               FROM group_members gm
+               LEFT JOIN messages m ON LOWER(m.recipient_id) = LOWER(gm.group_id)
+               WHERE LOWER(gm.user_id) = LOWER(%s)
+               GROUP BY LOWER(gm.group_id)""",
+            (current_user,),
+        )
+        group_rows = cur.fetchall()
+    dialogs = [{"peer_id": r["peer"], "last_at": r["last_at"]}
+               for r in rows if r["peer"] != current_user.lower()]
+    dialogs += [{"peer_id": r["peer"], "last_at": r["last_at"]} for r in group_rows]
+    dialogs.sort(key=lambda d: str(d["last_at"] or ""), reverse=True)
+    return {"dialogs": dialogs}
 
 
 @app.get("/users/{user_id}/devices")
