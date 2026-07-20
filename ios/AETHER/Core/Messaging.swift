@@ -545,8 +545,15 @@ final class Messaging: ObservableObject {
             pinOrder.removeAll { $0 == id }
         }
         UserDefaults.standard.set(pinOrder, forKey: "pinOrder")
+        // Оптимистично и синхронно: одна анимация переезда строки прямо сейчас,
+        // без задержки на диск. SwiftUI видит ту же строку на новом месте.
+        if let idx = chats.firstIndex(where: { $0.peerId == id }) {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
+                chats[idx].pinned = v
+            }
+        }
+        // Диск — в фоне, без повторной анимации (порядок в памяти уже верный).
         await core.setPinnedFlag(id, v)
-        await refreshChats()
     }
 
     /// Позиция чата в списке закрепов (для сортировки; незнакомые — в конец).
