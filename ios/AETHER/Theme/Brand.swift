@@ -259,27 +259,28 @@ struct EdgeDim: View {
                 .init(color: base.opacity(a * 0.62), location: 0.66),
                 .init(color: base.opacity(a), location: 1),
             ]
-        ZStack {
-            // «Живой» бар: под затемнением — блюр-материал, растворяющийся той же
-            // маской. Контент зримо скроллится под шапкой (WhatsApp-стиль).
-            // При выключенном стекле остаётся прежний чистый градиент.
-            if appearance.glassEnabled, appearance.edgeDimEnabled {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .mask(
-                        LinearGradient(
-                            stops: edge == .top
-                                ? [.init(color: .black, location: 0),
-                                   .init(color: .black.opacity(0.75), location: 0.45),
-                                   .init(color: .clear, location: 1)]
-                                : [.init(color: .clear, location: 0),
-                                   .init(color: .black.opacity(0.75), location: 0.55),
-                                   .init(color: .black, location: 1)],
-                            startPoint: .top, endPoint: .bottom
-                        )
-                    )
+        LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+            .allowsHitTesting(false)
+    }
+}
+
+// Нативная подложка бара «как в системных приложениях iOS» (Настройки,
+// Сообщения): сплошной блюр-материал во всю плашку + волосяная линия по
+// внутреннему краю. Контент скроллится под баром и просвечивает блюром.
+// При выключенном стекле — сплошной surface текущей темы.
+struct SystemBarBackground: View {
+    @EnvironmentObject var appearance: AppearanceSettings
+    @Environment(\.palette) private var palette
+    var edge: VerticalEdge = .top
+
+    var body: some View {
+        ZStack(alignment: edge == .top ? .bottom : .top) {
+            if appearance.glassEnabled {
+                Rectangle().fill(.bar)
+            } else {
+                palette.surface
             }
-            LinearGradient(stops: stops, startPoint: .top, endPoint: .bottom)
+            palette.divider.frame(height: 0.5)
         }
         .allowsHitTesting(false)
     }

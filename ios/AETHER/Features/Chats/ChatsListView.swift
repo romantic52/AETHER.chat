@@ -165,7 +165,7 @@ struct ChatsListView: View {
                         customSearchBar
                     }
                     .background(
-                        EdgeDim(edge: .top)
+                        SystemBarBackground()
                             .ignoresSafeArea(edges: .top)
                     )
                 }

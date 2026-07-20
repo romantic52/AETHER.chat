@@ -30,7 +30,7 @@ struct FloatingHeader: View {
         .padding(.bottom, 10)
         .background {
             if withBackground {
-                EdgeDim(edge: .top).ignoresSafeArea(edges: .top)
+                SystemBarBackground().ignoresSafeArea(edges: .top)
             }
         }
     }
