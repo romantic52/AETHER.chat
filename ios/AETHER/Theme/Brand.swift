@@ -264,28 +264,6 @@ struct EdgeDim: View {
     }
 }
 
-// Нативная подложка бара «как в системных приложениях iOS» (Настройки,
-// Сообщения): сплошной блюр-материал во всю плашку + волосяная линия по
-// внутреннему краю. Контент скроллится под баром и просвечивает блюром.
-// При выключенном стекле — сплошной surface текущей темы.
-struct SystemBarBackground: View {
-    @EnvironmentObject var appearance: AppearanceSettings
-    @Environment(\.palette) private var palette
-    var edge: VerticalEdge = .top
-
-    var body: some View {
-        ZStack(alignment: edge == .top ? .bottom : .top) {
-            if appearance.glassEnabled {
-                Rectangle().fill(.bar)
-            } else {
-                palette.surface
-            }
-            palette.divider.frame(height: 0.5)
-        }
-        .allowsHitTesting(false)
-    }
-}
-
 // Быстрый доступ к палитре из окружения.
 private struct PaletteKey: EnvironmentKey {
     static let defaultValue: Palette = ThemePalette.graphite.palette

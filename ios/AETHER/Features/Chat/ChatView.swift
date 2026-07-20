@@ -457,7 +457,7 @@ struct ChatView: View {
         .padding(.horizontal, 12)
         .padding(.top, 4)
         .padding(.bottom, 8)
-        .background(SystemBarBackground().ignoresSafeArea(edges: .top))
+        .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
     }
 
     private var header: some View {
