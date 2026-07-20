@@ -1185,6 +1185,8 @@ function loadSecSettingsToUI() {
     const el = id => document.getElementById(id);
     if (!el('sec-store-history')) return;
     el('sec-device-id').textContent = myDeviceId || 'primary';
+    renderSessionsList();
+    render2faBox();
     el('sec-store-history').checked = secOn('storeHistory');
     el('sec-olm-backup').checked = secOn('olmBackup');
     el('sec-read-receipts').checked = secOn('readReceipts');
@@ -1202,6 +1204,129 @@ function saveSecSettingsFromUI() {
     localStorage.setItem(`sec_settings_${myId}`, JSON.stringify(s));
     if (!s.storeHistory) localStorage.removeItem(`messages_${myId}`);
 }
+// --- Сессии и устройства ---
+async function renderSessionsList() {
+    const box = document.getElementById('sec-sessions-list');
+    if (!box) return;
+    box.textContent = 'Загрузка…';
+    try {
+        const res = await fetch(`${serverUrl}/sessions/me`, { headers: authHeaders() });
+        if (!res.ok) { box.textContent = 'Не удалось загрузить'; return; }
+        const data = await res.json();
+        box.innerHTML = '';
+        for (const d of (data.devices || [])) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 0; border-bottom:1px solid var(--border-color);';
+            const kind = d.device_id === 'primary' ? '📱 Основное'
+                : d.device_id.startsWith('web-') ? '🌐 Веб'
+                : d.device_id.startsWith('ios-') ? '📱 iOS'
+                : d.device_id.startsWith('android-') ? '🤖 Android' : '🖥';
+            const since = d.device_created_at ? new Date(d.device_created_at).toLocaleDateString() : '';
+            row.innerHTML = `<span>${kind} <code style="font-size:11px;">${escapeHtmlSafe(d.device_id)}</code>${d.current ? ' — это устройство' : ''}<br><span style="color:var(--text-secondary); font-size:11px;">с ${since}, сессий: ${d.sessions}</span></span>`;
+            const btn = document.createElement('button');
+            btn.className = 'tg-btn-secondary';
+            btn.style.cssText = 'width:auto; padding:5px 10px; color:#e53935; flex-shrink:0;';
+            btn.textContent = d.current ? 'Выйти' : 'Выкинуть';
+            if (!d.current && !data.can_kick) {
+                btn.disabled = true;
+                btn.title = `С нового устройства выкидывать другие можно через ${data.kick_min_hours} ч.`;
+                btn.style.opacity = '0.4';
+            }
+            btn.addEventListener('click', async () => {
+                if (!confirm(`Завершить все сессии устройства ${d.device_id}? Его ключи будут отозваны.`)) return;
+                const r = await fetch(`${serverUrl}/sessions/device/${pathSegment(d.device_id)}`, {
+                    method: 'DELETE', headers: authHeaders()
+                });
+                if (!r.ok) {
+                    const err = await r.json().catch(() => ({}));
+                    alert(formatServerError(err, 'Не удалось выкинуть устройство'));
+                    return;
+                }
+                if (d.current) { logout(); return; }
+                renderSessionsList();
+            });
+            row.appendChild(btn);
+            box.appendChild(row);
+        }
+        if (data.unbound_sessions > 0) {
+            const note = document.createElement('div');
+            note.style.cssText = 'color:var(--text-secondary); font-size:11px; padding-top:6px;';
+            note.textContent = `+ ${data.unbound_sessions} сессий со старых версий приложений (без привязки к устройству)`;
+            box.appendChild(note);
+        }
+    } catch (_) { box.textContent = 'Не удалось загрузить'; }
+}
+
+// --- 2FA (TOTP) ---
+async function render2faBox() {
+    const box = document.getElementById('sec-2fa-box');
+    if (!box) return;
+    box.textContent = 'Загрузка…';
+    try {
+        const res = await fetch(`${serverUrl}/2fa/status`, { headers: authHeaders() });
+        const enabled = res.ok && (await res.json()).enabled;
+        box.innerHTML = '';
+        const state = document.createElement('div');
+        state.textContent = enabled ? '✅ Включена: при входе требуется код из приложения-аутентификатора.'
+                                    : 'Выключена. Включи — и вход будет требовать одноразовый код.';
+        state.style.marginBottom = '6px';
+        box.appendChild(state);
+        const btn = document.createElement('button');
+        btn.className = 'tg-btn-secondary';
+        btn.style.cssText = 'width:auto; padding:6px 12px;';
+        btn.textContent = enabled ? 'Выключить 2FA' : 'Включить 2FA';
+        btn.addEventListener('click', async () => {
+            if (enabled) {
+                const code = prompt('Код из аутентификатора для выключения:');
+                if (!code) return;
+                const r = await fetch(`${serverUrl}/2fa/disable`, {
+                    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ code: code.trim() })
+                });
+                if (!r.ok) { alert('Неверный код'); return; }
+                render2faBox();
+            } else {
+                const r = await fetch(`${serverUrl}/2fa/setup`, { method: 'POST', headers: authHeaders() });
+                if (!r.ok) { alert('Ошибка настройки'); return; }
+                const data = await r.json();
+                prompt('Добавь секрет в приложение-аутентификатор (Google Authenticator, 1Password и т.п.) и нажми OK:', data.secret);
+                const code = prompt('Теперь введи код из аутентификатора для подтверждения:');
+                if (!code) return;
+                const c = await fetch(`${serverUrl}/2fa/enable`, {
+                    method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+                    body: JSON.stringify({ code: code.trim() })
+                });
+                if (!c.ok) { alert('Неверный код — 2FA не включена'); return; }
+                alert('2FA включена. Не теряй аутентификатор!');
+                render2faBox();
+            }
+        });
+        box.appendChild(btn);
+    } catch (_) { box.textContent = 'Не удалось загрузить'; }
+}
+
+// --- Удалить всё (аккаунт) ---
+const secNukeBtn = document.getElementById('sec-nuke-btn');
+if (secNukeBtn) secNukeBtn.addEventListener('click', async () => {
+    if (!confirm('Удалить ВСЁ: переписки на сервере, выйти из всех групп и каналов, завершить остальные сессии? Это необратимо.')) return;
+    const password = prompt('Пароль аккаунта для подтверждения:');
+    if (!password) return;
+    const r = await fetch(`${serverUrl}/users/me/wipe`, {
+        method: 'POST', headers: authHeaders({ 'Content-Type': 'application/json' }),
+        body: JSON.stringify({ password })
+    });
+    if (!r.ok) {
+        const err = await r.json().catch(() => ({}));
+        alert(formatServerError(err, 'Не удалось: проверь пароль'));
+        return;
+    }
+    // Локально тоже всё чистим (история, контакты, настройки чатов).
+    const mine = Object.keys(localStorage).filter(k => k.endsWith(`_${myId}`) && !k.startsWith('ratchet_') && !k.startsWith('device_id_'));
+    mine.forEach(k => localStorage.removeItem(k));
+    alert('Готово: сервер очищен, группы покинуты, другие сессии завершены.');
+    location.reload();
+});
+
 const secWipeBtn = document.getElementById('sec-wipe-btn');
 if (secWipeBtn) secWipeBtn.addEventListener('click', () => {
     if (!confirm('Стереть на этом устройстве историю, ключи шифрования и настройки? Аккаунт на сервере не удаляется, но этот браузер станет новым устройством.')) return;
@@ -1519,6 +1644,7 @@ async function prepareLoginState(password) {
     await fetchMyProfile();
     await fetchMyGroups();
     await fetchServerDialogs();
+    bindSessionDevice();
     
     loginScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
@@ -1690,18 +1816,25 @@ async function logout() {
 
 // Устаревшая функция, теперь логика внутри performRegister
 
-async function loginOnServer(password) {
+async function loginOnServer(password, totpCode = null) {
     try {
+        const body = { user_id: myId, password: password };
+        if (totpCode) body.totp_code = totpCode;
         const res = await fetch(`${serverUrl}/users/login`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'Bypass-Tunnel-Reminder': 'true' },
-            body: JSON.stringify({
-                user_id: myId,
-                password: password
-            })
+            body: JSON.stringify(body)
         });
         if (!res.ok) {
             const data = await res.json().catch(() => ({}));
+            // 2FA: пароль верный, аккаунт требует одноразовый код.
+            if (res.status === 401 && (data.detail === 'totp_required' || data.detail === 'totp_invalid')) {
+                const code = prompt(data.detail === 'totp_invalid'
+                    ? 'Неверный код. Введи код из аутентификатора ещё раз:'
+                    : 'На аккаунте включена 2FA. Код из аутентификатора:');
+                if (code) return loginOnServer(password, code.trim());
+                throw new Error('Вход отменён: нужен код 2FA');
+            }
             if (res.status === 429) {
                 const wait = res.headers.get('Retry-After') || '60';
                 throw new Error(formatServerError(data, `Слишком много попыток входа. Подождите ${wait} сек.`));
@@ -3042,16 +3175,36 @@ function scrollToBottom() {
     messagesContainer.scrollTop = messagesContainer.scrollHeight;
 }
 
-// 1:1-диалоги с сервера (метаданные): новое устройство видит список чатов
-// сразу, не дожидаясь первой входящей переписки.
+// Диалоги с сервера (метаданные): новое устройство видит список чатов сразу
+// и В ТОМ ЖЕ ПОРЯДКЕ, что основное — по последней активности на сервере.
 let serverDialogPeers = [];
+let serverDialogTimes = Object.create(null); // peerId -> timestamp(ms)
 async function fetchServerDialogs() {
     try {
         const res = await fetch(`${serverUrl}/users/me/dialogs`, { headers: authHeaders() });
         if (!res.ok) return;
         const data = await res.json();
-        serverDialogPeers = (data.dialogs || []).map(d => String(d.peer_id || '').toLowerCase()).filter(Boolean);
+        serverDialogPeers = [];
+        serverDialogTimes = Object.create(null);
+        for (const d of (data.dialogs || [])) {
+            const id = String(d.peer_id || '').toLowerCase();
+            if (!id) continue;
+            serverDialogPeers.push(id);
+            const t = Date.parse(d.last_at || '');
+            if (!isNaN(t)) serverDialogTimes[id] = t;
+        }
         renderContactsList();
+    } catch (_) {}
+}
+
+// Привязка сессии к устройству: делает её адресно выкидываемой («Сессии»).
+async function bindSessionDevice() {
+    try {
+        await fetch(`${serverUrl}/sessions/me/device`, {
+            method: 'PUT',
+            headers: authHeaders({ 'Content-Type': 'application/json' }),
+            body: JSON.stringify({ device_id: myDeviceId || 'primary' })
+        });
     } catch (_) {}
 }
 
@@ -3087,8 +3240,10 @@ function renderContactsList() {
         const bHistory = messages.filter(m => m.peer && m.peer.toLowerCase() === b.toLowerCase());
         const aLast = aHistory.length > 0 ? aHistory[aHistory.length - 1] : null;
         const bLast = bHistory.length > 0 ? bHistory[bHistory.length - 1] : null;
-        const aTime = aLast ? (aLast.timestamp || 0) : Date.now() + 10;
-        const bTime = bLast ? (bLast.timestamp || 0) : Date.now() + 10;
+        // Без локальной истории берём серверное время последней активности —
+        // порядок чатов совпадает с основным устройством.
+        const aTime = aLast ? (aLast.timestamp || 0) : (serverDialogTimes[a.toLowerCase()] || 0);
+        const bTime = bLast ? (bLast.timestamp || 0) : (serverDialogTimes[b.toLowerCase()] || 0);
         return bTime - aTime;
     });
     

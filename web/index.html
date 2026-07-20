@@ -162,7 +162,16 @@
                             <label class="sec-toggle-row"><input type="checkbox" id="sec-olm-backup"> Бэкап ключа шифрования на сервере (вход после переустановки)</label>
                             <label class="sec-toggle-row"><input type="checkbox" id="sec-read-receipts"> Отправлять отчёты о прочтении</label>
                             <label class="sec-toggle-row"><input type="checkbox" id="sec-typing"> Показывать собеседникам «печатает…»</label>
-                            <button id="sec-wipe-btn" class="tg-btn-secondary" style="margin-top:10px; color:#e53935;">Стереть все данные на этом устройстве</button>
+                            <div style="margin-top:14px;">
+                                <label style="font-size:14px; font-weight:600;">Сессии и устройства</label>
+                                <div id="sec-sessions-list" style="font-size:13px; margin-top:6px;"></div>
+                            </div>
+                            <div style="margin-top:14px;">
+                                <label style="font-size:14px; font-weight:600;">Двухфакторная аутентификация</label>
+                                <div id="sec-2fa-box" style="font-size:13px; margin-top:6px;"></div>
+                            </div>
+                            <button id="sec-wipe-btn" class="tg-btn-secondary" style="margin-top:14px; color:#e53935;">Стереть данные на этом устройстве</button>
+                            <button id="sec-nuke-btn" class="tg-btn-secondary" style="margin-top:8px; color:#e53935;">Удалить всё: чаты, группы, каналы</button>
                         </div>
                         <button id="save-settings-btn" class="tg-btn-primary">Сохранить</button>
                         <p id="settings-status" class="tg-status"></p>
@@ -654,6 +663,6 @@
         </div>
     </div>
     
-    <script src="app.js?v=5.1.2"></script>
+    <script src="app.js?v=5.2.0"></script>
 </body>
 </html>
