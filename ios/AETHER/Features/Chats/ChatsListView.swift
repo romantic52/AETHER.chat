@@ -19,11 +19,7 @@ struct ChatsListView: View {
     @State private var newChannelPresented = false
     @State private var showComposeMenu = false
     @State private var showArchive = false
-    @State private var editing = false
-    @State private var selection: Set<String> = []
-    // Анимация закрепления: id строки, которую поднимаем над соседями (zIndex),
-    // пока едет на новое место. LazyVStack уважает zIndex — строка летит поверх.
-    @State private var movingId: String?
+    @State private var editMode: EditMode = .inactive
 
     private var archived: [Chat] { messaging.chats.filter { $0.archived } }
     private var visible: [Chat] {
@@ -47,16 +43,21 @@ struct ChatsListView: View {
             .sorted { messaging.pinRank($0.peerId) < messaging.pinRank($1.peerId) }
     }
     private var regular: [Chat] { visible.filter { !$0.pinned } }
-    // Единый упорядоченный список (закреп сверху) — одна коллекция для анимации.
+    // Один упорядоченный список (закреп сверху): List анимирует ПЕРЕЕЗД строки
+    // при пине (соседи разъезжаются), а не «исчезла тут — появилась там».
     private var ordered: [Chat] { pinned + regular }
 
     @ViewBuilder
-    private var searchContent: some View {
-        ForEach(ordered, id: \.peerId) { chatRow($0) }
+    private var searchSections: some View {
+        if !visible.isEmpty {
+            ForEach(ordered, id: \.peerId) { row($0) }
+                .onDelete { delete($0, in: ordered) }
+        }
 
         if globalSearching {
             HStack { Spacer(); ProgressView().tint(palette.accent); Spacer() }
-                .padding(.vertical, 12)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
         }
 
         let filteredGlobalUsers = globalResults.users.filter { u in
@@ -71,41 +72,49 @@ struct ChatsListView: View {
             Text("Найдено в сети")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(palette.textSecondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 2)
+                .listRowBackground(Color.clear)
+                .listRowSeparator(.hidden)
+                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 2, trailing: 16))
 
             ForEach(filteredGlobalUsers, id: \.userId) { profile in
-                globalUserRow(profile)
-                    .padding(.horizontal, 16)
-                    .background(palette.background)
-                    .overlay(alignment: .bottom) { rowDivider }
-                    .contentShape(Rectangle())
-                    .onTapGesture { openedPeer = profile.userId.lowercased() }
+                Button { openedPeer = profile.userId.lowercased() } label: {
+                    globalUserRow(profile)
+                }
+                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(palette.divider)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
             }
 
             ForEach(filteredGlobalGroups, id: \.groupId) { group in
+                // Участник — открываем. Публичный канал — подписка в один тап
+                // (сервер выдаст ключ). Приватное — только по приглашению.
                 let gid = group.groupId.lowercased()
                 let member = messaging.groups.info(gid) != nil
                 let joinable = !member && group.publicJoin
-                globalGroupRow(group, member: member, joinable: joinable,
-                               joining: joiningIds.contains(gid))
-                    .padding(.horizontal, 16)
-                    .background(palette.background)
-                    .overlay(alignment: .bottom) { rowDivider }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
-                        if member { openedPeer = gid }
-                        else if joinable {
-                            Task {
-                                guard !joiningIds.contains(gid) else { return }
-                                joiningIds.insert(gid)
-                                defer { joiningIds.remove(gid) }
-                                if await ChannelDirectory.join(gid) {
-                                    await messaging.groups.load(); openedPeer = gid
-                                }
+                Button {
+                    if member {
+                        openedPeer = gid
+                    } else if joinable {
+                        Task {
+                            guard !joiningIds.contains(gid) else { return }
+                            joiningIds.insert(gid)
+                            defer { joiningIds.remove(gid) }
+                            if await ChannelDirectory.join(gid) {
+                                await messaging.groups.load()
+                                openedPeer = gid
                             }
                         }
                     }
+                } label: {
+                    globalGroupRow(group, member: member, joinable: joinable,
+                                   joining: joiningIds.contains(gid))
+                }
+                .disabled(!member && !joinable)
+                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                .listRowBackground(Color.clear)
+                .listRowSeparatorTint(palette.divider)
+                .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
             }
         }
 
@@ -120,11 +129,9 @@ struct ChatsListView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 40)
+            .listRowBackground(Color.clear)
+            .listRowSeparator(.hidden)
         }
-    }
-
-    private var rowDivider: some View {
-        Rectangle().fill(palette.divider).frame(height: 0.5).padding(.leading, AetherUI.listTextInset)
     }
 
     // Без собственного NavigationStack: все вкладки живут в ЕДИНОМ стеке
@@ -134,18 +141,22 @@ struct ChatsListView: View {
             ZStack {
                 palette.background.ignoresSafeArea()
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        if query.isEmpty {
-                            if !archived.isEmpty { archiveRow }
-                            ForEach(ordered, id: \.peerId) { chatRow($0) }
-                        } else {
-                            searchContent
+                List {
+                    if query.isEmpty {
+                        if !archived.isEmpty {
+                            archiveRow
                         }
-                        Color.clear.frame(height: 112)
+                        ForEach(ordered, id: \.peerId) { row($0) }
+                            .onDelete { delete($0, in: ordered) }
+                    } else {
+                        searchSections
                     }
+                    Color.clear.frame(height: 112).listRowSeparator(.hidden).listRowBackground(Color.clear)
                 }
+                .listStyle(.plain)
+                .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                .environment(\.editMode, $editMode)
                 .overlay { if messaging.chats.isEmpty && query.isEmpty { emptyState } }
                 .safeAreaInset(edge: .top) {
                     VStack(spacing: 0) {
@@ -156,9 +167,6 @@ struct ChatsListView: View {
                         EdgeDim(edge: .top)
                             .ignoresSafeArea(edges: .top)
                     )
-                }
-                .safeAreaInset(edge: .bottom) {
-                    if editing && !selection.isEmpty { deleteSelectedBar }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
@@ -210,10 +218,9 @@ struct ChatsListView: View {
                 .foregroundStyle(palette.textPrimary)
 
             HStack {
-                Button(editing ? "Готово" : "Изм.") {
+                Button(editMode == .active ? "Готово" : "Изм.") {
                     withAnimation(.easeInOut(duration: 0.18)) {
-                        editing.toggle()
-                        if !editing { selection.removeAll() }
+                        editMode = editMode == .active ? .inactive : .active
                     }
                 }
                 .font(.system(size: 15, weight: .medium))
@@ -418,99 +425,53 @@ struct ChatsListView: View {
                     .foregroundStyle(palette.textSecondary)
             }
             .frame(minHeight: AetherUI.listRowHeight)
-            .padding(.horizontal, 16)
             .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .background(palette.background)
-        .overlay(alignment: .bottom) { rowDivider }
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(palette.divider)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
     }
 
-    // Строка чата: в режиме правки — чекбокс + выделение; иначе — свайп-действия.
-    @ViewBuilder
-    private func chatRow(_ chat: Chat) -> some View {
-        let content = ChatRow(chat: chat, myId: session.myId,
-                              online: messaging.isOnline(chat.peerId),
-                              typing: messaging.typingPeers.contains(chat.peerId))
-            .padding(.horizontal, 16)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(palette.background)   // непрозрачно → летящая строка перекрывает соседей
-            .overlay(alignment: .bottom) { rowDivider }
-
-        Group {
-            if editing {
-                HStack(spacing: 10) {
-                    Image(systemName: selection.contains(chat.peerId) ? "checkmark.circle.fill" : "circle")
-                        .font(.system(size: 22))
-                        .foregroundStyle(selection.contains(chat.peerId) ? palette.accent : palette.textSecondary)
-                        .padding(.leading, 12)
-                    content
-                }
-                .background(palette.background)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    if selection.contains(chat.peerId) { selection.remove(chat.peerId) }
-                    else { selection.insert(chat.peerId) }
-                }
+    private func row(_ chat: Chat) -> some View {
+        Button {
+            openedPeer = chat.peerId
+        } label: {
+            ChatRow(chat: chat,
+                    myId: session.myId,
+                    online: messaging.isOnline(chat.peerId),
+                    typing: messaging.typingPeers.contains(chat.peerId))
+        }
+        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+        .listRowBackground(Color.clear)
+        .listRowSeparatorTint(palette.divider)
+        .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+        .swipeActions(edge: .leading, allowsFullSwipe: true) {
+            Button {
+                Task { await messaging.setPinned(chat.peerId, !chat.pinned) }
+            } label: { Label(chat.pinned ? "Открепить" : "Закрепить", systemImage: "pin.fill") }
+                .tint(palette.accent)
+        }
+        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
+            if chat.peerId == session.myId.lowercased() {
+                // Избранное — личный канал: удалить нельзя, только очистить историю.
+                Button(role: .destructive) {
+                    Task { await messaging.clearSavedMessages() }
+                } label: { Label("Очистить", systemImage: "paintbrush.fill") }
             } else {
-                SwipeRow(
-                    leading: [RowAction(label: chat.pinned ? "Открепить" : "Закрепить",
-                                        icon: "pin.fill", tint: palette.accent) { pin(chat) }],
-                    trailing: trailingActions(chat),
-                    onTap: { openedPeer = chat.peerId }
-                ) { content }
+                Button(role: .destructive) {
+                    Task { await messaging.deleteChat(chat.peerId) }
+                } label: { Label("Удалить", systemImage: "trash.fill") }
             }
+            Button {
+                Task { await messaging.setMuted(chat.peerId, !chat.muted) }
+            } label: { Label(chat.muted ? "Вкл. звук" : "Без звука", systemImage: chat.muted ? "bell.fill" : "bell.slash.fill") }
+                .tint(.orange)
+            Button {
+                Task { await messaging.setArchived(chat.peerId, true) }
+            } label: { Label("В архив", systemImage: "archivebox.fill") }
+                .tint(palette.textSecondary)
         }
-        .zIndex(movingId == chat.peerId ? 1 : 0)
-    }
-
-    private func trailingActions(_ chat: Chat) -> [RowAction] {
-        var acts: [RowAction] = []
-        if chat.peerId == session.myId.lowercased() {
-            acts.append(RowAction(label: "Очистить", icon: "paintbrush.fill", tint: .red) {
-                Task { await messaging.clearSavedMessages() }
-            })
-        } else {
-            acts.append(RowAction(label: "Удалить", icon: "trash.fill", tint: .red) {
-                Task { await messaging.deleteChat(chat.peerId) }
-            })
-        }
-        acts.append(RowAction(label: chat.muted ? "Звук" : "Без звука",
-                              icon: chat.muted ? "bell.fill" : "bell.slash.fill", tint: .orange) {
-            Task { await messaging.setMuted(chat.peerId, !chat.muted) }
-        })
-        acts.append(RowAction(label: "Архив", icon: "archivebox.fill", tint: palette.textSecondary) {
-            Task { await messaging.setArchived(chat.peerId, true) }
-        })
-        return acts
-    }
-
-    // Анимация закрепления: строка летит поверх соседей (zIndex) на новое место,
-    // остальные расступаются — LazyVStack анимирует переезд в одной коллекции.
-    private func pin(_ chat: Chat) {
-        movingId = chat.peerId
-        withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-            Task { await messaging.setPinned(chat.peerId, !chat.pinned) }
-        }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { movingId = nil }
-    }
-
-    private var deleteSelectedBar: some View {
-        HStack {
-            Button("Отмена") { editing = false; selection.removeAll() }
-                .foregroundStyle(palette.accent)
-            Spacer()
-            Button(role: .destructive) {
-                let ids = selection
-                for id in ids { Task { await messaging.deleteChat(id) } }
-                selection.removeAll(); editing = false
-            } label: {
-                Text("Удалить (\(selection.count))").fontWeight(.semibold)
-            }
-            .foregroundStyle(palette.danger)
-        }
-        .padding(.horizontal, 20).padding(.vertical, 14)
-        .background(.bar)
     }
 }
 
