@@ -413,7 +413,7 @@ struct AddMemberView: View {
                     FloatingSearchBar(prompt: "Имя или @username", text: $query)
                 }
                 .padding(.top, 14)
-                .background(SystemBarBackground().ignoresSafeArea(edges: .top))
+                .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
             }
         }
     }

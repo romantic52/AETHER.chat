@@ -1809,6 +1809,22 @@ async def upload_avatar(request: Request, file: UploadFile = File(...), current_
     return {"ok": True, "file_id": file_id}
 
 
+def _image_mime(path) -> str:
+    # nosniff запрещает браузеру угадывать тип: octet-stream не отрисуется
+    # как картинка. Определяем тип по сигнатуре файла сами.
+    with open(path, "rb") as f:
+        head = f.read(12)
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if head[:4] == b"GIF8":
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+
 @app.get("/avatars/{file_id}")
 @limiter.limit("200/minute")
 def download_avatar(request: Request, file_id: str) -> FileResponse:
@@ -1817,7 +1833,7 @@ def download_avatar(request: Request, file_id: str) -> FileResponse:
     file_path = AVATAR_DIR / file_id
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(404, "File not found")
-    return FileResponse(file_path)
+    return FileResponse(file_path, media_type=_image_mime(file_path))
 
 # (#A4) Удалены неиспользуемые API: магазин (items/buy/my-items) и
 # /groups/{id}/link (заглушка «комментариев») — клиент их никогда не звал.

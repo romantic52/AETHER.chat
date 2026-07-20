@@ -143,7 +143,7 @@ struct ContactsView: View {
                     )
                     FloatingSearchBar(prompt: "Имя или @username", text: $query)
                 }
-                .background(SystemBarBackground().ignoresSafeArea(edges: .top))
+                .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
             }
             .onChange(of: query) { _, q in scheduleSearch(q) }
             #if DEBUG

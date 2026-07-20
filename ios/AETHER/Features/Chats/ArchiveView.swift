@@ -44,7 +44,7 @@ struct ArchiveView: View {
                 )
                 FloatingSearchBar(text: $query)
             }
-            .background(SystemBarBackground().ignoresSafeArea(edges: .top))
+            .background(EdgeDim(edge: .top).ignoresSafeArea(edges: .top))
         }
         .navigationDestination(item: $openedPeer) { peer in
             ChatView(peerId: peer, isGroup: messaging.isGroup(peer))
