@@ -155,15 +155,24 @@ actor CoreClient {
     }
 
     /// Вход: логин на сервере, затем расшифровка приватного ключа паролем-бэкапа.
-    func login(userId: String, password: String) throws -> (session: AuthSession, privateKey: String) {
-        let session = try api.login(userId: userId, password: password)
+    /// totpCode — одноразовый код, когда на аккаунте включена 2FA.
+    func login(userId: String, password: String, totpCode: String? = nil) throws -> (session: AuthSession, privateKey: String) {
+        let session = try api.loginTotp(userId: userId, password: password, totpCode: totpCode)
         let priv: String
         if session.encryptedPrivateKeyB64.isEmpty {
             throw CoreError.BadInput(msg: "На сервере нет резервной копии ключа для этого аккаунта")
         }
         priv = try decryptPrivateKey(blob: session.encryptedPrivateKeyB64, password: password)
         setIdentity(id: session.userId, publicKey: session.publicKeyB64, privateKey: priv)
+        // Привязка сессии к устройству — чтобы её можно было выкинуть адресно.
+        try? api.bindSessionDevice(deviceId: myDeviceId())
         return (session, priv)
+    }
+
+    /// true — сервер ответил, что нужен 2FA-код (для повторного логина с кодом).
+    nonisolated static func isTotpRequired(_ error: Error) -> Bool {
+        guard case let CoreError.Api(status, msg) = error, status == 401 else { return false }
+        return msg.contains("totp_required") || msg.contains("totp_invalid")
     }
 
     func logout() {
@@ -173,6 +182,57 @@ actor CoreClient {
     }
 
     func heartbeat() { try? api.heartbeat() }
+
+    // MARK: - Контроль сессий / 2FA / wipe
+
+    struct DeviceSession: Identifiable {
+        var id: String { deviceId }
+        let deviceId: String
+        let createdAt: String
+        let sessions: Int
+        let current: Bool
+    }
+    struct SessionsInfo {
+        let devices: [DeviceSession]
+        let canKick: Bool
+        let kickMinHours: Int
+        let unbound: Int
+        var myDeviceId: String { devices.first(where: { $0.current })?.deviceId ?? "" }
+    }
+
+    func listSessions() throws -> SessionsInfo {
+        let json = try api.listSessions()
+        let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+        let devices = (obj["devices"] as? [[String: Any]] ?? []).map {
+            DeviceSession(
+                deviceId: $0["device_id"] as? String ?? "",
+                createdAt: $0["device_created_at"] as? String ?? "",
+                sessions: $0["sessions"] as? Int ?? 0,
+                current: $0["current"] as? Bool ?? false
+            )
+        }
+        return SessionsInfo(
+            devices: devices,
+            canKick: obj["can_kick"] as? Bool ?? false,
+            kickMinHours: obj["kick_min_hours"] as? Int ?? 12,
+            unbound: obj["unbound_sessions"] as? Int ?? 0
+        )
+    }
+
+    func kickDevice(_ deviceId: String) throws { try api.kickDevice(deviceId: deviceId) }
+
+    func totpEnabled() throws -> Bool { try api.totpStatus() }
+
+    /// Возвращает секрет (base32) для добавления в аутентификатор.
+    func totpSetup() throws -> String {
+        let json = try api.totpSetup()
+        let obj = (try? JSONSerialization.jsonObject(with: Data(json.utf8))) as? [String: Any] ?? [:]
+        return obj["secret"] as? String ?? ""
+    }
+
+    func totpEnable(code: String) throws { try api.totpEnable(code: code) }
+    func totpDisable(code: String) throws { try api.totpDisable(code: code) }
+    func wipeAccount(password: String) throws { try api.wipeAccount(password: password) }
 
     func updateProfile(username: String?, displayName: String?, avatarFileId: String?, bio: String?) throws {
         try api.updateProfile(username: username, displayName: displayName, avatarFileId: avatarFileId, bio: bio)
