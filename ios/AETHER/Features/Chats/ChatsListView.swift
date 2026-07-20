@@ -454,13 +454,37 @@ struct ChatsListView: View {
                     else { selection.insert(chat.peerId) }
                 }
             } else {
-                content
-                    .contentShape(Rectangle())
-                    .onTapGesture { openedPeer = chat.peerId }
-                    .contextMenu { chatMenu(chat) }
+                SwipeRow(
+                    leading: [RowAction(label: chat.pinned ? "Открепить" : "Закрепить",
+                                        icon: "pin.fill", tint: palette.accent) { pin(chat) }],
+                    trailing: trailingActions(chat),
+                    onTap: { openedPeer = chat.peerId }
+                ) { content }
+                .contextMenu { chatMenu(chat) }
             }
         }
         .zIndex(movingId == chat.peerId ? 1 : 0)
+    }
+
+    private func trailingActions(_ chat: Chat) -> [RowAction] {
+        var acts: [RowAction] = []
+        if chat.peerId == session.myId.lowercased() {
+            acts.append(RowAction(label: "Очистить", icon: "paintbrush.fill", tint: .red) {
+                Task { await messaging.clearSavedMessages() }
+            })
+        } else {
+            acts.append(RowAction(label: "Удалить", icon: "trash.fill", tint: .red) {
+                Task { await messaging.deleteChat(chat.peerId) }
+            })
+        }
+        acts.append(RowAction(label: chat.muted ? "Звук" : "Без звука",
+                              icon: chat.muted ? "bell.fill" : "bell.slash.fill", tint: .orange) {
+            Task { await messaging.setMuted(chat.peerId, !chat.muted) }
+        })
+        acts.append(RowAction(label: "Архив", icon: "archivebox.fill", tint: palette.textSecondary) {
+            Task { await messaging.setArchived(chat.peerId, true) }
+        })
+        return acts
     }
 
     @ViewBuilder
