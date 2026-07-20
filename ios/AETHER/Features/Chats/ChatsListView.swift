@@ -43,14 +43,16 @@ struct ChatsListView: View {
             .sorted { messaging.pinRank($0.peerId) < messaging.pinRank($1.peerId) }
     }
     private var regular: [Chat] { visible.filter { !$0.pinned } }
+    // Единый упорядоченный список (закреплённые сверху): одна коллекция →
+    // SwiftUI анимирует ПЕРЕЕЗД строки при пине/анпине (соседи расступаются),
+    // а не «исчезла тут — появилась там» между двумя ForEach.
+    private var ordered: [Chat] { pinned + regular }
 
     @ViewBuilder
     private var searchSections: some View {
         if !visible.isEmpty {
-            ForEach(pinned, id: \.peerId) { row($0) }
-                .onDelete { delete($0, in: pinned) }
-            ForEach(regular, id: \.peerId) { row($0) }
-                .onDelete { delete($0, in: regular) }
+            ForEach(ordered, id: \.peerId) { row($0) }
+                .onDelete { delete($0, in: ordered) }
         }
 
         if globalSearching {
@@ -145,10 +147,8 @@ struct ChatsListView: View {
                         if !archived.isEmpty {
                             archiveRow
                         }
-                        ForEach(pinned, id: \.peerId) { row($0) }
-                            .onDelete { delete($0, in: pinned) }
-                        ForEach(regular, id: \.peerId) { row($0) }
-                            .onDelete { delete($0, in: regular) }
+                        ForEach(ordered, id: \.peerId) { row($0) }
+                            .onDelete { delete($0, in: ordered) }
                     } else {
                         searchSections
                     }
@@ -157,6 +157,10 @@ struct ChatsListView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
+                // Пружина по изменению порядка: строка «улетает» на новое место,
+                // соседи плавно расступаются (Telegram/WhatsApp-стиль).
+                .animation(.spring(response: 0.38, dampingFraction: 0.82),
+                           value: ordered.map(\.peerId))
                 .environment(\.editMode, $editMode)
                 .overlay { if messaging.chats.isEmpty && query.isEmpty { emptyState } }
                 .safeAreaInset(edge: .top) {
