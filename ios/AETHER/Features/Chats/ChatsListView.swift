@@ -20,6 +20,17 @@ struct ChatsListView: View {
     @State private var showComposeMenu = false
     @State private var showArchive = false
     @State private var editMode: EditMode = .inactive
+    // Полёт закрепа: копия строки летит ПОВЕРХ соседей (List их анимирует
+    // под ней), из старой позиции в верхнюю. Настоящая строка на время скрыта.
+    @State private var rowFrames: [String: CGRect] = [:]
+    @State private var flying: FlyingRow?
+    @State private var flyProgress: CGFloat = 0
+
+    private struct FlyingRow: Equatable {
+        let chat: Chat
+        let from: CGRect
+        let to: CGRect
+    }
 
     private var archived: [Chat] { messaging.chats.filter { $0.archived } }
     private var visible: [Chat] {
@@ -168,7 +179,23 @@ struct ChatsListView: View {
                             .ignoresSafeArea(edges: .top)
                     )
                 }
+
+                // Летящая копия строки — поверх всего списка.
+                if let f = flying {
+                    let y = f.from.minY + (f.to.minY - f.from.minY) * flyProgress
+                    ChatRow(chat: f.chat, myId: session.myId,
+                            online: messaging.isOnline(f.chat.peerId),
+                            typing: messaging.typingPeers.contains(f.chat.peerId))
+                        .padding(.horizontal, 16)
+                        .frame(width: f.from.width, height: f.from.height, alignment: .leading)
+                        .background(palette.background)
+                        .position(x: f.from.midX, y: y + f.from.height / 2)
+                        .allowsHitTesting(false)
+                        .zIndex(999)
+                }
             }
+            .coordinateSpace(name: "chatSpace")
+            .onPreferenceChange(RowFramesKey.self) { rowFrames = $0 }
             .toolbar(.hidden, for: .navigationBar)
             .ignoresSafeArea(.keyboard, edges: .bottom)
             .onChange(of: query) { _, q in scheduleGlobalSearch(q) }
@@ -388,6 +415,28 @@ struct ChatsListView: View {
         }
     }
 
+    // Закрепление с полётом копии поверх списка. List под ней анимированно
+    // переносит строку (соседи разъезжаются), копия летит из старой позиции
+    // в верхнюю; настоящая строка на это время скрыта, поэтому нет «призрака».
+    private func pinWithFly(_ chat: Chat) {
+        // Открепление или нет кадра — просто нативно, без полёта.
+        guard !chat.pinned, let from = rowFrames[chat.peerId] else {
+            Task { await messaging.setPinned(chat.peerId, !chat.pinned) }
+            return
+        }
+        let toY = ordered.first.flatMap { rowFrames[$0.peerId]?.minY }
+            ?? (rowFrames.values.map(\.minY).min() ?? from.minY)
+        let to = CGRect(x: from.minX, y: toY, width: from.width, height: from.height)
+
+        flying = FlyingRow(chat: chat, from: from, to: to)
+        flyProgress = 0
+        Task { await messaging.setPinned(chat.peerId, true) }
+        DispatchQueue.main.async {
+            withAnimation(.spring(response: 0.42, dampingFraction: 0.82)) { flyProgress = 1 }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { flying = nil }
+    }
+
     private var emptyState: some View {
         VStack(spacing: 14) {
             Image(systemName: "bubble.left.and.bubble.right")
@@ -446,9 +495,16 @@ struct ChatsListView: View {
         .listRowBackground(Color.clear)
         .listRowSeparatorTint(palette.divider)
         .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+        // На время полёта копии настоящая строка скрыта (List её всё равно
+        // анимированно переносит под летящей копией).
+        .opacity(flying?.chat.peerId == chat.peerId ? 0 : 1)
+        .background(GeometryReader { g in
+            Color.clear.preference(key: RowFramesKey.self,
+                                   value: [chat.peerId: g.frame(in: .named("chatSpace"))])
+        })
         .swipeActions(edge: .leading, allowsFullSwipe: true) {
             Button {
-                Task { await messaging.setPinned(chat.peerId, !chat.pinned) }
+                pinWithFly(chat)
             } label: { Label(chat.pinned ? "Открепить" : "Закрепить", systemImage: "pin.fill") }
                 .tint(palette.accent)
         }
@@ -583,5 +639,13 @@ struct ChatRow: View {
             return Self.weekdayFormatter.string(from: date)
         }
         return Self.dateFormatter.string(from: date)
+    }
+}
+
+// Кадры строк списка (peerId → frame в "chatSpace") — для полёта копии при пине.
+private struct RowFramesKey: PreferenceKey {
+    static var defaultValue: [String: CGRect] = [:]
+    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
+        value.merge(nextValue()) { _, new in new }
     }
 }
