@@ -157,10 +157,6 @@ struct ChatsListView: View {
                 .listStyle(.plain)
                 .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
-                // Пружина по изменению порядка: строка «улетает» на новое место,
-                // соседи плавно расступаются (Telegram/WhatsApp-стиль).
-                .animation(.spring(response: 0.38, dampingFraction: 0.82),
-                           value: ordered.map(\.peerId))
                 .environment(\.editMode, $editMode)
                 .overlay { if messaging.chats.isEmpty && query.isEmpty { emptyState } }
                 .safeAreaInset(edge: .top) {
