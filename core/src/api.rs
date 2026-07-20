@@ -211,8 +211,18 @@ impl ApiClient {
     }
 
     pub fn login(&self, user_id: String, password: String) -> Result<AuthSession, CoreError> {
+        self.login_totp(user_id, password, None)
+    }
+
+    /// Логин с опциональным 2FA-кодом. Сервер отвечает 401 detail=totp_required,
+    /// когда на аккаунте включена 2FA — клиент повторяет вызов с кодом.
+    pub fn login_totp(&self, user_id: String, password: String, totp_code: Option<String>) -> Result<AuthSession, CoreError> {
         let req = self.agent.post(&format!("{}/users/login", self.base));
-        let v = self.call(req, Some(serde_json::json!({ "user_id": user_id, "password": password })))?;
+        let mut body = serde_json::json!({ "user_id": user_id, "password": password });
+        if let Some(code) = totp_code {
+            body["totp_code"] = code.into();
+        }
+        let v = self.call(req, Some(body))?;
         self.store_session(&v)
     }
 
@@ -429,6 +439,45 @@ impl ApiClient {
         }
         self.post("/messages/ack", serde_json::json!({ "message_ids": message_ids, "device_id": device_id }))
             .map(|_| ())
+    }
+
+    // --- Контроль сессий / 2FA / wipe. Формы ответов гибкие → JSON-строки. ---
+
+    /// Привязать текущую сессию к своему крипто-устройству (адресный выход).
+    pub fn bind_session_device(&self, device_id: String) -> Result<(), CoreError> {
+        self.put("/sessions/me/device", serde_json::json!({ "device_id": device_id })).map(|_| ())
+    }
+
+    /// {devices:[{device_id,device_created_at,sessions,current}], can_kick, kick_min_hours, unbound_sessions}
+    pub fn list_sessions(&self) -> Result<String, CoreError> {
+        Ok(self.get("/sessions/me")?.to_string())
+    }
+
+    /// Выкинуть устройство (сервер применяет правило 12 часов).
+    pub fn kick_device(&self, device_id: String) -> Result<(), CoreError> {
+        self.delete(&format!("/sessions/device/{device_id}")).map(|_| ())
+    }
+
+    pub fn totp_status(&self) -> Result<bool, CoreError> {
+        Ok(self.get("/2fa/status")?["enabled"].as_bool().unwrap_or(false))
+    }
+
+    /// {secret, otpauth_uri} — новый секрет (2FA ещё не включена).
+    pub fn totp_setup(&self) -> Result<String, CoreError> {
+        Ok(self.post("/2fa/setup", serde_json::json!({}))?.to_string())
+    }
+
+    pub fn totp_enable(&self, code: String) -> Result<(), CoreError> {
+        self.post("/2fa/enable", serde_json::json!({ "code": code })).map(|_| ())
+    }
+
+    pub fn totp_disable(&self, code: String) -> Result<(), CoreError> {
+        self.post("/2fa/disable", serde_json::json!({ "code": code })).map(|_| ())
+    }
+
+    /// «Удалить всё» по паролю: чистка сообщений, выход из групп, отзыв сессий.
+    pub fn wipe_account(&self, password: String) -> Result<(), CoreError> {
+        self.post("/users/me/wipe", serde_json::json!({ "password": password })).map(|_| ())
     }
 
     // Группы: формы ответов гибкие, отдаём JSON-строки — парсит Swift.

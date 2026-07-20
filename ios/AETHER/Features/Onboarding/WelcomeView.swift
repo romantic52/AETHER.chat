@@ -14,6 +14,8 @@ struct WelcomeView: View {
     @State private var busy = false
     @State private var error: String?
     @State private var appeared = false
+    @State private var needsTotp = false
+    @State private var totpCode = ""
 
     var body: some View {
         GeometryReader { geo in
@@ -47,6 +49,11 @@ struct WelcomeView: View {
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                         secureField(icon: "lock", placeholder: mode == .register ? "Придумайте пароль" : "Пароль", text: $password)
+
+                        if needsTotp {
+                            field(icon: "lock.shield", placeholder: "Код 2FA из аутентификатора", text: $totpCode)
+                                .keyboardType(.numberPad)
+                        }
 
                         if let error {
                             Text(error)
@@ -128,13 +135,18 @@ struct WelcomeView: View {
         busy = true
         let id = userId.trimmingCharacters(in: .whitespaces).lowercased()
         let pass = password
+        let code = needsTotp ? totpCode.trimmingCharacters(in: .whitespaces) : nil
         Task {
             do {
                 if mode == .login {
-                    try await session.login(userId: id, password: pass)
+                    try await session.login(userId: id, password: pass, totpCode: code)
                 } else {
                     try await session.register(userId: id, password: pass)
                 }
+            } catch is Session.TotpRequired {
+                // Пароль верный — просим код и повторяем submit с ним.
+                needsTotp = true
+                error = "Введите код из приложения-аутентификатора"
             } catch let e as CoreError {
                 error = describe(e)
             } catch {

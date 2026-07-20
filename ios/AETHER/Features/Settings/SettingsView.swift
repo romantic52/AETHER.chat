@@ -14,6 +14,7 @@ struct SettingsView: View {
                 profileSection
                 accountsSection
                 privacySection
+                securitySection
                 notificationsSection
                 appearanceSection
                 glassSection
@@ -200,6 +201,17 @@ struct SettingsView: View {
                 lockEnabled = true
             }
         }
+    }
+
+    private var securitySection: some View {
+        Section {
+            NavigationLink { SecurityView() } label: {
+                SettingsLabel("Сессии и безопасность", icon: "checkmark.shield.fill", color: .blue)
+            }
+        } footer: {
+            Text("Активные устройства, двухфакторная аутентификация, удаление всех данных.")
+        }
+        .listRowBackground(palette.surface)
     }
 
     @AppStorage(NotificationsManager.notifyKey) private var notifyMessages = false

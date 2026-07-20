@@ -73,8 +73,19 @@ final class Session: ObservableObject {
         Task { await core.ensureOlmKeys() }   // выложить prekeys сразу (не ждать start())
     }
 
-    func login(userId: String, password: String) async throws {
-        let (session, priv) = try await core.login(userId: userId, password: password)
+    /// Сигнал наверх: сервер требует 2FA-код. UI показывает поле и повторяет
+    /// login с totpCode.
+    struct TotpRequired: Error {}
+
+    func login(userId: String, password: String, totpCode: String? = nil) async throws {
+        let session: AuthSession
+        let priv: String
+        do {
+            (session, priv) = try await core.login(userId: userId, password: password, totpCode: totpCode)
+        } catch {
+            if totpCode == nil, CoreClient.isTotpRequired(error) { throw TotpRequired() }
+            throw error
+        }
         persist(session: session, privateKey: priv)
         myId = session.userId
         phase = .ready
