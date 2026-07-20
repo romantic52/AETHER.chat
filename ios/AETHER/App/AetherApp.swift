@@ -10,6 +10,22 @@ struct AetherApp: App {
 
     var body: some Scene {
         WindowGroup {
+            #if DEBUG
+            if ProcessInfo.processInfo.environment["AETHER_PIN_DEMO"] == "1" {
+                PinDemoView()
+                    .environment(\.palette, appearance.palette)
+                    .environmentObject(appearance)
+                    .preferredColorScheme(appearance.colorScheme)
+            } else {
+                appRoot
+            }
+            #else
+            appRoot
+            #endif
+        }
+    }
+
+    private var appRoot: some View {
             RootView()
                 .environmentObject(session)
                 .environmentObject(appearance)
@@ -26,7 +42,6 @@ struct AetherApp: App {
                         object: nil, userInfo: ["peer": peer]
                     )
                 }
-        }
     }
 }
 
