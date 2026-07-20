@@ -40,18 +40,35 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, set[WebSocket]] = {}
+        # Отзыв токена должен рвать и живой WebSocket, открытый этим токеном,
+        # иначе после /logout остаётся рабочий realtime-канал.
+        self.token_connections: dict[str, set[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket, user_id: str):
+    async def connect(self, websocket: WebSocket, user_id: str, token: str = ""):
         await websocket.accept()
         if user_id not in self.active_connections:
             self.active_connections[user_id] = set()
         self.active_connections[user_id].add(websocket)
+        if token:
+            self.token_connections.setdefault(token, set()).add(websocket)
 
-    def disconnect(self, websocket: WebSocket, user_id: str):
+    def disconnect(self, websocket: WebSocket, user_id: str, token: str = ""):
         if user_id in self.active_connections:
             self.active_connections[user_id].discard(websocket)
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
+        if token and token in self.token_connections:
+            self.token_connections[token].discard(websocket)
+            if not self.token_connections[token]:
+                del self.token_connections[token]
+
+    async def close_for_token(self, token: str):
+        """Закрыть все сокеты, поднятые отозванным токеном (policy violation 1008)."""
+        for ws in list(self.token_connections.pop(token, ())):
+            try:
+                await ws.close(code=1008)
+            except Exception:
+                pass
 
     async def send_personal_message(self, message: dict, user_id: str):
         if user_id in self.active_connections:
@@ -668,12 +685,14 @@ def login_user(body: LoginRequest, request: Request) -> dict:
     }
 
 
-# (#A4) Полный выход: токен отзывается на сервере, а не только забывается клиентом
+# (#A4) Полный выход: токен отзывается на сервере, а не только забывается
+# клиентом, и живые WebSocket этого токена закрываются сразу.
 @app.post("/logout")
-def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
+async def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+    await manager.close_for_token(token)
     return {"ok": True}
 
 
@@ -1366,7 +1385,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             pass
 
     user_id = row["user_id"].lower()
-    await manager.connect(websocket, user_id)
+    await manager.connect(websocket, user_id, token)
     try:
         while True:
             # Keep alive and signaling
@@ -1410,7 +1429,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             except Exception:
                 pass
     except WebSocketDisconnect:
-        manager.disconnect(websocket, user_id)
+        manager.disconnect(websocket, user_id, token)
 
 
 class AckMessagesRequest(BaseModel):
