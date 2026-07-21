@@ -458,10 +458,12 @@ struct ChatsListView: View {
                 Button(role: .destructive) {
                     Task { await messaging.clearSavedMessages() }
                 } label: { Label("Очистить", systemImage: "paintbrush.fill") }
+                    .tint(.red)   // иначе акцент приложения перебивает красный
             } else {
                 Button(role: .destructive) {
                     Task { await messaging.deleteChat(chat.peerId) }
                 } label: { Label("Удалить", systemImage: "trash.fill") }
+                    .tint(.red)
             }
             Button {
                 Task { await messaging.setMuted(chat.peerId, !chat.muted) }
