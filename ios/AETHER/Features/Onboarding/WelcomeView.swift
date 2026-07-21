@@ -78,8 +78,8 @@ struct WelcomeView: View {
                                 .font(.headline)
                         }
                         .frame(maxWidth: .infinity)
-                        .padding(.vertical, 15)
-                        .background(palette.accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                        .padding(.vertical, 16)
+                        .background(palette.accent, in: Capsule())
                         .foregroundStyle(palette.onAccent)
                     }
                     .buttonStyle(.squish)
@@ -116,8 +116,8 @@ struct WelcomeView: View {
             TextField(placeholder, text: text)
                 .foregroundStyle(palette.textPrimary)
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .liquidGlass(cornerRadius: 14, interactive: false)
+        .padding(.horizontal, 18).padding(.vertical, 15)
+        .liquidGlass(Capsule(), interactive: false)
     }
 
     private func secureField(icon: String, placeholder: String, text: Binding<String>) -> some View {
@@ -126,8 +126,8 @@ struct WelcomeView: View {
             SecureField(placeholder, text: text)
                 .foregroundStyle(palette.textPrimary)
         }
-        .padding(.horizontal, 16).padding(.vertical, 14)
-        .liquidGlass(cornerRadius: 14, interactive: false)
+        .padding(.horizontal, 18).padding(.vertical, 15)
+        .liquidGlass(Capsule(), interactive: false)
     }
 
     private func submit() {

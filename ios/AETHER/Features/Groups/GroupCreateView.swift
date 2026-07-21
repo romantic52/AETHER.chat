@@ -144,8 +144,8 @@ struct GroupCreateView: View {
                         .autocorrectionDisabled()
                         .foregroundStyle(palette.textPrimary)
                 }
-                .padding(12)
-                .liquidGlass(cornerRadius: 12)
+                .padding(.horizontal, 16).padding(.vertical, 12)
+                .liquidGlass(Capsule())
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
             }
