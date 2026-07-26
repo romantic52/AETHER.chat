@@ -1934,6 +1934,29 @@ body.theme-glass .tg-chat-list-view { background: rgba(255,255,255,0.28) !import
 }
 
 /* ===== Закреплённое сообщение (плашка под шапкой чата) ===== */
+/* Тревога TOFU: olm-ключ собеседника разошёлся с запиненным (SEC HIGH-2). */
+.tg-key-change-bar {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 12px;
+    background: rgba(249, 115, 22, 0.14);
+    border-bottom: 1px solid rgba(249, 115, 22, 0.45);
+}
+.tg-key-change-bar.hidden { display: none; }
+.key-change-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 13px;
+    min-width: 0;
+}
+.key-change-text span {
+    color: var(--text-secondary);
+    font-size: 12px;
+}
+#key-change-accept { white-space: nowrap; }
+
 .tg-pinned-bar {
     display: flex;
     align-items: center;

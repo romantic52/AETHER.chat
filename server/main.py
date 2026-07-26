@@ -475,6 +475,17 @@ def init_db() -> None:
                    WHERE table_name=%s AND column_name=%s)""", (table, col))
             if not cur.fetchone()[0]:
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
+        # Надгробие анти-даунгрейда: переживает удаление устройства. Без него
+        # kick_device (или пере-регистрация device_id) сбрасывал бы требование
+        # подписей, и следующий upload снова принимался бы неподписанным.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS signed_devices (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                first_signed_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, device_id)
+            )"""
+        )
 
         # Контроль сессий: сессия привязывается к крипто-устройству (клиент
         # сообщает device_id после логина) — чтобы можно было выкинуть
@@ -845,12 +856,15 @@ async def kick_device(device_id: str, authorization: str = Header(None),
         cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
         me = cur.fetchone()
         my_device = me["device_id"] if me else None
-        if device_id != my_device:
-            age = _device_age_hours(cur, current_user, my_device)
-            if age is None or age < KICK_MIN_DEVICE_AGE_HOURS:
-                raise HTTPException(
-                    403,
-                    f"С нового устройства выкидывать другие можно через {KICK_MIN_DEVICE_AGE_HOURS} ч.")
+        # Анти-вор: гейт применяется и к «своему» устройству. Иначе угнанный токен
+        # привязывался к чужому device_id (PUT /sessions/me/device) и «выкидывал сам
+        # себя», снося настоящему устройству сессии, prekeys и Olm-идентичность.
+        # Штатный выход из аккаунта — POST /logout, он крипто-материал не трогает.
+        age = _device_age_hours(cur, current_user, my_device)
+        if age is None or age < KICK_MIN_DEVICE_AGE_HOURS:
+            raise HTTPException(
+                403,
+                f"С нового устройства выкидывать устройства можно через {KICK_MIN_DEVICE_AGE_HOURS} ч.")
         cur.execute(
             "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s RETURNING token",
             (current_user, device_id))
@@ -1085,10 +1099,15 @@ def upload_keys(body: UploadKeysRequest, request: Request,
             "WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (current_user, device_id))
         previous = cur.fetchone()
-        if previous and previous.get("ed25519_key_b64") and not signed:
+        if not signed:
             # Анти-даунгрейд: раз устройство публиковало подписанные бандлы,
             # неподписанные больше не принимаем (стриппинг подписи невозможен).
-            raise HTTPException(400, "Signed uploads required for this device")
+            # Проверяем и надгробие — удаление устройства не сбрасывает требование.
+            cur.execute(
+                "SELECT 1 FROM signed_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+                (current_user, device_id))
+            if (previous and previous.get("ed25519_key_b64")) or cur.fetchone():
+                raise HTTPException(400, "Signed uploads required for this device")
         if previous and (previous["identity_key_b64"] != body.identity_key_b64
                          or (previous.get("ed25519_key_b64") or None) != body.ed25519_key_b64):
             # OTKs are bound to the identity that generated them. A rotated
@@ -1105,6 +1124,11 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                    identity_sig_b64 = EXCLUDED.identity_sig_b64""",
             (current_user, device_id, body.identity_key_b64,
              body.ed25519_key_b64, body.identity_sig_b64, _utc_now()))
+        if signed:
+            cur.execute(
+                """INSERT INTO signed_devices (user_id, device_id, first_signed_at)
+                   VALUES (LOWER(%s), %s, %s) ON CONFLICT (user_id, device_id) DO NOTHING""",
+                (current_user, device_id, _utc_now()))
         if device_id == "primary":
             # Legacy-клиенты и старый claim читают identity из users — держим в синхроне.
             cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
@@ -1209,9 +1233,12 @@ def list_devices(user_id: str, current_user: str = Depends(get_current_user)) ->
 def claim_keys(user_id: str, request: Request, device_id: str = "primary",
                current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
+        # FOR UPDATE сериализует claim с upload_keys (он берёт ту же строку):
+        # иначе бандл склеивался бы из двух снапшотов — старый identity + OTK,
+        # подписанный уже новым ключом, что у получателя выглядит как атака.
         cur.execute(
             "SELECT identity_key_b64, ed25519_key_b64, identity_sig_b64 "
-            "FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            "FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (user_id, device_id))
         row = cur.fetchone()
         if row is None:
