@@ -11,8 +11,11 @@ import androidx.compose.ui.draganddrop.DragAndDropEvent
 import androidx.compose.ui.draganddrop.DragAndDropTarget
 import androidx.compose.ui.draganddrop.awtTransferable
 import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.animation.core.animateFloat
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,13 +25,22 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.EmojiEmotions
 import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.KeyboardArrowUp
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -37,6 +49,7 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,6 +59,8 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.input.key.Key
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.isShiftPressed
@@ -72,7 +87,7 @@ fun ChatPane(
     peerId: String,
     typingUntil: Long,
     onShowInfo: () -> Unit,
-    onForwardRequest: (MessageEntity) -> Unit,
+    onForwardRequest: (List<MessageEntity>) -> Unit,
     onOpenViewer: (List<MessageEntity>, Int) -> Unit,
 ) {
     // Поток и позиция скролла привязаны к peerId: без key() при смене чата на
@@ -149,6 +164,7 @@ fun ChatPane(
             if (currentEditing != null) {
                 session.repository.editMessage(peerId, currentEditing.msgId, text)
             } else {
+                aether.desktop.media.UiSounds.playSent()
                 session.repository.enqueueText(
                     peerId,
                     text,
@@ -214,6 +230,65 @@ fun ChatPane(
         return false
     }
 
+    // Запись голосовых: один диктофон на панель, состояние переживает смену чата
+    // только если запись не идёт — иначе микрофон остался бы открытым.
+    val recorder = remember { aether.desktop.media.VoiceRecorder() }
+    val recording by recorder.state.collectAsState()
+    var micDenied by remember { mutableStateOf(false) }
+    var emojiOpen by remember(peerId) { mutableStateOf(false) }
+
+    fun stopAndSendVoice() {
+        val captured = recorder.stop() ?: return
+        scope.launch(Dispatchers.IO) {
+            val result = aether.desktop.media.VoiceRecorder.encode(captured)
+            session.repository.sendVoice(peerId, result.file, result.durationMs, result.waveform)
+            result.file.delete()
+            session.store.preloadMessages(peerId)
+        }
+    }
+
+    DisposableEffect(peerId) {
+        onDispose { recorder.cancel() }
+    }
+
+    // Поиск по открытому чату (Ctrl+F): история peer'а целиком в памяти,
+    // поэтому ищем на месте, без запросов к серверу.
+    var searchOpen by remember(peerId) { mutableStateOf(false) }
+    var searchQuery by remember(peerId) { mutableStateOf("") }
+    var hitIndex by remember(peerId) { mutableStateOf(0) }
+    val hits = remember(messages, searchQuery) {
+        val q = searchQuery.trim()
+        if (q.length < 2) emptyList()
+        else messages.mapIndexedNotNull { index, message ->
+            index.takeIf { messageSearchText(message).contains(q, ignoreCase = true) }
+        }
+    }
+    val currentHit = hits.getOrNull(hitIndex.coerceIn(0, (hits.size - 1).coerceAtLeast(0)))
+    LaunchedEffect(currentHit) {
+        currentHit?.let { listState.animateScrollToItem(it) }
+    }
+    LaunchedEffect(searchQuery) { hitIndex = 0 }
+
+    // Разделитель непрочитанных: счётчик снимается один раз при открытии чата,
+    // до того как отправка квитанции его обнулит.
+    val unreadAnchor = remember(peerId) { mutableStateOf<String?>(null) }
+    LaunchedEffect(peerId, messages.size) {
+        if (unreadAnchor.value == null) {
+            val count = session.store.cachedChat(peerId)?.unreadCount ?: 0
+            if (count in 1..messages.size) {
+                unreadAnchor.value = messages.getOrNull(messages.size - count)
+                    ?.takeIf { !it.isOut }?.msgId
+            }
+        }
+    }
+
+    // Выделение нескольких сообщений: включается из контекстного меню.
+    val selectedIds = remember(peerId) { androidx.compose.runtime.mutableStateListOf<String>() }
+    val selectionMode = selectedIds.isNotEmpty()
+    fun toggleSelect(message: MessageEntity) {
+        if (!selectedIds.remove(message.msgId)) selectedIds.add(message.msgId)
+    }
+
     val viewable = remember(messages) { viewableMedia(messages) }
     var dragOver by remember(peerId) { mutableStateOf(false) }
 
@@ -224,7 +299,7 @@ fun ChatPane(
         },
         onReply = { replyTo = it; editing = null },
         onEdit = { editing = it; replyTo = null; input = it.text },
-        onForward = onForwardRequest,
+        onForward = { onForwardRequest(listOf(it)) },
         onDeleteForMe = { msg -> scope.launch { session.repository.deleteForMe(msg.msgId) } },
         onDeleteForAll = { msg -> scope.launch { session.repository.deleteForEveryone(peerId, msg.msgId) } },
         onReact = { msg, emoji -> scope.launch { session.repository.react(peerId, msg.msgId, emoji) } },
@@ -236,7 +311,37 @@ fun ChatPane(
     )
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
-        // Шапка чата
+        // Шапка чата (в режиме выделения её заменяет панель действий)
+        if (selectionMode) {
+            SelectionBar(
+                count = selectedIds.size,
+                onCancel = { selectedIds.clear() },
+                onCopy = {
+                    val text = messages.filter { it.msgId in selectedIds }
+                        .joinToString("\n") { aether.desktop.data.messagePreview(it.text, "") }
+                    val selection = java.awt.datatransfer.StringSelection(text)
+                    java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
+                    selectedIds.clear()
+                },
+                onForward = {
+                    onForwardRequest(messages.filter { it.msgId in selectedIds })
+                    selectedIds.clear()
+                },
+                onDelete = {
+                    val chosen = messages.filter { it.msgId in selectedIds }
+                    selectedIds.clear()
+                    scope.launch { chosen.forEach { session.repository.deleteForMe(it.msgId) } }
+                },
+                onDeleteForAll = {
+                    val chosen = messages.filter { it.msgId in selectedIds && it.isOut }
+                    selectedIds.clear()
+                    scope.launch {
+                        chosen.forEach { session.repository.deleteForEveryone(peerId, it.msgId) }
+                    }
+                },
+                canDeleteForAll = messages.any { it.msgId in selectedIds && it.isOut },
+            )
+        } else
         Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 1.dp) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -271,7 +376,22 @@ fun ChatPane(
                         )
                     }
                 }
+                IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) searchQuery = "" }) {
+                    Icon(Icons.Filled.Search, contentDescription = "Поиск по чату")
+                }
             }
+        }
+
+        if (searchOpen) {
+            ChatSearchBar(
+                query = searchQuery,
+                onQueryChange = { searchQuery = it },
+                hitCount = hits.size,
+                hitIndex = hitIndex,
+                onPrev = { if (hits.isNotEmpty()) hitIndex = (hitIndex - 1 + hits.size) % hits.size },
+                onNext = { if (hits.isNotEmpty()) hitIndex = (hitIndex + 1) % hits.size },
+                onClose = { searchOpen = false; searchQuery = "" },
+            )
         }
 
         // Лента сообщений + перетаскивание файлов в чат
@@ -326,11 +446,28 @@ fun ChatPane(
                         }
                     }
                 }
+                if (message.msgId == unreadAnchor.value) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                        Surface(color = MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)) {
+                            Text(
+                                "Непрочитанные сообщения",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 3.dp),
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            )
+                        }
+                    }
+                }
                 MessageBubble(
                     session = session,
                     message = message,
                     isGroupChat = (chat?.type ?: 0) in 1..2,
                     actions = actions,
+                    highlighted = index == currentHit,
+                    selectionMode = selectionMode,
+                    selected = message.msgId in selectedIds,
+                    onToggleSelect = { toggleSelect(message) },
                 )
             }
         }
@@ -413,6 +550,15 @@ fun ChatPane(
         // Композер
         if (canPost) {
             Surface(color = MaterialTheme.colorScheme.surface, shadowElevation = 4.dp) {
+                if (recording.recording) {
+                    VoiceRecordingBar(
+                        millis = recording.millis,
+                        level = recording.level,
+                        waveform = recording.waveform,
+                        onCancel = { recorder.cancel() },
+                        onSend = ::stopAndSendVoice,
+                    )
+                } else {
                 Row(
                     verticalAlignment = Alignment.Bottom,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp),
@@ -422,6 +568,17 @@ fun ChatPane(
                     }
                     IconButton(onClick = { pickAndSend(asFile = true) }) {
                         Icon(Icons.Filled.AttachFile, contentDescription = "Файл")
+                    }
+                    Box {
+                        IconButton(onClick = { emojiOpen = !emojiOpen }) {
+                            Icon(Icons.Filled.EmojiEmotions, contentDescription = "Эмодзи")
+                        }
+                        if (emojiOpen) {
+                            EmojiPicker(
+                                onPick = { emoji -> input += emoji },
+                                onDismiss = { emojiOpen = false },
+                            )
+                        }
                     }
                     OutlinedTextField(
                         value = input,
@@ -445,6 +602,8 @@ fun ChatPane(
                                     event.key == Key.Enter && !event.isShiftPressed -> { send(); true }
                                     // Ctrl+V: картинка или файлы из буфера уходят вложением.
                                     event.key == Key.V && event.isCtrlPressed -> pasteFromClipboard()
+                                    // Ctrl+F открывает поиск по чату.
+                                    event.key == Key.F && event.isCtrlPressed -> { searchOpen = true; true }
                                     // Esc снимает ответ/редактирование.
                                     event.key == Key.Escape && (replyTo != null || editing != null) -> {
                                         if (editing != null) input = ""
@@ -466,14 +625,26 @@ fun ChatPane(
                                 }
                             },
                     )
-                    IconButton(onClick = ::send, enabled = input.isNotBlank()) {
-                        Icon(
-                            Icons.Filled.Send,
-                            contentDescription = "Отправить",
-                            tint = if (input.isNotBlank()) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                    // Пустое поле — микрофон, как в Telegram; есть текст — самолётик.
+                    if (input.isBlank()) {
+                        IconButton(onClick = { micDenied = !recorder.start() }) {
+                            Icon(
+                                Icons.Filled.Mic,
+                                contentDescription = "Записать голосовое",
+                                tint = if (micDenied) MaterialTheme.colorScheme.error
+                                else MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    } else {
+                        IconButton(onClick = ::send) {
+                            Icon(
+                                Icons.Filled.Send,
+                                contentDescription = "Отправить",
+                                tint = MaterialTheme.colorScheme.primary,
+                            )
+                        }
                     }
+                }
                 }
             }
         } else {
@@ -493,6 +664,315 @@ fun ChatPane(
     }
 
 }
+
+/** Панель массовых действий над выделенными сообщениями. */
+@Composable
+private fun SelectionBar(
+    count: Int,
+    onCancel: () -> Unit,
+    onCopy: () -> Unit,
+    onForward: () -> Unit,
+    onDelete: () -> Unit,
+    onDeleteForAll: () -> Unit,
+    canDeleteForAll: Boolean,
+) {
+    var confirmAll by remember { mutableStateOf(false) }
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant, shadowElevation = 1.dp) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp),
+        ) {
+            IconButton(onClick = onCancel) {
+                Icon(Icons.Filled.Close, contentDescription = "Отменить выделение")
+            }
+            Text(
+                "Выбрано: $count",
+                style = MaterialTheme.typography.titleSmall,
+                modifier = Modifier.weight(1f).padding(start = 4.dp),
+            )
+            IconButton(onClick = onCopy) {
+                Icon(Icons.Filled.ContentCopy, contentDescription = "Копировать")
+            }
+            IconButton(onClick = onForward) {
+                Icon(Icons.AutoMirrored.Filled.Forward, contentDescription = "Переслать")
+            }
+            IconButton(onClick = onDelete) {
+                Icon(Icons.Filled.Delete, contentDescription = "Удалить у меня")
+            }
+            if (canDeleteForAll) {
+                IconButton(onClick = { confirmAll = true }) {
+                    Icon(
+                        Icons.Filled.DeleteForever,
+                        contentDescription = "Удалить у всех",
+                        tint = MaterialTheme.colorScheme.error,
+                    )
+                }
+            }
+        }
+    }
+    if (confirmAll) {
+        androidx.compose.material3.AlertDialog(
+            onDismissRequest = { confirmAll = false },
+            title = { Text("Удалить у всех?") },
+            text = { Text("Сообщения исчезнут и у собеседника. Отменить будет нельзя.") },
+            confirmButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmAll = false; onDeleteForAll() }) {
+                    Text("Удалить")
+                }
+            },
+            dismissButton = {
+                androidx.compose.material3.TextButton(onClick = { confirmAll = false }) { Text("Отмена") }
+            },
+        )
+    }
+}
+
+/** Строка поиска по открытому чату: счётчик совпадений и переход по ним. */
+@Composable
+private fun ChatSearchBar(
+    query: String,
+    onQueryChange: (String) -> Unit,
+    hitCount: Int,
+    hitIndex: Int,
+    onPrev: () -> Unit,
+    onNext: () -> Unit,
+    onClose: () -> Unit,
+) {
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.withFrameNanos { }
+        runCatching { focus.requestFocus() }
+    }
+    Surface(color = MaterialTheme.colorScheme.surfaceVariant) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+        ) {
+            OutlinedTextField(
+                value = query,
+                onValueChange = onQueryChange,
+                placeholder = { Text("Поиск по чату") },
+                singleLine = true,
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.weight(1f).focusRequester(focus).onPreviewKeyEvent { event ->
+                    if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                    when (event.key) {
+                        Key.Escape -> { onClose(); true }
+                        Key.Enter -> { onNext(); true }
+                        else -> false
+                    }
+                },
+            )
+            Text(
+                if (query.trim().length < 2) "" else if (hitCount == 0) "нет совпадений"
+                else "${hitIndex + 1} из $hitCount",
+                style = MaterialTheme.typography.labelMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(horizontal = 10.dp),
+            )
+            IconButton(onClick = onPrev, enabled = hitCount > 0) {
+                Icon(Icons.Filled.KeyboardArrowUp, contentDescription = "Предыдущее")
+            }
+            IconButton(onClick = onNext, enabled = hitCount > 0) {
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Следующее")
+            }
+            IconButton(onClick = onClose) {
+                Icon(Icons.Filled.Close, contentDescription = "Закрыть поиск")
+            }
+        }
+    }
+}
+
+/** Текст сообщения для поиска: у медиа ищем по подписи и имени файла. */
+private fun messageSearchText(message: MessageEntity): String {
+    val raw = message.text
+    if (!raw.trimStart().startsWith("{")) return raw
+    val json = runCatching { org.json.JSONObject(raw) }.getOrNull() ?: return raw
+    if (json.optString("type") != "media") return raw
+    return listOf(json.optString("caption"), json.optString("file_name")).joinToString(" ")
+}
+
+/** Композер во время записи: таймер, живая волна, отмена и отправка. */
+@Composable
+private fun VoiceRecordingBar(
+    millis: Long,
+    level: Float,
+    waveform: List<Int>,
+    onCancel: () -> Unit,
+    onSend: () -> Unit,
+) {
+    val blink by androidx.compose.animation.core.rememberInfiniteTransition(label = "rec")
+        .animateFloat(
+            initialValue = 0.25f,
+            targetValue = 1f,
+            animationSpec = androidx.compose.animation.core.infiniteRepeatable(
+                androidx.compose.animation.core.tween(700),
+                androidx.compose.animation.core.RepeatMode.Reverse,
+            ),
+            label = "recAlpha",
+        )
+    val waveColor = MaterialTheme.colorScheme.primary
+    // Панель забирает фокус на себя: иначе Esc некому поймать — поле ввода на
+    // время записи из композера убрано.
+    val focus = remember { FocusRequester() }
+    LaunchedEffect(Unit) {
+        androidx.compose.runtime.withFrameNanos { }
+        runCatching { focus.requestFocus() }
+    }
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 10.dp)
+            .focusRequester(focus)
+            .focusable()
+            .onPreviewKeyEvent { event ->
+                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                when (event.key) {
+                    Key.Escape -> { onCancel(); true }
+                    Key.Enter -> { onSend(); true }
+                    else -> false
+                }
+            },
+    ) {
+        IconButton(onClick = onCancel) {
+            Icon(Icons.Filled.Delete, contentDescription = "Отменить", tint = MaterialTheme.colorScheme.error)
+        }
+        Box(
+            modifier = Modifier
+                .size(10.dp)
+                .background(MaterialTheme.colorScheme.error.copy(alpha = blink), androidx.compose.foundation.shape.CircleShape),
+        )
+        Text(
+            formatRecordTime(millis),
+            style = MaterialTheme.typography.titleSmall,
+            modifier = Modifier.padding(start = 10.dp, end = 12.dp),
+        )
+        // Волна ползёт справа налево: видно последние ~5 секунд.
+        androidx.compose.foundation.Canvas(modifier = Modifier.weight(1f).height(28.dp)) {
+            val tail = waveform.takeLast(50)
+            if (tail.isEmpty()) return@Canvas
+            val barWidth = size.width / (tail.size * 1.6f)
+            tail.forEachIndexed { index, amp ->
+                val h = ((amp / 31f).coerceAtLeast(0.08f)) * size.height
+                drawRoundRect(
+                    color = waveColor,
+                    topLeft = androidx.compose.ui.geometry.Offset(
+                        size.width - (tail.size - index) * barWidth * 1.6f,
+                        (size.height - h) / 2f,
+                    ),
+                    size = androidx.compose.ui.geometry.Size(barWidth, h),
+                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f),
+                )
+            }
+        }
+        Text(
+            "Esc — отменить",
+            style = MaterialTheme.typography.labelSmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 10.dp),
+        )
+        IconButton(onClick = onSend) {
+            Icon(Icons.Filled.Send, contentDescription = "Отправить", tint = MaterialTheme.colorScheme.primary)
+        }
+    }
+    // level используется для мгновенной обратной связи, если волна ещё пуста.
+    if (waveform.isEmpty() && level > 0f) Unit
+}
+
+private fun formatRecordTime(millis: Long): String {
+    val total = millis / 1000
+    return "%d:%02d".format(total / 60, total % 60)
+}
+
+/** Панель эмодзи над композером: вкладки категорий и сетка символов. */
+@Composable
+private fun EmojiPicker(onPick: (String) -> Unit, onDismiss: () -> Unit) {
+    var category by remember { mutableStateOf(0) }
+    androidx.compose.ui.window.Popup(
+        alignment = Alignment.BottomStart,
+        // Панель раскрывается вверх и упирается нижним краем в кнопку.
+        offset = androidx.compose.ui.unit.IntOffset(0, -44),
+        onDismissRequest = onDismiss,
+        properties = androidx.compose.ui.window.PopupProperties(focusable = true),
+    ) {
+        Surface(
+            shape = RoundedCornerShape(12.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 8.dp,
+            modifier = Modifier.size(width = 320.dp, height = 260.dp),
+        ) {
+            Column {
+                Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp)) {
+                    EMOJI_CATEGORIES.forEachIndexed { index, group ->
+                        Text(
+                            group.first,
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable { category = index }
+                                .background(
+                                    if (index == category) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+                                    else androidx.compose.ui.graphics.Color.Transparent,
+                                    RoundedCornerShape(6.dp),
+                                )
+                                .padding(vertical = 6.dp),
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                        )
+                    }
+                }
+                androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
+                    columns = androidx.compose.foundation.lazy.grid.GridCells.Fixed(8),
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    contentPadding = androidx.compose.foundation.layout.PaddingValues(6.dp),
+                ) {
+                    items(EMOJI_CATEGORIES[category].second) { emoji ->
+                        Text(
+                            emoji,
+                            style = MaterialTheme.typography.titleLarge,
+                            textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            modifier = Modifier
+                                .clickable { onPick(emoji) }
+                                .padding(4.dp),
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+private val EMOJI_CATEGORIES: List<Pair<String, List<String>>> = listOf(
+    "😀" to (
+        "😀 😃 😄 😁 😆 😅 😂 🤣 🙂 🙃 😉 😊 😇 🥰 😍 🤩 😘 😗 😚 😙 😋 😛 😜 🤪 😝 🤗 🤭 🤔 " +
+            "🤨 😐 😑 😶 😏 😒 🙄 😬 😮 😯 😲 🥱 😴 🤤 😪 😵 🤐 🥴 🤢 🤧 😷 🤒 🤕 🤑 😎 🤓 🧐 " +
+            "😕 😟 🙁 😮‍💨 😯 😦 😧 😨 😰 😥 😢 😭 😱 😖 😣 😞 😓 😩 😫 😤 😡 😠 🤬 💀 👻 🤡"
+        ).split(" ")
+    ,
+    "👍" to (
+        "👍 👎 👌 🤌 ✌️ 🤞 🤟 🤘 🤙 👈 👉 👆 👇 ☝️ ✋ 🤚 🖐️ 🖖 👋 🤝 🙏 ✍️ 💪 🦾 👏 🙌 👐 🤲 " +
+            "❤️ 🧡 💛 💚 💙 💜 🖤 🤍 💔 ❣️ 💕 💞 💓 💗 💖 💘 💝 🔥 ⭐ 🌟 ✨ ⚡ 💥 💫 💯 ✅ ❌"
+        ).split(" ")
+    ,
+    "🐶" to (
+        "🐶 🐱 🐭 🐹 🐰 🦊 🐻 🐼 🐨 🐯 🦁 🐮 🐷 🐸 🐵 🙈 🙉 🙊 🐔 🐧 🐦 🐤 🦆 🦉 🦇 🐺 🐗 🐴 " +
+            "🦄 🐝 🐛 🦋 🐌 🐞 🐢 🐍 🐙 🦑 🦐 🦀 🐬 🐳 🐟 🌷 🌸 🌹 🌻 🌼 🌱 🌲 🌳 🌴 🍀 🍁 🍂"
+        ).split(" ")
+    ,
+    "🍕" to (
+        "🍏 🍎 🍐 🍊 🍋 🍌 🍉 🍇 🍓 🫐 🍒 🍑 🥭 🍍 🥥 🥝 🍅 🥑 🍆 🥕 🌽 🌶️ 🥒 🥬 🥦 🧄 🧅 🥔 " +
+            "🍞 🥐 🥖 🧀 🥚 🍳 🥓 🍔 🍟 🍕 🌭 🥪 🌮 🌯 🥙 🍜 🍝 🍣 🍤 🍦 🍰 🎂 🍫 🍬 ☕ 🍺 🍷"
+        ).split(" ")
+    ,
+    "⚽" to (
+        "⚽ 🏀 🏈 ⚾ 🎾 🏐 🏉 🎱 🏓 🏸 🥅 🏒 🏑 🏏 ⛳ 🏹 🎣 🥊 🥋 🎽 ⛸️ 🎿 🛷 🏂 🏋️ 🤸 ⛹️ 🚴 " +
+            "🎮 🎲 🎯 🎳 🎪 🎨 🎬 🎤 🎧 🎼 🎹 🥁 🎷 🎺 🎸 🎻 ✈️ 🚗 🚕 🚙 🚌 🚑 🚒 🚀 🛸 ⛵"
+        ).split(" ")
+    ,
+    "💡" to (
+        "💡 🔦 🕯️ 📱 💻 ⌨️ 🖥️ 🖨️ 🖱️ 💾 💿 📷 📸 📹 🎥 📺 📻 ⏰ ⌚ 📅 📆 📌 📍 📎 🔗 📏 📐 ✂️ " +
+            "🔒 🔓 🔑 🔨 🪓 ⚙️ 🔧 🧲 💣 🧨 🛡️ 🚪 🛏️ 🚿 🧴 🧻 🧹 🎁 🎈 🎉 🎊 🏆 🥇 🥈 🥉 📚 ✏️"
+        ).split(" ")
+    ,
+)
 
 private fun formatPresence(lastActive: String?): String {
     val ts = aether.desktop.api.RelayApi.parseUtcIso(lastActive)

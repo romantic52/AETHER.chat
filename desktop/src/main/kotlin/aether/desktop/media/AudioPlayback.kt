@@ -1,5 +1,6 @@
 package aether.desktop.media
 
+import java.io.BufferedInputStream
 import java.io.File
 import javax.sound.sampled.AudioFormat
 import javax.sound.sampled.AudioSystem
@@ -91,7 +92,11 @@ object AudioPlayback {
     }
 
     private fun decode(file: File): Decoded {
-        AudioSystem.getAudioInputStream(file).use { encoded ->
+        // Именно BufferedInputStream, а не File: у mp3-SPI на файловом потоке
+        // распаковывается ровно один кадр (0,05 с вместо 10 с) — ему нужен
+        // поток с mark/reset достаточной глубины.
+        val source = AudioSystem.getAudioInputStream(BufferedInputStream(file.inputStream(), 1 shl 18))
+        source.use { encoded ->
             val base = encoded.format
             val target = AudioFormat(
                 AudioFormat.Encoding.PCM_SIGNED,
@@ -103,7 +108,16 @@ object AudioPlayback {
                 false,
             )
             AudioSystem.getAudioInputStream(target, encoded).use { pcmStream ->
-                return Decoded(pcmStream.readBytes(), target)
+                val out = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(1 shl 16)
+                while (true) {
+                    val read = pcmStream.read(chunk)
+                    if (read < 0) break
+                    out.write(chunk, 0, read)
+                }
+                val bytes = out.toByteArray()
+                if (bytes.isEmpty()) throw IllegalStateException("декодер вернул пустой поток")
+                return Decoded(bytes, target)
             }
         }
     }

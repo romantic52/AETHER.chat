@@ -42,7 +42,7 @@ import kotlinx.coroutines.withContext
 @Composable
 fun ForwardDialog(
     session: AppSession,
-    message: MessageEntity,
+    messages: List<MessageEntity>,
     onDismiss: () -> Unit,
     onForwarded: (String) -> Unit,
 ) {
@@ -50,7 +50,7 @@ fun ForwardDialog(
     val scope = rememberCoroutineScope()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Переслать") },
+        title = { Text(if (messages.size > 1) "Переслать (${messages.size})" else "Переслать") },
         text = {
             LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
                 items(chats, key = { it.chat.peerId }) { entry ->
@@ -61,7 +61,9 @@ fun ForwardDialog(
                             .fillMaxWidth()
                             .clickable {
                                 scope.launch {
-                                    session.repository.enqueueForward(entry.chat.peerId, message)
+                                    // Порядок сохраняем: пересылка пачкой должна
+                                    // лечь в чат в том же виде, что и в исходном.
+                                    messages.forEach { session.repository.enqueueForward(entry.chat.peerId, it) }
                                     onForwarded(entry.chat.peerId)
                                 }
                             }

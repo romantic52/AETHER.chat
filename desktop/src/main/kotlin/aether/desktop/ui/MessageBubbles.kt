@@ -21,12 +21,16 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Reply
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material.icons.filled.PlayCircle
 import androidx.compose.material.icons.filled.PauseCircle
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.launch
 import androidx.compose.material3.Icon
@@ -70,18 +74,25 @@ data class MessageActions(
 
 private val reactionChoices = listOf("👍", "❤️", "🔥", "😂", "😮", "😢")
 
+@OptIn(androidx.compose.ui.ExperimentalComposeUiApi::class)
 @Composable
 fun MessageBubble(
     session: AppSession,
     message: MessageEntity,
     isGroupChat: Boolean,
     actions: MessageActions,
+    /** Найдено поиском по чату — подсвечиваем, как это делает Telegram. */
+    highlighted: Boolean = false,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    onToggleSelect: () -> Unit = {},
 ) {
     val isMedia = message.text.trimStart().startsWith("{") &&
         runCatching { JSONObject(message.text).optString("type") == "media" }.getOrDefault(false)
     val isMine = message.isOut
 
     val menuItems = buildList {
+        add(ContextMenuItem(if (selected) "Снять выделение" else "Выделить") { onToggleSelect() })
         add(ContextMenuItem("Ответить") { actions.onReply(message) })
         if (!isMedia) add(ContextMenuItem("Копировать") { actions.onCopy(message) })
         if (isMine && !isMedia) add(ContextMenuItem("Редактировать") { actions.onEdit(message) })
@@ -95,10 +106,39 @@ fun MessageBubble(
         add(ContextMenuItem("Убрать реакцию") { actions.onReact(message, "") })
     }
 
+    var hovered by remember(message.msgId) { mutableStateOf(false) }
+    val rowTint by androidx.compose.animation.animateColorAsState(
+        when {
+            selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.20f)
+            highlighted -> MaterialTheme.colorScheme.primary.copy(alpha = 0.16f)
+            else -> Color.Transparent
+        },
+        label = "rowTint",
+    )
+
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 2.dp),
+        modifier = Modifier.fillMaxWidth()
+            .background(rowTint)
+            // В режиме выделения клик по строке переключает галочку, а не
+            // проваливается в содержимое сообщения.
+            .then(if (selectionMode) Modifier.clickable(onClick = onToggleSelect) else Modifier)
+            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .onPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Enter) { hovered = true }
+            .onPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Exit) { hovered = false },
         horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (selectionMode) {
+            Icon(
+                if (selected) Icons.Filled.CheckCircle else Icons.Filled.RadioButtonUnchecked,
+                contentDescription = if (selected) "Выделено" else "Не выделено",
+                tint = if (selected) MaterialTheme.colorScheme.primary
+                else MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(end = 8.dp).size(20.dp),
+            )
+        }
+        // Быстрый ответ по наведению — со стороны, противоположной пузырю.
+        if (isMine && !selectionMode) QuickReply(visible = hovered) { actions.onReply(message) }
         ContextMenuArea(items = { menuItems }) {
             Surface(
                 color = if (isMine) MaterialTheme.colorScheme.primaryContainer
@@ -181,6 +221,24 @@ fun MessageBubble(
                 }
             }
         }
+        if (!isMine && !selectionMode) QuickReply(visible = hovered) { actions.onReply(message) }
+    }
+}
+
+/** Стрелка «ответить», проявляющаяся при наведении на сообщение. */
+@Composable
+private fun QuickReply(visible: Boolean, onClick: () -> Unit) {
+    androidx.compose.animation.AnimatedVisibility(
+        visible = visible,
+        enter = androidx.compose.animation.fadeIn(),
+        exit = androidx.compose.animation.fadeOut(),
+    ) {
+        Icon(
+            Icons.AutoMirrored.Filled.Reply,
+            contentDescription = "Ответить",
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(horizontal = 6.dp).size(18.dp).clickable(onClick = onClick),
+        )
     }
 }
 
@@ -292,8 +350,12 @@ private fun VoiceRow(session: AppSession, message: MessageEntity, payload: JSONO
     val scope = rememberCoroutineScope()
     var unsupported by remember(message.msgId) { mutableStateOf(false) }
 
-    val playedColor = MaterialTheme.colorScheme.primary
-    val restColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+    // На своём пузыре (primaryContainer) волна цветом primary почти сливается —
+    // берём контрастный к фону пузыря цвет.
+    val accent = if (message.isOut) MaterialTheme.colorScheme.onPrimaryContainer
+    else MaterialTheme.colorScheme.primary
+    val playedColor = accent
+    val restColor = accent.copy(alpha = 0.35f)
 
     fun togglePlayback() {
         scope.launch(Dispatchers.IO) {
@@ -313,7 +375,7 @@ private fun VoiceRow(session: AppSession, message: MessageEntity, payload: JSONO
         Icon(
             if (isCurrent && playback.playing) Icons.Filled.PauseCircle else Icons.Filled.PlayCircle,
             contentDescription = if (isCurrent && playback.playing) "Пауза" else "Воспроизвести",
-            tint = MaterialTheme.colorScheme.primary,
+            tint = accent,
             modifier = Modifier.size(36.dp).clickable(onClick = ::togglePlayback),
         )
         if (waveform.isNotEmpty()) {

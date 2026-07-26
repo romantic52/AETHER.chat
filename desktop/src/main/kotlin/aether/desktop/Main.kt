@@ -54,6 +54,7 @@ fun main() {
 
         val settings = remember { UiSettings() }
         var theme by remember { mutableStateOf(settings.theme) }
+        LaunchedEffect(Unit) { aether.desktop.media.UiSounds.enabled = settings.soundsEnabled }
 
         // Окно живёт в трее: закрытие прячет его, как в Telegram Desktop.
         var windowVisible by remember { mutableStateOf(true) }
@@ -111,16 +112,18 @@ fun main() {
                     val peer = entry.chat.peerId.lowercase()
                     val previous = seenUnread.put(peer, entry.chat.unreadCount) ?: 0
                     val grew = entry.chat.unreadCount > previous
-                    if (primed && grew && !entry.chat.isMuted && !windowFocused &&
-                        settings.notificationsEnabled
-                    ) {
-                        trayState.sendNotification(
-                            Notification(
-                                title = entry.chat.name,
-                                message = messagePreview(entry.lastText, "Новое сообщение"),
-                                type = Notification.Type.Info,
+                    if (primed && grew && !entry.chat.isMuted) {
+                        // Звук — и когда окно на виду: в Telegram так же.
+                        aether.desktop.media.UiSounds.playReceived()
+                        if (!windowFocused && settings.notificationsEnabled) {
+                            trayState.sendNotification(
+                                Notification(
+                                    title = entry.chat.name,
+                                    message = messagePreview(entry.lastText, "Новое сообщение"),
+                                    type = Notification.Type.Info,
+                                )
                             )
-                        )
+                        }
                     }
                 }
                 primed = true

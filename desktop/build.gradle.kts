@@ -66,6 +66,13 @@ tasks.register<JavaExec>("pairsmoke") {
     classpath = sourceSets["main"].runtimeClasspath
 }
 
+// Проверка декодеров голосовых (DevAudioSmoke.kt): .\gradlew.bat audiosmoke --args="<files>"
+tasks.register<JavaExec>("audiosmoke") {
+    group = "verification"
+    mainClass.set("aether.desktop.DevAudioSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
 // Живой headless-клиент против эмулятора (DevPeerSmoke.kt): .\gradlew.bat peersmoke --args="<peer>"
 tasks.register<JavaExec>("peersmoke") {
     group = "verification"

@@ -869,6 +869,19 @@ class MessageRepository(
     suspend fun sendFiles(peerId: String, files: List<File>, caption: String?): Exception? =
         sendLocalFiles(peerId, files, caption, asFile = true)
 
+    /**
+     * Голосовое с микрофона. Контейнер — MP3: его играют Android, iOS и веб,
+     * а AAC/Opus из чистой Java не закодировать. Волна и длительность идут в
+     * тех же полях, что у Android, поэтому вид сообщения везде одинаковый.
+     */
+    suspend fun sendVoice(peerId: String, file: File, durationMs: Long, waveform: List<Int>): Exception? =
+        sendLocalFiles(peerId, listOf(file), caption = null, asFile = false) { json ->
+            json.put("kind", "voice")
+                .put("mime_type", "audio/mpeg")
+                .put("duration", durationMs / 1000.0)
+                .put("waveform", org.json.JSONArray(waveform))
+        }
+
     private fun probeMime(file: File): String =
         runCatching { java.nio.file.Files.probeContentType(file.toPath()) }.getOrNull()
             ?: "application/octet-stream"
@@ -890,7 +903,13 @@ class MessageRepository(
         null
     }
 
-    private suspend fun sendLocalFiles(peerId: String, files: List<File>, caption: String?, asFile: Boolean): Exception? {
+    private suspend fun sendLocalFiles(
+        peerId: String,
+        files: List<File>,
+        caption: String?,
+        asFile: Boolean,
+        decorate: ((JSONObject) -> Unit)? = null,
+    ): Exception? {
         return try {
             for (file in files) {
                 if (!file.isFile || file.length() == 0L) continue
@@ -930,6 +949,7 @@ class MessageRepository(
                         }
                     }
                     if (caption != null && file == files.first()) jsonObj.put("caption", caption)
+                    decorate?.invoke(jsonObj)
                     jsonText = jsonObj.toString()
                 } finally {
                     tmp.delete()

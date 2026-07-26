@@ -38,12 +38,13 @@ fun HomeScreen(
     var selectedPeer by remember { mutableStateOf<String?>(null) }
     var showInfo by remember { mutableStateOf(false) }
     var menuOpen by remember { mutableStateOf(false) }
-    var forwardMessage by remember { mutableStateOf<MessageEntity?>(null) }
+    var forwardMessages by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     var showCreateGroup by remember { mutableStateOf<Boolean?>(null) } // null=скрыт, false=группа, true=канал
     var showSessions by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var showSafetyFor by remember { mutableStateOf<String?>(null) }
     var notificationsOn by remember { mutableStateOf(settings.notificationsEnabled) }
+    var soundsOn by remember { mutableStateOf(settings.soundsEnabled) }
     // Просмотрщик живёт на уровне окна: он должен перекрывать и список, и панель информации.
     var viewerItems by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
@@ -111,6 +112,14 @@ fun HomeScreen(
                             },
                         )
                         DropdownMenuItem(
+                            text = { Text(if (soundsOn) "Звуки: вкл" else "Звуки: выкл") },
+                            onClick = {
+                                soundsOn = !soundsOn
+                                settings.soundsEnabled = soundsOn
+                                aether.desktop.media.UiSounds.enabled = soundsOn
+                            },
+                        )
+                        DropdownMenuItem(
                             text = { Text(if (closeToTray) "Закрытие: сворачивать в трей" else "Закрытие: выходить") },
                             onClick = {
                                 closeToTray = !closeToTray
@@ -147,7 +156,7 @@ fun HomeScreen(
                     peerId = peer,
                     typingUntil = typingUntil[peer.lowercase()] ?: 0L,
                     onShowInfo = { showInfo = !showInfo },
-                    onForwardRequest = { forwardMessage = it },
+                    onForwardRequest = { forwardMessages = it },
                     onOpenViewer = { items, index ->
                         viewerItems = items
                         viewerIndex = index
@@ -183,13 +192,13 @@ fun HomeScreen(
         }
     }
 
-    forwardMessage?.let { message ->
+    if (forwardMessages.isNotEmpty()) {
         ForwardDialog(
             session = session,
-            message = message,
-            onDismiss = { forwardMessage = null },
+            messages = forwardMessages,
+            onDismiss = { forwardMessages = emptyList() },
             onForwarded = { target ->
-                forwardMessage = null
+                forwardMessages = emptyList()
                 selectedPeer = target
             },
         )
