@@ -6,13 +6,15 @@ import aether.desktop.data.DesktopPrefs
 import aether.desktop.pairing.PairingClient
 import aether.desktop.pairing.QrRenderer
 import androidx.compose.foundation.Image
-import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -28,7 +30,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -48,8 +52,7 @@ fun QrLoginPane(
     var qr by remember(server) { mutableStateOf<ImageBitmap?>(null) }
     var error by remember(server) { mutableStateOf<String?>(null) }
     var attempt by remember(server) { mutableStateOf(0) }
-    var status by remember(server) { mutableStateOf("Откройте Æther на телефоне → Настройки → Устройства → Подключить устройство") }
-    val dark = isSystemInDarkTheme()
+    var status by remember(server) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(server, attempt) {
         error = null
@@ -57,7 +60,9 @@ fun QrLoginPane(
         val client = PairingClient(server)
         try {
             val started = withContext(Dispatchers.IO) { client.start() }
-            qr = withContext(Dispatchers.Default) { QrRenderer.render(started.qrPayload, 320, dark) }
+            // Рендерим с запасом по пикселям (плашка всегда белая, поэтому
+            // тёмный вариант не нужен) — при уменьшении до 220dp код остаётся резким.
+            qr = withContext(Dispatchers.Default) { QrRenderer.render(started.qrPayload, 440, dark = false) }
             val deadline = System.currentTimeMillis() + started.expiresIn * 1000L
             while (System.currentTimeMillis() < deadline) {
                 val approved = withContext(Dispatchers.IO) { client.poll(started) }
@@ -90,16 +95,16 @@ fun QrLoginPane(
 
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp),
         modifier = Modifier.fillMaxWidth(),
     ) {
+        // Белая плашка в обеих темах: тёмный QR на ней читается камерой лучше всего.
         Surface(
-            shape = RoundedCornerShape(12.dp),
-            color = MaterialTheme.colorScheme.surface,
-            tonalElevation = 2.dp,
+            shape = RoundedCornerShape(16.dp),
+            color = Color.White,
         ) {
             Box(
-                modifier = Modifier.size(320.dp).padding(8.dp),
+                modifier = Modifier.size(244.dp).padding(12.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 val current = qr
@@ -107,27 +112,74 @@ fun QrLoginPane(
                     Image(
                         bitmap = current,
                         contentDescription = "QR для входа",
-                        modifier = Modifier.size(300.dp).clip(RoundedCornerShape(8.dp)),
+                        modifier = Modifier.size(220.dp).clip(RoundedCornerShape(8.dp)),
                     )
                 } else {
                     CircularProgressIndicator()
                 }
             }
         }
-        Text(
-            status,
-            style = MaterialTheme.typography.bodyMedium,
-            textAlign = TextAlign.Center,
-        )
+        status?.let {
+            Text(
+                it,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = FontWeight.Medium,
+                color = MaterialTheme.colorScheme.primary,
+                textAlign = TextAlign.Center,
+            )
+        }
+        Column(
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            QrStep(1, "Откройте Æther на телефоне")
+            QrStep(2, "Перейдите в Настройки → Устройства → Подключить устройство")
+            QrStep(3, "Наведите камеру на этот QR-код")
+        }
         Text(
             "Никому не показывайте этот код: тот, кто его отсканирует, получит доступ к вашей переписке.",
             style = MaterialTheme.typography.bodySmall,
-            color = MaterialTheme.colorScheme.error,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center,
         )
         error?.let {
-            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                textAlign = TextAlign.Center,
+            )
             TextButton(onClick = { attempt += 1 }) { Text("Обновить код") }
         }
+    }
+}
+
+/** Пронумерованный шаг инструкции: кружок с цифрой + текст, как в Telegram. */
+@Composable
+private fun QrStep(number: Int, text: String) {
+    Row(
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp),
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        Box(
+            modifier = Modifier
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(MaterialTheme.colorScheme.primary),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                number.toString(),
+                color = MaterialTheme.colorScheme.onPrimary,
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+            )
+        }
+        Text(
+            text,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
