@@ -2,6 +2,10 @@ package aether.desktop.ui
 
 import aether.desktop.AppSession
 import aether.desktop.data.MessageEntity
+import aether.desktop.data.Transfer
+import aether.desktop.data.TransferDirection
+import aether.desktop.data.TransferProgress
+import aether.desktop.data.formatBytes
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ContextMenuArea
 import androidx.compose.foundation.ContextMenuItem
@@ -33,7 +37,9 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlinx.coroutines.launch
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -291,10 +297,83 @@ private fun MediaContent(session: AppSession, message: MessageEntity, actions: M
     }
 }
 
+/**
+ * Передача, относящаяся к этому сообщению: своя — под clientId (он же msgId),
+ * чужая — под file_id. Возвращает null, когда всё уже закончилось.
+ */
+@Composable
+private fun transferOf(message: MessageEntity): Transfer? {
+    val transfers by TransferProgress.transfers.collectAsState()
+    val fileId = remember(message.text) {
+        runCatching { JSONObject(message.text).optString("file_id") }.getOrNull()
+            ?.takeIf(String::isNotBlank)
+    }
+    val transfer = transfers[message.msgId] ?: fileId?.let(transfers::get)
+    return transfer?.takeIf { !it.done && !it.failed }
+}
+
+private fun transferLabel(transfer: Transfer): String =
+    if (transfer.direction == TransferDirection.UPLOAD) "Отправка…" else "Загрузка…"
+
+/** Круговой прогресс с процентом — поверх заглушки или самого фото. */
+@Composable
+private fun TransferRing(transfer: Transfer, onDark: Boolean) {
+    val tint = if (onDark) Color.White else MaterialTheme.colorScheme.primary
+    val fraction = transfer.fraction
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.padding(10.dp),
+    ) {
+        if (fraction == null) {
+            CircularProgressIndicator(
+                color = tint,
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(40.dp),
+            )
+        } else {
+            CircularProgressIndicator(
+                progress = { fraction },
+                color = tint,
+                strokeWidth = 3.dp,
+                modifier = Modifier.size(40.dp),
+            )
+        }
+        Text(
+            if (fraction == null) transferLabel(transfer) else "${transfer.percent} %",
+            style = MaterialTheme.typography.labelSmall,
+            color = tint,
+            modifier = Modifier.padding(top = 4.dp),
+        )
+    }
+}
+
+/** Линейный прогресс со счётчиком «1,4 МБ из 3,0 МБ» — под именем файла. */
+@Composable
+private fun TransferBar(transfer: Transfer, fallbackTotal: Long) {
+    val fraction = transfer.fraction
+    if (fraction == null) {
+        LinearProgressIndicator(modifier = Modifier.width(160.dp).padding(top = 3.dp))
+    } else {
+        LinearProgressIndicator(
+            progress = { fraction },
+            modifier = Modifier.width(160.dp).padding(top = 3.dp),
+        )
+    }
+    val total = transfer.bytesTotal.takeIf { it > 0L } ?: fallbackTotal
+    Text(
+        if (total > 0L) "${formatBytes(transfer.bytesDone)} из ${formatBytes(total)}"
+        else formatBytes(transfer.bytesDone),
+        style = MaterialTheme.typography.labelSmall,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier.padding(top = 2.dp),
+    )
+}
+
 @Composable
 private fun InlineImage(session: AppSession, message: MessageEntity, onOpen: () -> Unit) {
     var bitmap by remember(message.msgId) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(message.msgId) { mutableStateOf(false) }
+    val transfer = transferOf(message)
 
     LaunchedEffect(message.msgId, message.text) {
         bitmap = withContext(Dispatchers.IO) {
@@ -310,15 +389,24 @@ private fun InlineImage(session: AppSession, message: MessageEntity, onOpen: () 
 
     val current = bitmap
     if (current != null) {
-        Image(
-            bitmap = current,
-            contentDescription = null,
-            contentScale = ContentScale.Fit,
-            modifier = Modifier
-                .widthIn(max = 380.dp)
-                .clip(RoundedCornerShape(8.dp))
-                .clickable(onClick = onOpen),
-        )
+        // Своё фото видно сразу из местного файла, пока оно ещё заливается —
+        // кружок в таком случае ложится поверх картинки, как в Telegram.
+        Box(contentAlignment = Alignment.Center) {
+            Image(
+                bitmap = current,
+                contentDescription = null,
+                contentScale = ContentScale.Fit,
+                modifier = Modifier
+                    .widthIn(max = 380.dp)
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onOpen),
+            )
+            if (transfer != null) {
+                Surface(color = Color.Black.copy(alpha = 0.45f), shape = RoundedCornerShape(12.dp)) {
+                    TransferRing(transfer, onDark = true)
+                }
+            }
+        }
     } else {
         Box(
             modifier = Modifier
@@ -327,11 +415,15 @@ private fun InlineImage(session: AppSession, message: MessageEntity, onOpen: () 
                 .background(MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)),
             contentAlignment = Alignment.Center,
         ) {
-            Text(
-                if (failed) "Не удалось загрузить фото" else "Загрузка…",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            if (transfer != null) {
+                TransferRing(transfer, onDark = false)
+            } else {
+                Text(
+                    if (failed) "Не удалось загрузить фото" else "Загрузка…",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }
@@ -444,13 +536,17 @@ private fun OpenExternallyRow(
     icon: androidx.compose.ui.graphics.vector.ImageVector,
     label: String,
 ) {
+    val transfer = transferOf(message)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
         modifier = Modifier.clickable { openExternally(session, message) },
     ) {
         Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(36.dp))
-        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Column {
+            Text(label, style = MaterialTheme.typography.bodyMedium)
+            if (transfer != null) TransferBar(transfer, fallbackTotal = 0L)
+        }
     }
 }
 
@@ -458,6 +554,7 @@ private fun OpenExternallyRow(
 private fun FileRow(session: AppSession, message: MessageEntity, payload: JSONObject?) {
     val name = payload?.optString("file_name")?.takeIf(String::isNotBlank) ?: "Файл"
     val size = payload?.optLong("file_size", 0L) ?: 0L
+    val transfer = transferOf(message)
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -479,9 +576,11 @@ private fun FileRow(session: AppSession, message: MessageEntity, payload: JSONOb
         }
         Column {
             Text(name, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            if (size > 0) {
+            if (transfer != null) {
+                TransferBar(transfer, fallbackTotal = size)
+            } else if (size > 0) {
                 Text(
-                    aether.desktop.data.MediaCache.formatSize(size),
+                    formatBytes(size),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
