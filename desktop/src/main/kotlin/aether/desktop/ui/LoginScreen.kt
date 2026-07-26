@@ -4,18 +4,35 @@ import aether.desktop.auth.ActiveAccount
 import aether.desktop.auth.AuthRepository
 import aether.desktop.auth.TotpRequired
 import aether.desktop.data.ServerConfig
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Dns
+import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Pin
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -26,9 +43,14 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
 @Composable
@@ -81,89 +103,190 @@ fun LoginScreen(
         }
     }
 
-    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Column(
-            modifier = Modifier.width(if (qrMode) 420.dp else 360.dp).padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .verticalScroll(rememberScrollState()),
+        contentAlignment = Alignment.Center,
+    ) {
+        Surface(
+            shape = RoundedCornerShape(16.dp),
+            color = MaterialTheme.colorScheme.surface,
+            shadowElevation = 2.dp,
+            modifier = Modifier.padding(vertical = 24.dp),
         ) {
-            Text("Æther", style = MaterialTheme.typography.headlineLarge)
-            Text(
-                when {
-                    qrMode -> "Вход по QR-коду"
-                    isRegister -> "Создание аккаунта"
-                    else -> "Вход"
-                },
-                style = MaterialTheme.typography.titleMedium,
-                color = MaterialTheme.colorScheme.secondary,
-            )
-            OutlinedTextField(
-                value = server,
-                onValueChange = { server = it },
-                label = { Text("Сервер") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (qrMode) {
-                QrLoginPane(auth = auth, server = server, onSuccess = onSuccess)
-                TextButton(onClick = { qrMode = false; error = null }) {
-                    Text("Войти по паролю")
-                }
-                return@Column
-            }
-            OutlinedTextField(
-                value = username,
-                onValueChange = { username = it },
-                label = { Text("Имя пользователя") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            OutlinedTextField(
-                value = password,
-                onValueChange = { password = it },
-                label = { Text("Пароль") },
-                singleLine = true,
-                visualTransformation = PasswordVisualTransformation(),
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                modifier = Modifier.fillMaxWidth(),
-            )
-            if (totpNeeded && !isRegister) {
-                OutlinedTextField(
-                    value = totpCode,
-                    onValueChange = { totpCode = it.filter(Char::isDigit).take(6) },
-                    label = { Text("Код 2FA") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            error?.let {
-                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
-            }
-            Button(
-                onClick = ::submit,
-                enabled = !busy,
-                modifier = Modifier.fillMaxWidth(),
+            Column(
+                modifier = Modifier.width(360.dp).padding(horizontal = 28.dp, vertical = 32.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
             ) {
-                if (busy) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.width(20.dp),
+                Box(
+                    modifier = Modifier
+                        .size(88.dp)
+                        .clip(CircleShape)
+                        .background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        "Æ",
                         color = MaterialTheme.colorScheme.onPrimary,
-                        strokeWidth = 2.dp,
+                        fontSize = 44.sp,
+                        fontWeight = FontWeight.Bold,
                     )
-                } else {
-                    Text(if (isRegister) "Создать аккаунт" else "Войти")
                 }
-            }
-            TextButton(onClick = {
-                isRegister = !isRegister
-                totpNeeded = false
-                error = null
-            }) {
-                Text(if (isRegister) "У меня уже есть аккаунт" else "Создать новый аккаунт")
-            }
-            TextButton(onClick = { qrMode = true; error = null }) {
-                Text("Войти по QR-коду")
+                Spacer(Modifier.height(16.dp))
+                Text(
+                    "Æther",
+                    style = MaterialTheme.typography.headlineMedium,
+                    fontWeight = FontWeight.Bold,
+                )
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    "Мессенджер со сквозным шифрованием",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = TextAlign.Center,
+                )
+                Spacer(Modifier.height(20.dp))
+                TabRow(
+                    selectedTabIndex = if (qrMode) 0 else 1,
+                    containerColor = Color.Transparent,
+                ) {
+                    Tab(
+                        selected = qrMode,
+                        onClick = { qrMode = true; error = null },
+                        text = { Text("QR-код") },
+                    )
+                    Tab(
+                        selected = !qrMode,
+                        onClick = { qrMode = false; error = null },
+                        text = { Text("Пароль") },
+                    )
+                }
+                Spacer(Modifier.height(20.dp))
+                if (qrMode) {
+                    QrLoginPane(auth = auth, server = server, onSuccess = onSuccess)
+                    Spacer(Modifier.height(16.dp))
+                    ServerField(server) { server = it }
+                } else {
+                    PasswordPane(
+                        server = server,
+                        onServerChange = { server = it },
+                        username = username,
+                        onUsernameChange = { username = it },
+                        password = password,
+                        onPasswordChange = { password = it },
+                        totpCode = totpCode,
+                        onTotpChange = { totpCode = it.filter(Char::isDigit).take(6) },
+                        totpNeeded = totpNeeded && !isRegister,
+                        isRegister = isRegister,
+                        error = error,
+                        busy = busy,
+                        onSubmit = ::submit,
+                        onToggleRegister = {
+                            isRegister = !isRegister
+                            totpNeeded = false
+                            error = null
+                        },
+                    )
+                }
             }
         }
     }
+}
+
+/** Форма запасного входа по паролю: поля + кнопка на всю ширину карточки. */
+@Composable
+private fun PasswordPane(
+    server: String,
+    onServerChange: (String) -> Unit,
+    username: String,
+    onUsernameChange: (String) -> Unit,
+    password: String,
+    onPasswordChange: (String) -> Unit,
+    totpCode: String,
+    onTotpChange: (String) -> Unit,
+    totpNeeded: Boolean,
+    isRegister: Boolean,
+    error: String?,
+    busy: Boolean,
+    onSubmit: () -> Unit,
+    onToggleRegister: () -> Unit,
+) {
+    Column(
+        verticalArrangement = Arrangement.spacedBy(12.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.fillMaxWidth(),
+    ) {
+        ServerField(server, onServerChange)
+        OutlinedTextField(
+            value = username,
+            onValueChange = onUsernameChange,
+            label = { Text("Имя пользователя") },
+            leadingIcon = { Icon(Icons.Filled.Person, contentDescription = null) },
+            singleLine = true,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        OutlinedTextField(
+            value = password,
+            onValueChange = onPasswordChange,
+            label = { Text("Пароль") },
+            leadingIcon = { Icon(Icons.Filled.Lock, contentDescription = null) },
+            singleLine = true,
+            visualTransformation = PasswordVisualTransformation(),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+            isError = error != null,
+            modifier = Modifier.fillMaxWidth(),
+        )
+        if (totpNeeded) {
+            OutlinedTextField(
+                value = totpCode,
+                onValueChange = onTotpChange,
+                label = { Text("Код 2FA") },
+                leadingIcon = { Icon(Icons.Filled.Pin, contentDescription = null) },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        error?.let {
+            Text(
+                it,
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        // Кнопка не гасится на время запроса: submit() сам глотает повторные
+        // клики, а контейнер остаётся синим — иначе спиннер onPrimary
+        // неразличим на сером disabled-фоне.
+        Button(
+            onClick = onSubmit,
+            modifier = Modifier.fillMaxWidth().height(46.dp),
+        ) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(18.dp),
+                    color = MaterialTheme.colorScheme.onPrimary,
+                    strokeWidth = 2.dp,
+                )
+            } else {
+                Text(if (isRegister) "Создать аккаунт" else "Войти")
+            }
+        }
+        TextButton(onClick = onToggleRegister) {
+            Text(if (isRegister) "У меня уже есть аккаунт" else "Создать новый аккаунт")
+        }
+    }
+}
+
+@Composable
+private fun ServerField(value: String, onChange: (String) -> Unit) {
+    OutlinedTextField(
+        value = value,
+        onValueChange = onChange,
+        label = { Text("Сервер") },
+        leadingIcon = { Icon(Icons.Filled.Dns, contentDescription = null) },
+        singleLine = true,
+        modifier = Modifier.fillMaxWidth(),
+    )
 }
