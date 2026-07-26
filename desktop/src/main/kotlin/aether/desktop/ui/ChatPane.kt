@@ -86,6 +86,7 @@ fun ChatPane(
     session: AppSession,
     peerId: String,
     typingUntil: Long,
+    settings: aether.desktop.data.UiSettings,
     onShowInfo: () -> Unit,
     onForwardRequest: (List<MessageEntity>) -> Unit,
     onOpenViewer: (List<MessageEntity>, Int) -> Unit,
@@ -287,6 +288,16 @@ fun ChatPane(
     }
     LaunchedEffect(searchQuery) { hitIndex = 0 }
 
+    // Прыжок к исходному сообщению по клику на цитату: скролл и подсветка на
+    // пару секунд — тем же механизмом, что у находок поиска.
+    var jumpTarget by remember(peerId) { mutableStateOf<Int?>(null) }
+    LaunchedEffect(jumpTarget) {
+        val target = jumpTarget ?: return@LaunchedEffect
+        listState.animateScrollToItem(target)
+        delay(2_000)
+        jumpTarget = null
+    }
+
     // Разделитель непрочитанных: счётчик снимается один раз при открытии чата,
     // до того как отправка квитанции его обнулит.
     val unreadAnchor = remember(peerId) { mutableStateOf<String?>(null) }
@@ -325,6 +336,20 @@ fun ChatPane(
         onCopy = { msg ->
             val selection = java.awt.datatransfer.StringSelection(msg.text)
             java.awt.Toolkit.getDefaultToolkit().systemClipboard.setContents(selection, selection)
+        },
+        onQuoteClick = { msg ->
+            // Сначала точный ID; текстом ищем старые сообщения, сохранённые без
+            // reply_to_id. Цитата обрезана до 120 символов — сравниваем так же.
+            val index = msg.replyToId
+                ?.let { id -> messages.indexOfFirst { it.msgId == id } }
+                ?.takeIf { it >= 0 }
+                ?: msg.replyToText?.let { quote ->
+                    messages.indexOfFirst {
+                        it.text == quote ||
+                            aether.desktop.data.messagePreview(it.text, "").take(120) == quote
+                    }
+                }?.takeIf { it >= 0 }
+            if (index != null) jumpTarget = index
         },
     )
 
@@ -477,12 +502,26 @@ fun ChatPane(
                         }
                     }
                 }
+                // Серии сообщений одного автора (< 5 минут) слипаются, как в Telegram.
+                // В группах чужие сообщения не склеиваем: отправитель в истории
+                // не сохраняется, и подряд могли писать разные люди.
+                fun sameSeries(a: MessageEntity, b: MessageEntity): Boolean =
+                    a.isOut == b.isOut &&
+                        (a.isOut || chat?.type != 1) &&
+                        b.timestamp - a.timestamp < 300_000L &&
+                        formatDayHeader(a.timestamp) == formatDayHeader(b.timestamp)
+                val prev = messages.getOrNull(index - 1)
+                val next = messages.getOrNull(index + 1)
                 MessageBubble(
                     session = session,
                     message = message,
                     isGroupChat = (chat?.type ?: 0) in 1..2,
                     actions = actions,
-                    highlighted = index == currentHit,
+                    highlighted = index == currentHit || index == jumpTarget,
+                    firstInSeries = prev == null || !sameSeries(prev, message) ||
+                        message.msgId == unreadAnchor.value,
+                    lastInSeries = next == null || !sameSeries(message, next) ||
+                        next.msgId == unreadAnchor.value,
                     selectionMode = selectionMode,
                     selected = message.msgId in selectedIds,
                     onToggleSelect = { toggleSelect(message) },
@@ -617,6 +656,10 @@ fun ChatPane(
                             .onPreviewKeyEvent { event ->
                                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                 when {
+                                    // Режим из настроек: Ctrl+Enter отправляет, голый Enter
+                                    // отдаём полю — оно само вставит перенос строки.
+                                    event.key == Key.Enter && settings.sendOnCtrlEnter ->
+                                        if (event.isCtrlPressed) { send(); true } else false
                                     // Enter отправляет, Shift+Enter — перенос строки.
                                     event.key == Key.Enter && !event.isShiftPressed -> { send(); true }
                                     // Ctrl+V: картинка или файлы из буфера уходят вложением.

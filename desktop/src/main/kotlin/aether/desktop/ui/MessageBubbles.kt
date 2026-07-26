@@ -76,6 +76,8 @@ data class MessageActions(
     val onCopy: (MessageEntity) -> Unit,
     /** Открыть фото во встроенном просмотрщике (а не системным приложением). */
     val onOpenMedia: (MessageEntity) -> Unit,
+    /** Клик по цитате ответа — прыжок к исходному сообщению. */
+    val onQuoteClick: (MessageEntity) -> Unit,
 )
 
 private val reactionChoices = listOf("👍", "❤️", "🔥", "😂", "😮", "😢")
@@ -89,6 +91,10 @@ fun MessageBubble(
     actions: MessageActions,
     /** Найдено поиском по чату — подсвечиваем, как это делает Telegram. */
     highlighted: Boolean = false,
+    /** Первое ли сообщение серии одного автора — между сериями отступ больше. */
+    firstInSeries: Boolean = true,
+    /** Последнее ли в серии — хвостик пузыря рисуем только у него. */
+    lastInSeries: Boolean = true,
     selectionMode: Boolean = false,
     selected: Boolean = false,
     onToggleSelect: () -> Unit = {},
@@ -128,7 +134,9 @@ fun MessageBubble(
             // В режиме выделения клик по строке переключает галочку, а не
             // проваливается в содержимое сообщения.
             .then(if (selectionMode) Modifier.clickable(onClick = onToggleSelect) else Modifier)
-            .padding(horizontal = 12.dp, vertical = 2.dp)
+            .padding(horizontal = 12.dp)
+            // Сообщения одной серии стоят плотнее, между сериями — обычный отступ.
+            .padding(top = if (firstInSeries) 4.dp else 1.dp, bottom = 1.dp)
             .onPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Enter) { hovered = true }
             .onPointerEvent(androidx.compose.ui.input.pointer.PointerEventType.Exit) { hovered = false },
         horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
@@ -152,8 +160,8 @@ fun MessageBubble(
                 shape = RoundedCornerShape(
                     topStart = 14.dp,
                     topEnd = 14.dp,
-                    bottomStart = if (isMine) 14.dp else 4.dp,
-                    bottomEnd = if (isMine) 4.dp else 14.dp,
+                    bottomStart = if (isMine || !lastInSeries) 14.dp else 4.dp,
+                    bottomEnd = if (!isMine || !lastInSeries) 14.dp else 4.dp,
                 ),
                 modifier = Modifier.widthIn(max = 440.dp),
             ) {
@@ -169,7 +177,8 @@ fun MessageBubble(
                         Surface(
                             color = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f),
                             shape = RoundedCornerShape(6.dp),
-                            modifier = Modifier.padding(bottom = 4.dp),
+                            modifier = Modifier.padding(bottom = 4.dp)
+                                .clickable { actions.onQuoteClick(message) },
                         ) {
                             Text(
                                 quote,
