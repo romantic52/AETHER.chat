@@ -134,6 +134,10 @@ fun HomeScreen(
                         showInfo = false
                         selectedPeer = null
                     },
+                    onOpenMedia = { items, index ->
+                        viewerItems = items
+                        viewerIndex = index
+                    },
                 )
             }
         }
