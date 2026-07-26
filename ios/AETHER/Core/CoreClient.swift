@@ -350,9 +350,11 @@ actor CoreClient {
     private func peerDevices(_ peerId: String, force: Bool = false) throws -> [DeviceInfo] {
         let id = peerId.lowercased()
         if let cached = deviceCache[id] {
-            // Форс-рефетч гасим отдельным окном: иначе каждое застрявшее сообщение
-            // на каждом поллинге било бы по директории заново.
-            let fresh = Date().timeIntervalSince(force ? cached.forcedAt : cached.at) < 60
+            // Форс-рефетч гасим отдельным окном (короче обычного): иначе каждое
+            // застрявшее сообщение на каждом поллинге било бы по директории заново,
+            // но и ждать минуту при появлении нового устройства пира не годится.
+            let window: TimeInterval = force ? 10 : 60
+            let fresh = Date().timeIntervalSince(force ? cached.forcedAt : cached.at) < window
             if fresh { return cached.devices }
         }
         let devices = try api.listDevices(userId: id)
@@ -762,37 +764,45 @@ actor CoreClient {
         // а поход в сеть только ломал бы приём (пир мог выкинуть/переустановить
         // устройство, и его прошлые сообщения стали бы невскрываемыми навсегда).
         let devicePin = ((try? store.olmPinGet(peerKey: key)) ?? nil)
-        if devicePin?.curve25519B64 != senderIdentity {
-            // Устройство незнакомо или ключ разошёлся — вот теперь нужна директория:
-            // cross-signing (P8) и TOFU. Мастер пинится ЗДЕСЬ ЖЕ при первом контакте,
-            // иначе в чате, начатом пиром, защита не включалась бы никогда.
+        let deviceKnown = devicePin?.curve25519B64 == senderIdentity
+        let masterArmed = ((try? store.masterPinGet(peerId: peer)) ?? nil) != nil
+        // Директория нужна, когда устройство незнакомо (TOFU + cross-signing) ИЛИ
+        // когда мастер пира ещё не вооружён. Второе обязательно: в чатах, переживших
+        // P7, device-пин уже есть, и без этой ветки мастер не пинился бы никогда —
+        // тогда подсадка неподписанного устройства снова проходила бы молча.
+        if !deviceKnown || !masterArmed {
             var devices = (try? peerDevices(peer)) ?? []
             if !devices.contains(where: { $0.deviceId == senderDevice }) {
                 devices = (try? peerDevices(peer, force: true)) ?? devices
             }
-            guard let entry = devices.first(where: { $0.deviceId == senderDevice }),
-                  entry.identityKeyB64 == senderIdentity else {
-                // Fail-closed: и обычный сетевой сбой (повторим поллингом), и способ
-                // сервера не дать гейту вооружиться. Молча доверять нельзя.
+            let entry = devices.first(where: { $0.deviceId == senderDevice })
+            if let entry, entry.identityKeyB64 == senderIdentity {
+                do {
+                    try verifyDeviceOwnership(peer: peer, deviceId: senderDevice,
+                                              curve: senderIdentity, ed: entry.ed25519KeyB64,
+                                              master: entry.masterKeyB64, deviceSig: entry.deviceSigB64)
+                } catch let alert as KeyTrustAlert {
+                    // Тревога уже зарегистрирована в verifyDeviceOwnership (баннер в
+                    // чате даёт явный выход) — здесь только прекращаем разбор конверта.
+                    throw CoreError.Crypto(msg: "ratchet: \(alert.message)")
+                }
+                if !deviceKnown {
+                    // В пин уходит ПРОВЕРЕННЫЙ мастером ed25519 (а не nil): иначе
+                    // анти-стриппинг не вооружался бы для чатов, начатых пиром.
+                    let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
+                                                          ed25519B64: entry.ed25519KeyB64, nowTs: nowTs())
+                    if pinStatus == .mismatch {
+                        pendingInboundKeys[key] = senderIdentity
+                        throw CoreError.Crypto(msg: "ratchet: olm-ключ отправителя не совпадает с запиненным — возможна подмена")
+                    }
+                }
+            } else if !deviceKnown {
+                // Fail-closed только для НЕзнакомого устройства: и обычный сетевой сбой
+                // (повторим поллингом), и способ сервера не дать гейту вооружиться.
                 throw CoreError.Crypto(msg: "ratchet: устройство отправителя не подтверждено директорией его аккаунта — повторим позже")
             }
-            do {
-                try verifyDeviceOwnership(peer: peer, deviceId: senderDevice,
-                                          curve: senderIdentity, ed: entry.ed25519KeyB64,
-                                          master: entry.masterKeyB64, deviceSig: entry.deviceSigB64)
-            } catch let alert as KeyTrustAlert {
-                // Тревога уже зарегистрирована в verifyDeviceOwnership (баннер в чате
-                // даёт явный выход) — здесь только прекращаем разбор конверта.
-                throw CoreError.Crypto(msg: "ratchet: \(alert.message)")
-            }
-            // В пин уходит ПРОВЕРЕННЫЙ мастером ed25519 (а не nil): иначе анти-стриппинг
-            // не вооружался бы для чатов, начатых пиром.
-            let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
-                                                  ed25519B64: entry.ed25519KeyB64, nowTs: nowTs())
-            if pinStatus == .mismatch {
-                pendingInboundKeys[key] = senderIdentity
-                throw CoreError.Crypto(msg: "ratchet: olm-ключ отправителя не совпадает с запиненным — возможна подмена")
-            }
+            // Знакомое устройство при недоступной директории — вскрываем: пин уже
+            // доказывает подлинность, а блокировка потеряла бы переписку зря.
         }
 
         // Есть сессия — пробуем ею. prekey (type 0) при живой сессии — обычное дело
