@@ -35,6 +35,20 @@ tasks.register<JavaExec>("smoke") {
     classpath = sourceSets["main"].runtimeClasspath
 }
 
+// Headless-smoke мессаджинга (DevMsgSmoke.kt): .\gradlew.bat msgsmoke
+tasks.register<JavaExec>("msgsmoke") {
+    group = "verification"
+    mainClass.set("aether.desktop.DevMsgSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
+// Живой headless-клиент против эмулятора (DevPeerSmoke.kt): .\gradlew.bat peersmoke --args="<peer>"
+tasks.register<JavaExec>("peersmoke") {
+    group = "verification"
+    mainClass.set("aether.desktop.DevPeerSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
 compose.desktop {
     application {
         mainClass = "aether.desktop.MainKt"
