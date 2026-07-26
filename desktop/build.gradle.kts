@@ -40,6 +40,21 @@ dependencies {
     implementation("org.slf4j:slf4j-nop:2.0.16")
     // Запись голосовых: чистая Java-реализация LAME (MP3 играют все клиенты).
     implementation("de.sciss:jump3r:1.0.5")
+    // Кружки и видео: SPI-декодеров видео в JVM нет, декодируем ffmpeg-ом через
+    // bytedeco. Нативы прибиты к windows-x86_64: *-platform-артефакты тянут все
+    // ОС разом и весят сотни мегабайт. Дистрибутиву jpackage они не мешают —
+    // JavaCPP распаковывает библиотеки из jar в кеш пользователя на первом
+    // запуске, класть их рядом с exe не требуется.
+    implementation("org.bytedeco:javacpp:1.5.11")
+    implementation("org.bytedeco:javacpp:1.5.11:windows-x86_64")
+    implementation("org.bytedeco:ffmpeg:7.1-1.5.11")
+    implementation("org.bytedeco:ffmpeg:7.1-1.5.11:windows-x86_64")
+    // От javacv нужен только Java-мост FFmpegFrameGrabber; его транзитивные
+    // зависимости (opencv, tesseract и прочие нативы) отсекаются, а javacpp и
+    // ffmpeg возвращаются явными строками выше.
+    implementation("org.bytedeco:javacv:1.5.11") {
+        exclude(group = "org.bytedeco")
+    }
 }
 
 kotlin {
@@ -79,6 +94,13 @@ tasks.register<JavaExec>("pairsmoke") {
 tasks.register<JavaExec>("audiosmoke") {
     group = "verification"
     mainClass.set("aether.desktop.DevAudioSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
+// Смоук видеодекодера (DevVideoSmoke.kt): .\gradlew.bat videosmoke --args="<file.mp4>"
+tasks.register<JavaExec>("videosmoke") {
+    group = "verification"
+    mainClass.set("aether.desktop.DevVideoSmokeKt")
     classpath = sourceSets["main"].runtimeClasspath
 }
 
