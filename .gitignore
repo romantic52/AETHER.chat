@@ -50,3 +50,34 @@ ios/AETHER/CoreFFI/Generated/
 
 # Локальные настройки редактора
 .vscode/settings.json
+
+# Отладочные скриншоты/дампы UI-сессий в корне (adb screencap / uiautomator)
+/aether_*
+/emulator_*
+/ratchet_*
+/edge_*
+/auth_*
+/status_*
+/settings_*
+/login_*
+/logout_*
+/register_*
+/isolation_*
+/window*
+/dim_fix*
+/group_open.xml
+/new_settings.xml
+/peer_status.xml
+/profile_status.xml
+/search_group.xml
+/switch_back.xml
+/final_runtime.xml
+/trace_*.txt
+
+# Локальные каталоги других агентов/сборок
+.codex/
+.sixth/
+.agents/
+android/.emulator-codex/
+android/.gradle-codex/
+ios/_artifact/

@@ -357,6 +357,7 @@ class MainActivity : FragmentActivity() {
                             onNavigateToProfileSettings = { navController.navigateSingle("profile_settings") },
                             onNavigateToNotificationsSettings = { navController.navigateSingle("notifications_settings") },
                             onNavigateToPrivacySettings = { navController.navigateSingle("privacy_settings") },
+                            onNavigateToSecuritySettings = { navController.navigateSingle("security_settings") },
                             onNavigateToAboutApp = { navController.navigateSingle("about_app") },
                             onNavigateToExperiments = { navController.navigateSingle("secret_settings") },
                             onStartAudioCall = { peerId -> activeCall = Triple(peerId, false, false) },
@@ -405,6 +406,39 @@ class MainActivity : FragmentActivity() {
                         }
                     }
 
+                    composable("security_settings") {
+                        val apiSafe = api
+                        if (apiSafe == null) {
+                            androidx.compose.runtime.LaunchedEffect(Unit) {
+                                navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                            }
+                            return@composable
+                        }
+                        org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
+                            org.groktest.securemessenger.ui.screens.SecurityScreen(
+                                api = apiSafe,
+                                myId = myId,
+                                onBack = { navController.popBackStack() },
+                                onLoggedOut = {
+                                    // Сервер уже отозвал сессию этого устройства («Выйти»
+                                    // на экране безопасности) — локально гасим всё, как при logout.
+                                    sessionPrefs.clear()
+                                    repo?.shutdown()
+                                    repo = null
+                                    AetherService.onNewMessage = null
+                                    AetherService.chatLookup = null
+                                    stopService(Intent(this@MainActivity, AetherService::class.java))
+                                    api = null
+                                    keys = null
+                                    myId = ""
+                                    navController.navigate("login") {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                }
+                            )
+                        }
+                    }
+
                     composable("about_app") {
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             org.groktest.securemessenger.ui.screens.AboutAppScreen(
@@ -423,6 +457,7 @@ class MainActivity : FragmentActivity() {
                                 onNavigateToProfile = { navController.navigateSingle("profile_settings") },
                                 onNavigateToNotifications = { navController.navigateSingle("notifications_settings") },
                                 onNavigateToPrivacy = { navController.navigateSingle("privacy_settings") },
+                                onNavigateToSecurity = { navController.navigateSingle("security_settings") },
                                 onNavigateToAbout = { navController.navigateSingle("about_app") },
                                 onNavigateToCustomization = { navController.navigateSingle("customization") },
                                 onNavigateToExperiments = { navController.navigateSingle("secret_settings") }

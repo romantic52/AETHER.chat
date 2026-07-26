@@ -19,6 +19,7 @@ import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Science
+import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
@@ -54,6 +55,7 @@ fun SettingsScreen(
     onNavigateToProfile: () -> Unit,
     onNavigateToNotifications: () -> Unit,
     onNavigateToPrivacy: () -> Unit,
+    onNavigateToSecurity: () -> Unit = {},
     onNavigateToAbout: () -> Unit,
     onNavigateToCustomization: () -> Unit,
     onNavigateToExperiments: () -> Unit,
@@ -218,6 +220,12 @@ fun SettingsScreen(
                 subtitle = "Блокировка, скрытие данных",
                 icon = { Icon(Icons.Default.Lock, contentDescription = null) },
                 onClick = onNavigateToPrivacy
+            )
+            SettingsItem(
+                title = "Сессии и безопасность",
+                subtitle = "Устройства, 2FA, удаление данных",
+                icon = { Icon(Icons.Default.Shield, contentDescription = null) },
+                onClick = onNavigateToSecurity
             )
             SettingsItem(
                 title = "Данные и память",

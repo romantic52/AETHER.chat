@@ -5,10 +5,14 @@ Relay-сервер: хранит только публичные ключи и �
 
 from __future__ import annotations
 
+import base64
+import hmac
 import json
 import os
 import psycopg2
 import psycopg2.extras
+import struct
+import time
 import uuid
 import hashlib
 import secrets
@@ -40,18 +44,35 @@ WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 class ConnectionManager:
     def __init__(self):
         self.active_connections: dict[str, set[WebSocket]] = {}
+        # Отзыв токена должен рвать и живой WebSocket, открытый этим токеном,
+        # иначе после /logout остаётся рабочий realtime-канал.
+        self.token_connections: dict[str, set[WebSocket]] = {}
 
-    async def connect(self, websocket: WebSocket, user_id: str):
+    async def connect(self, websocket: WebSocket, user_id: str, token: str = ""):
         await websocket.accept()
         if user_id not in self.active_connections:
             self.active_connections[user_id] = set()
         self.active_connections[user_id].add(websocket)
+        if token:
+            self.token_connections.setdefault(token, set()).add(websocket)
 
-    def disconnect(self, websocket: WebSocket, user_id: str):
+    def disconnect(self, websocket: WebSocket, user_id: str, token: str = ""):
         if user_id in self.active_connections:
             self.active_connections[user_id].discard(websocket)
             if not self.active_connections[user_id]:
                 del self.active_connections[user_id]
+        if token and token in self.token_connections:
+            self.token_connections[token].discard(websocket)
+            if not self.token_connections[token]:
+                del self.token_connections[token]
+
+    async def close_for_token(self, token: str):
+        """Закрыть все сокеты, поднятые отозванным токеном (policy violation 1008)."""
+        for ws in list(self.token_connections.pop(token, ())):
+            try:
+                await ws.close(code=1008)
+            except Exception:
+                pass
 
     async def send_personal_message(self, message: dict, user_id: str):
         if user_id in self.active_connections:
@@ -123,6 +144,30 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Browser hardening: user content is ciphertext until it reaches the client,
+# and the client must not be able to turn it into executable markup.
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("Content-Security-Policy", (
+        "default-src 'self'; base-uri 'self'; object-src 'none'; "
+        "frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; "
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://cdnjs.cloudflare.com; "
+        "font-src 'self' https://fonts.gstatic.com https://cdnjs.cloudflare.com; "
+        "img-src 'self' data: blob: https: http:; media-src 'self' data: blob: https: http:; "
+        "connect-src 'self' https: wss: http://localhost:* http://127.0.0.1:* "
+        "http://10.0.2.2:* ws://localhost:* ws://127.0.0.1:* ws://10.0.2.2:*"
+    ))
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(self), microphone=(self), geolocation=()")
+    # Код веб-клиента без версионирования имён файлов: браузер обязан
+    # ревалидировать (ETag), иначе после деплоя неделями живёт старый app.js.
+    if request.url.path.endswith((".js", ".html", ".css")) or request.url.path == "/":
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
 SESSION_LIFETIME_DAYS = 30
 
 
@@ -185,9 +230,10 @@ def verify_password(password: str, hashed: str) -> bool:
 
 # --- Session management (#3): check expiry ---
 def get_current_user(authorization: str = Header(None)) -> str:
-    if not authorization or not authorization.startswith("Bearer "):
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
         raise HTTPException(401, "Missing or invalid authorization header")
-    token = authorization.split(" ")[1]
+    token = token.strip()
     with db_conn() as cur:
         cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,))
         row = cur.fetchone()
@@ -256,8 +302,9 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS message_receipts (
                 message_id TEXT NOT NULL,
                 user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT 'primary',
                 acked_at TEXT NOT NULL,
-                PRIMARY KEY (message_id, user_id)
+                PRIMARY KEY (message_id, user_id, device_id)
             );
             -- Просмотры постов каналов: уникальный зритель на сообщение.
             CREATE TABLE IF NOT EXISTS post_views (
@@ -279,9 +326,10 @@ def init_db() -> None:
             -- одноразовый: при claim удаляется, чтобы обеспечить forward secrecy.
             CREATE TABLE IF NOT EXISTS one_time_keys (
                 user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL DEFAULT 'primary',
                 key_id TEXT NOT NULL,
                 key_b64 TEXT NOT NULL,
-                PRIMARY KEY (user_id, key_id)
+                PRIMARY KEY (user_id, device_id, key_id)
             );
             """
         )
@@ -369,6 +417,69 @@ def init_db() -> None:
         has_encrypted_key = cur.fetchone()[0]
         if not has_encrypted_key:
             cur.execute("ALTER TABLE users ADD COLUMN encrypted_private_key_b64 TEXT")
+
+        # Password-encrypted Olm account pickle for browser recovery. The relay
+        # never receives the account plaintext or password-derived key.
+        cur.execute(
+            """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                               WHERE table_name='users' AND column_name='encrypted_olm_account_b64')"""
+        )
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE users ADD COLUMN encrypted_olm_account_b64 TEXT")
+
+        # Multi-device (v1): устройство = свой Olm-аккаунт. Всё, что было
+        # загружено до этой миграции, становится устройством 'primary' —
+        # старые клиенты продолжают работать, не зная о девайсах.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS crypto_devices (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                identity_key_b64 TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, device_id)
+            )"""
+        )
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='one_time_keys' AND column_name='device_id')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE one_time_keys ADD COLUMN device_id TEXT NOT NULL DEFAULT 'primary'")
+            cur.execute("ALTER TABLE one_time_keys DROP CONSTRAINT one_time_keys_pkey")
+            cur.execute("ALTER TABLE one_time_keys ADD PRIMARY KEY (user_id, device_id, key_id)")
+        # ACK'и — per-device: иначе подтверждение с одного устройства прятало бы
+        # групповые сообщения от остальных устройств того же аккаунта.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='message_receipts' AND column_name='device_id')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE message_receipts ADD COLUMN device_id TEXT NOT NULL DEFAULT 'primary'")
+            cur.execute("ALTER TABLE message_receipts DROP CONSTRAINT message_receipts_pkey")
+            cur.execute("ALTER TABLE message_receipts ADD PRIMARY KEY (message_id, user_id, device_id)")
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='messages' AND column_name='recipient_device_id')""")
+        if not cur.fetchone()[0]:
+            # NULL = адресовано аккаунту целиком (группы, legacy-клиенты).
+            cur.execute("ALTER TABLE messages ADD COLUMN recipient_device_id TEXT")
+        cur.execute(
+            """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64, created_at)
+               SELECT LOWER(user_id), 'primary', olm_identity_key, %s FROM users
+               WHERE olm_identity_key IS NOT NULL
+               ON CONFLICT (user_id, device_id) DO NOTHING""",
+            (_utc_now(),),
+        )
+
+        # Контроль сессий: сессия привязывается к крипто-устройству (клиент
+        # сообщает device_id после логина) — чтобы можно было выкинуть
+        # конкретное устройство. 2FA: TOTP-секрет на аккаунт.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='sessions' AND column_name='device_id')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
+        for col, ddl in [("totp_secret", "TEXT"),
+                         ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")]:
+            cur.execute(
+                """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name='users' AND column_name=%s)""", (col,))
+            if not cur.fetchone()[0]:
+                cur.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
             
         # Check username
         cur.execute(
@@ -453,72 +564,105 @@ def init_db() -> None:
         # (#A1) Миграция: старые личные сообщения с delivered=1 считаем подтверждёнными,
         # иначе после перехода на ACK они приедут получателям повторно.
         cur.execute(
-            """INSERT INTO message_receipts (message_id, user_id, acked_at)
-               SELECT m.id, LOWER(m.recipient_id), %s FROM messages m
+            """INSERT INTO message_receipts (message_id, user_id, device_id, acked_at)
+               SELECT m.id, LOWER(m.recipient_id), 'primary', %s FROM messages m
                WHERE m.delivered = 1
-               ON CONFLICT (message_id, user_id) DO NOTHING""",
+               ON CONFLICT (message_id, user_id, device_id) DO NOTHING""",
             (_utc_now(),),
         )
 
 
 class RegisterRequest(BaseModel):
-    user_id: str = Field(min_length=2, max_length=64)
-    public_key_b64: str = Field(min_length=16)
-    encrypted_private_key_b64: Optional[str] = None
-    password: str = Field(min_length=8)
+    user_id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    public_key_b64: str = Field(min_length=16, max_length=128)
+    encrypted_private_key_b64: Optional[str] = Field(default=None, max_length=100_000)
+    encrypted_olm_account_b64: Optional[str] = Field(default=None, max_length=100_000)
+    password: str = Field(min_length=8, max_length=256)
 
 
 class LoginRequest(BaseModel):
+    # Login stays compatible with pre-policy accounts; registration below is
+    # stricter for all new ids/passwords.
     user_id: str = Field(min_length=2, max_length=64)
-    # Старые аккаунты могли быть созданы до требования 8 символов.
-    # Новые пароли проверяет RegisterRequest, а вход обязан оставаться совместимым.
     password: str = Field(min_length=1, max_length=256)
+    # 2FA: обязателен, когда на аккаунте включён TOTP.
+    totp_code: Optional[str] = Field(default=None, max_length=10)
+
+
+# --- TOTP (RFC 6238, sha1/30s/6 цифр — совместимо с любым аутентификатором) ---
+
+def _totp_at(secret_b32: str, at: float, step: int = 30) -> str:
+    key = base64.b32decode(secret_b32)
+    msg = struct.pack(">Q", int(at // step))
+    digest = hmac.new(key, msg, hashlib.sha1).digest()
+    off = digest[-1] & 0x0F
+    code = (int.from_bytes(digest[off:off + 4], "big") & 0x7FFFFFFF) % 1_000_000
+    return f"{code:06d}"
+
+
+def _totp_valid(secret_b32: str, code: Optional[str]) -> bool:
+    supplied = str(code or "").strip()
+    if len(supplied) != 6 or not supplied.isdigit():
+        return False
+    now = time.time()
+    # ±1 шаг — терпимость к рассинхрону часов.
+    return any(hmac.compare_digest(_totp_at(secret_b32, now + drift * 30), supplied)
+               for drift in (-1, 0, 1))
 
 
 class UploadKeysRequest(BaseModel):
-    identity_key_b64: str
+    identity_key_b64: str = Field(min_length=16, max_length=128)
     # {key_id: key_b64}
-    one_time_keys: dict
+    one_time_keys: dict[str, str] = Field(default_factory=dict, max_length=100)
+    # Multi-device: старые клиенты поле не шлют и остаются устройством 'primary'.
+    device_id: str = Field(default="primary", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class UpdateOlmBackupRequest(BaseModel):
+    encrypted_olm_account_b64: str = Field(min_length=16, max_length=100_000)
 
 
 class SendMessageRequest(BaseModel):
-    sender_id: str
-    recipient_id: str
+    sender_id: str = Field(min_length=2, max_length=64)
+    recipient_id: str = Field(min_length=2, max_length=64)
     envelope: dict
     # (#A2) Идемпотентность: клиент генерирует UUID сам (паттерн random_id
     # Telegram). Повторная отправка после обрыва сети не создаёт дубликат.
-    client_id: Optional[str] = None
+    client_id: Optional[str] = Field(default=None, max_length=64)
+    # Multi-device: копия для конкретного устройства получателя. None — всему
+    # аккаунту (группы, legacy-отправители → устройство 'primary').
+    target_device_id: Optional[str] = Field(default=None, min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 class UpdateKeyRequest(BaseModel):
-    public_key_b64: str = Field(min_length=16)
+    public_key_b64: str = Field(min_length=16, max_length=128)
 
 class UpdateProfileRequest(BaseModel):
-    username: Optional[str] = None
-    display_name: Optional[str] = None
-    avatar_file_id: Optional[str] = None
-    bio: Optional[str] = None
+    username: Optional[str] = Field(default=None, min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    display_name: Optional[str] = Field(default=None, max_length=128)
+    avatar_file_id: Optional[str] = Field(default=None, max_length=128)
+    bio: Optional[str] = Field(default=None, max_length=2_000)
     status_emoji: Optional[str] = Field(default=None, max_length=16)
 
 class CreateGroupRequest(BaseModel):
-    id: str = Field(min_length=2, max_length=64)
-    name: str
-    description: str = ""
+    id: str = Field(min_length=2, max_length=64, pattern=r"^[A-Za-z0-9_]+$")
+    name: str = Field(min_length=1, max_length=128)
+    description: str = Field(default="", max_length=2_000)
     is_channel: bool = False
-    encrypted_key_b64: str
+    encrypted_key_b64: str = Field(min_length=16, max_length=10_000)
     # (#A6) Группа обсуждений канала (телеграм-паттерн «комментарии»):
     # создаётся клиентом ДО канала и подвязывается при создании
-    linked_group_id: Optional[str] = None
+    linked_group_id: Optional[str] = Field(default=None, max_length=64)
 
 class AddGroupMemberRequest(BaseModel):
-    user_id: str
-    encrypted_key_b64: str
-    role: str = "member"
+    user_id: str = Field(min_length=2, max_length=64)
+    encrypted_key_b64: str = Field(min_length=16, max_length=10_000)
+    role: str = Field(default="member", pattern=r"^(member|admin)$")
 
 # (#12) Edit group request
 class UpdateGroupRequest(BaseModel):
-    name: Optional[str] = None
-    description: Optional[str] = None
-    avatar_file_id: Optional[str] = None
+    name: Optional[str] = Field(default=None, min_length=1, max_length=128)
+    description: Optional[str] = Field(default=None, max_length=2_000)
+    avatar_file_id: Optional[str] = Field(default=None, max_length=128)
 
 @app.on_event("startup")
 def startup() -> None:
@@ -538,8 +682,12 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
         if exist:
             raise HTTPException(400, "Username already taken")
         cur.execute(
-            "INSERT INTO users (user_id, public_key_b64, encrypted_private_key_b64, password_hash, created_at) VALUES (%s, %s, %s, %s, %s)",
-            (body.user_id.lower(), body.public_key_b64, body.encrypted_private_key_b64, hashed, _utc_now()),
+            """INSERT INTO users
+               (user_id, public_key_b64, encrypted_private_key_b64,
+                encrypted_olm_account_b64, password_hash, created_at)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (body.user_id.lower(), body.public_key_b64, body.encrypted_private_key_b64,
+             body.encrypted_olm_account_b64, hashed, _utc_now()),
         )
     return {"ok": True, "user_id": body.user_id.lower()}
 
@@ -549,12 +697,23 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
 @limiter.limit("15/minute;100/hour")
 def login_user(body: LoginRequest, request: Request) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT password_hash, public_key_b64, encrypted_private_key_b64, user_id FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.user_id,))
+        cur.execute(
+            """SELECT password_hash, public_key_b64, encrypted_private_key_b64,
+                      encrypted_olm_account_b64, user_id, totp_secret, totp_enabled
+               FROM users WHERE LOWER(user_id) = LOWER(%s)""",
+            (body.user_id,),
+        )
         row = cur.fetchone()
     if not row or not row["password_hash"]:
         raise HTTPException(401, "Invalid username or password")
     if not verify_password(body.password, row["password_hash"]):
         raise HTTPException(401, "Invalid username or password")
+    # 2FA: пароль верный, но без валидного кода сессия не выдаётся.
+    if row["totp_enabled"] and row["totp_secret"]:
+        if not body.totp_code:
+            raise HTTPException(401, "totp_required")
+        if not _totp_valid(row["totp_secret"], body.totp_code):
+            raise HTTPException(401, "totp_invalid")
     
     # Generate session token with expiry
     token = secrets.token_hex(32)
@@ -569,17 +728,212 @@ def login_user(body: LoginRequest, request: Request) -> dict:
         "token": token,
         "user_id": row["user_id"].lower(),
         "public_key_b64": row["public_key_b64"],
-        "encrypted_private_key_b64": row["encrypted_private_key_b64"]
+        "encrypted_private_key_b64": row["encrypted_private_key_b64"],
+        "encrypted_olm_account_b64": row["encrypted_olm_account_b64"],
     }
 
 
-# (#A4) Полный выход: токен отзывается на сервере, а не только забывается клиентом
+# (#A4) Полный выход: токен отзывается на сервере, а не только забывается
+# клиентом, и живые WebSocket этого токена закрываются сразу.
 @app.post("/logout")
-def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
-    token = authorization.split(" ")[1]
+async def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
+    token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+    await manager.close_for_token(token)
     return {"ok": True}
+
+
+# --- Контроль сессий (multi-device) ---
+
+class BindDeviceRequest(BaseModel):
+    device_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+class TotpCodeRequest(BaseModel):
+    code: str = Field(min_length=6, max_length=10)
+
+
+class WipeRequest(BaseModel):
+    password: str = Field(min_length=1, max_length=256)
+
+
+@app.put("/sessions/me/device")
+def bind_session_device(body: BindDeviceRequest, authorization: str = Header(None),
+                        current_user: str = Depends(get_current_user)) -> dict:
+    """Клиент после логина сообщает своё крипто-устройство: сессия становится
+    выкидываемой адресно (экран «Сессии»)."""
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute("UPDATE sessions SET device_id = %s WHERE token = %s", (body.device_id, token))
+    return {"ok": True}
+
+
+KICK_MIN_DEVICE_AGE_HOURS = 12
+
+
+def _device_age_hours(cur, user_id: str, device_id: Optional[str]) -> Optional[float]:
+    if not device_id:
+        return None
+    cur.execute(
+        "SELECT created_at FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+        (user_id, device_id))
+    row = cur.fetchone()
+    if not row:
+        return None
+    try:
+        created = datetime.fromisoformat(row["created_at"])
+    except (ValueError, TypeError):
+        return None
+    return (datetime.now(timezone.utc) - created).total_seconds() / 3600
+
+
+@app.get("/sessions/me")
+def list_sessions(authorization: str = Header(None),
+                  current_user: str = Depends(get_current_user)) -> dict:
+    """Устройства аккаунта + их активные сессии. current — сессия запроса."""
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT device_id, created_at FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
+            (current_user,))
+        devices = {r["device_id"]: {"device_id": r["device_id"], "device_created_at": r["created_at"],
+                                    "sessions": 0, "current": False} for r in cur.fetchall()}
+        cur.execute(
+            "SELECT token, device_id, created_at FROM sessions WHERE LOWER(user_id) = LOWER(%s)",
+            (current_user,))
+        unbound = 0
+        my_device = None
+        for s in cur.fetchall():
+            dev = s["device_id"]
+            if dev in devices:
+                devices[dev]["sessions"] += 1
+                if s["token"] == token:
+                    devices[dev]["current"] = True
+                    my_device = dev
+            else:
+                unbound += 1
+        my_age = _device_age_hours(cur, current_user, my_device)
+    can_kick = my_age is not None and my_age >= KICK_MIN_DEVICE_AGE_HOURS
+    return {"devices": list(devices.values()), "unbound_sessions": unbound,
+            "can_kick": can_kick, "kick_min_hours": KICK_MIN_DEVICE_AGE_HOURS}
+
+
+@app.delete("/sessions/device/{device_id}")
+async def kick_device(device_id: str, authorization: str = Header(None),
+                      current_user: str = Depends(get_current_user)) -> dict:
+    """Выкинуть устройство: отозвать его сессии, закрыть WS, удалить его
+    Olm-устройство и prekeys. Анти-вор: с недавно добавленного устройства
+    (моложе 12 часов) выкидывать другие нельзя."""
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
+        me = cur.fetchone()
+        my_device = me["device_id"] if me else None
+        if device_id != my_device:
+            age = _device_age_hours(cur, current_user, my_device)
+            if age is None or age < KICK_MIN_DEVICE_AGE_HOURS:
+                raise HTTPException(
+                    403,
+                    f"С нового устройства выкидывать другие можно через {KICK_MIN_DEVICE_AGE_HOURS} ч.")
+        cur.execute(
+            "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s RETURNING token",
+            (current_user, device_id))
+        revoked = [r["token"] for r in cur.fetchall()]
+        cur.execute(
+            "DELETE FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        cur.execute(
+            "DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        if device_id == "primary":
+            # Легаси-поля primary тоже гасим, иначе старый клиент продолжит claim.
+            cur.execute("UPDATE users SET olm_identity_key = NULL WHERE LOWER(user_id) = LOWER(%s)",
+                        (current_user,))
+    for t in revoked:
+        await manager.close_for_token(t)
+    return {"ok": True, "revoked_sessions": len(revoked)}
+
+
+# --- 2FA (TOTP) ---
+
+@app.get("/2fa/status")
+def totp_status(current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT totp_enabled FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+    return {"enabled": bool(row and row["totp_enabled"])}
+
+
+@app.post("/2fa/setup")
+def totp_setup(current_user: str = Depends(get_current_user)) -> dict:
+    """Выдать новый секрет (2FA ещё не включена — до подтверждения кодом)."""
+    secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+    with db_conn() as cur:
+        cur.execute(
+            "UPDATE users SET totp_secret = %s, totp_enabled = 0 WHERE LOWER(user_id) = LOWER(%s)",
+            (secret, current_user))
+    uri = f"otpauth://totp/AETHER:{current_user}?secret={secret}&issuer=AETHER"
+    return {"secret": secret, "otpauth_uri": uri}
+
+
+@app.post("/2fa/enable")
+def totp_enable(body: TotpCodeRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT totp_secret FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+        if not row or not row["totp_secret"]:
+            raise HTTPException(400, "Сначала запросите секрет: POST /2fa/setup")
+        if not _totp_valid(row["totp_secret"], body.code):
+            raise HTTPException(400, "Неверный код")
+        cur.execute("UPDATE users SET totp_enabled = 1 WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+    return {"ok": True}
+
+
+@app.post("/2fa/disable")
+def totp_disable(body: TotpCodeRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute("SELECT totp_secret, totp_enabled FROM users WHERE LOWER(user_id) = LOWER(%s)",
+                    (current_user,))
+        row = cur.fetchone()
+        if not row or not row["totp_enabled"]:
+            return {"ok": True}
+        if not _totp_valid(row["totp_secret"], body.code):
+            raise HTTPException(400, "Неверный код")
+        cur.execute(
+            "UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE LOWER(user_id) = LOWER(%s)",
+            (current_user,))
+    return {"ok": True}
+
+
+# --- Паника: удалить всё ---
+
+@app.post("/users/me/wipe")
+async def wipe_account(body: WipeRequest, authorization: str = Header(None),
+                       current_user: str = Depends(get_current_user)) -> dict:
+    """«Удалить всё»: подчистить сообщения на сервере, выйти из всех групп и
+    каналов, отозвать все сессии кроме текущей. Аккаунт и ключи остаются."""
+    with db_conn() as cur:
+        cur.execute("SELECT password_hash FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        row = cur.fetchone()
+    if not row or not verify_password(body.password, row["password_hash"]):
+        raise HTTPException(401, "Неверный пароль")
+    token = authorization.split(" ", 1)[1].strip()
+    with db_conn() as cur:
+        cur.execute(
+            "DELETE FROM messages WHERE LOWER(sender_id) = LOWER(%s) OR LOWER(recipient_id) = LOWER(%s)",
+            (current_user, current_user))
+        purged = cur.rowcount
+        cur.execute("DELETE FROM group_members WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        left_groups = cur.rowcount
+        cur.execute(
+            "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND token != %s RETURNING token",
+            (current_user, token))
+        revoked = [r["token"] for r in cur.fetchall()]
+    for t in revoked:
+        await manager.close_for_token(t)
+    return {"ok": True, "purged_messages": purged, "left_groups": left_groups,
+            "revoked_sessions": len(revoked)}
 
 
 # (#A4) Только с авторизацией: иначе перечисление пользователей без токена
@@ -604,58 +958,201 @@ def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_cu
 
 # --- Prekey-директория для Double Ratchet (Olm/X3DH) ---
 
+MAX_ENVELOPE_BYTES = 2_000_000
+# Static crypto_box envelopes are kept only as an explicit emergency migration
+# switch. New direct traffic is Ratchet-only by default.
+ALLOW_LEGACY_DIRECT = os.environ.get("AETHER_ALLOW_LEGACY_DIRECT", "0").lower() in {
+    "1", "true", "yes",
+}
+
+
+def _envelope_size(envelope: dict) -> int:
+    return len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _is_group_envelope(envelope: dict) -> bool:
+    marker = envelope.get("is_group")
+    return marker == "1" or marker is True
+
+
+def _decode_b64url(value: object, field: str) -> bytes:
+    import base64
+    if not isinstance(value, str) or not value:
+        raise HTTPException(400, f"{field} must be base64url")
+    try:
+        raw = base64.b64decode(
+            value.replace("-", "+").replace("_", "/") + "=" * (-len(value) % 4),
+            validate=True,
+        )
+    except Exception as exc:
+        raise HTTPException(400, f"{field} must be base64url") from exc
+    return raw
+
+
+def _validate_key_b64(value: object, field: str) -> None:
+    """Olm identity/OTK keys are exactly one Curve25519 public key (32 bytes)."""
+    raw = _decode_b64url(value, field)
+    if len(raw) != 32:
+        raise HTTPException(400, f"{field} must encode 32 bytes")
+
+
+def _validate_ratchet_envelope(envelope: dict) -> None:
+    if _envelope_size(envelope) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(413, "Encrypted envelope is too large")
+    ratchet = envelope.get("ratchet")
+    if ratchet not in ("1", 1):
+        return
+    if envelope.get("is_group"):
+        raise HTTPException(400, "Ratchet envelope cannot be a group message")
+    required = {"olm_identity", "type", "body_b64"}
+    if not required.issubset(envelope):
+        raise HTTPException(400, "Invalid ratchet envelope")
+    _validate_key_b64(envelope["olm_identity"], "olm_identity")
+    if envelope["type"] not in (0, 1):
+        raise HTTPException(400, "Ratchet message type must be 0 or 1")
+    body = envelope["body_b64"]
+    if not isinstance(body, str) or not body or len(body) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(400, "Invalid ratchet body")
+    if len(_decode_b64url(body, "body_b64")) > MAX_ENVELOPE_BYTES:
+        raise HTTPException(413, "Encrypted body is too large")
+
+
 @app.put("/keys/upload")
-def upload_keys(body: UploadKeysRequest, current_user: str = Depends(get_current_user)) -> dict:
+@limiter.limit("30/minute")
+def upload_keys(body: UploadKeysRequest, request: Request,
+                current_user: str = Depends(get_current_user)) -> dict:
+    _validate_key_b64(body.identity_key_b64, "identity_key_b64")
+    device_id = body.device_id
     with db_conn() as cur:
         cur.execute(
-            "SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s) FOR UPDATE",
-            (current_user,),
-        )
-        row = cur.fetchone()
-        previous_identity = row["olm_identity_key"] if row else None
-        if previous_identity != body.identity_key_b64:
-            # OTKs are bound to their Olm identity. Keeping old OTKs after an
-            # account restore creates bundles that no client can decrypt.
-            cur.execute("DELETE FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
-        cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
-                    (body.identity_key_b64, current_user))
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
+            (current_user, device_id))
+        previous = cur.fetchone()
+        if previous and previous["identity_key_b64"] != body.identity_key_b64:
+            # OTKs are bound to the identity that generated them. A rotated
+            # account must not leave stale OTKs for the next claimant.
+            cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
+                        (current_user, device_id))
+        cur.execute(
+            """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64, created_at)
+               VALUES (LOWER(%s), %s, %s, %s)
+               ON CONFLICT (user_id, device_id) DO UPDATE SET identity_key_b64 = EXCLUDED.identity_key_b64""",
+            (current_user, device_id, body.identity_key_b64, _utc_now()))
+        if device_id == "primary":
+            # Legacy-клиенты и старый claim читают identity из users — держим в синхроне.
+            cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
+                        (body.identity_key_b64, current_user))
         for key_id, key_b64 in body.one_time_keys.items():
+            if len(str(key_id)) > 128 or len(key_b64) > 128:
+                raise HTTPException(400, "Invalid one-time key")
+            _validate_key_b64(key_b64, "one_time_key")
             cur.execute(
-                "INSERT INTO one_time_keys (user_id, key_id, key_b64) VALUES (%s, %s, %s) "
-                "ON CONFLICT (user_id, key_id) DO NOTHING",
-                (current_user.lower(), str(key_id), str(key_b64)))
+                "INSERT INTO one_time_keys (user_id, device_id, key_id, key_b64) VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (user_id, device_id, key_id) DO NOTHING",
+                (current_user.lower(), device_id, str(key_id), str(key_b64)))
+    return {"ok": True}
+
+
+@app.put("/users/me/olm-backup")
+def update_olm_backup(body: UpdateOlmBackupRequest, current_user: str = Depends(get_current_user)) -> dict:
+    with db_conn() as cur:
+        cur.execute(
+            "UPDATE users SET encrypted_olm_account_b64 = %s WHERE LOWER(user_id) = LOWER(%s)",
+            (body.encrypted_olm_account_b64, current_user),
+        )
     return {"ok": True}
 
 
 @app.get("/keys/count")
-def keys_count(current_user: str = Depends(get_current_user)) -> dict:
+def keys_count(device_id: str = "primary", current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = %s", (current_user.lower(),))
-        n = cur.fetchone()["n"]
-        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        cur.execute(
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        dev = cur.fetchone()
+        cur.execute(
+            "SELECT COUNT(*) AS n FROM one_time_keys WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
         row = cur.fetchone()
-    return {"count": n, "identity_key_b64": row["olm_identity_key"] if row else None}
+    return {"count": row["n"] if row else 0,
+            "identity_key_b64": dev["identity_key_b64"] if dev else None}
+
+
+@app.get("/users/me/dialogs")
+def my_dialogs(current_user: str = Depends(get_current_user)) -> dict:
+    """1:1-диалоги по метаданным маршрутизации (сервер их и так видит).
+    Новое устройство получает список чатов без переноса истории;
+    содержимое переписки остаётся E2E-недоступным серверу."""
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT CASE WHEN LOWER(m.sender_id) = LOWER(%s)
+                           THEN LOWER(m.recipient_id) ELSE LOWER(m.sender_id) END AS peer,
+                      MAX(m.created_at) AS last_at
+               FROM messages m
+               WHERE (LOWER(m.sender_id) = LOWER(%s) OR LOWER(m.recipient_id) = LOWER(%s))
+                 AND EXISTS (SELECT 1 FROM users u
+                             WHERE LOWER(u.user_id) = CASE WHEN LOWER(m.sender_id) = LOWER(%s)
+                                   THEN LOWER(m.recipient_id) ELSE LOWER(m.sender_id) END)
+               GROUP BY peer
+               ORDER BY last_at DESC
+               LIMIT 200""",
+            (current_user, current_user, current_user, current_user),
+        )
+        rows = cur.fetchall()
+        # Группы/каналы: членство + последняя активность — раскладка чатов
+        # на новом устройстве совпадает с основным.
+        cur.execute(
+            """SELECT LOWER(gm.group_id) AS peer,
+                      COALESCE(MAX(m.created_at), '') AS last_at
+               FROM group_members gm
+               LEFT JOIN messages m ON LOWER(m.recipient_id) = LOWER(gm.group_id)
+               WHERE LOWER(gm.user_id) = LOWER(%s)
+               GROUP BY LOWER(gm.group_id)""",
+            (current_user,),
+        )
+        group_rows = cur.fetchall()
+    dialogs = [{"peer_id": r["peer"], "last_at": r["last_at"]}
+               for r in rows if r["peer"] != current_user.lower()]
+    dialogs += [{"peer_id": r["peer"], "last_at": r["last_at"]} for r in group_rows]
+    dialogs.sort(key=lambda d: str(d["last_at"] or ""), reverse=True)
+    return {"dialogs": dialogs}
+
+
+@app.get("/users/{user_id}/devices")
+def list_devices(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+    """Все крипто-устройства пользователя: отправитель шифрует копию каждому."""
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT device_id, identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
+            (user_id,))
+        rows = cur.fetchall()
+    return {"devices": [{"device_id": r["device_id"], "identity_key_b64": r["identity_key_b64"]} for r in rows]}
 
 
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
 # удаляется (одноразовость → forward secrecy). Атомарно, чтобы двум клиентам не
 # достался один и тот же OTK.
 @app.post("/keys/claim/{user_id}")
-def claim_keys(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
+@limiter.limit("60/minute")
+def claim_keys(user_id: str, request: Request, device_id: str = "primary",
+               current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT olm_identity_key FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,))
+        cur.execute(
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (user_id, device_id))
         row = cur.fetchone()
-        if row is None or not row["olm_identity_key"]:
+        if row is None:
             raise HTTPException(404, "No Olm identity for user")
         cur.execute(
             "DELETE FROM one_time_keys WHERE ctid IN "
-            "(SELECT ctid FROM one_time_keys WHERE user_id = %s LIMIT 1) "
+            "(SELECT ctid FROM one_time_keys WHERE user_id = %s AND device_id = %s LIMIT 1) "
             "RETURNING key_id, key_b64",
-            (user_id.lower(),))
+            (user_id.lower(), device_id))
         otk = cur.fetchone()
     if otk is None:
         raise HTTPException(409, "No one-time keys available")
-    return {"user_id": user_id.lower(), "identity_key_b64": row["olm_identity_key"],
+    return {"user_id": user_id.lower(), "device_id": device_id,
+            "identity_key_b64": row["identity_key_b64"],
             "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"]}}
 
 
@@ -994,12 +1491,15 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
         raise HTTPException(403, "Cannot send messages as another user")
 
     # Double Ratchet (Olm) 1:1 — свой формат конверта; сервер только релеит.
-    if body.envelope.get("ratchet"):
+    _validate_ratchet_envelope(body.envelope)
+    if body.envelope.get("ratchet") in ("1", 1):
         ratchet_required = {"olm_identity", "type", "body_b64"}
         if not ratchet_required.issubset(body.envelope.keys()):
             logger.warning(f"send_message: bad ratchet envelope. Got: {list(body.envelope.keys())}")
             raise HTTPException(400, f"Invalid ratchet envelope. Got: {list(body.envelope.keys())}")
     else:
+        if _envelope_size(body.envelope) > MAX_ENVELOPE_BYTES:
+            raise HTTPException(413, "Encrypted envelope is too large")
         required = {"nonce_b64", "ciphertext_b64"}
         if not required.issubset(body.envelope.keys()):
             logger.warning(f"send_message: missing required keys. Got: {list(body.envelope.keys())}, need: {required}")
@@ -1007,6 +1507,13 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
         if "is_group" not in body.envelope and "sender_pubkey_b64" not in body.envelope:
             logger.warning(f"send_message: missing sender_pubkey_b64. Keys: {list(body.envelope.keys())}")
             raise HTTPException(400, "Invalid envelope: missing sender_pubkey_b64")
+        if _is_group_envelope(body.envelope):
+            nonce = _decode_b64url(body.envelope.get("nonce_b64"), "nonce_b64")
+            ciphertext = _decode_b64url(body.envelope.get("ciphertext_b64"), "ciphertext_b64")
+            if len(nonce) != 12:
+                raise HTTPException(400, "Invalid group nonce")
+            if len(ciphertext) > MAX_ENVELOPE_BYTES:
+                raise HTTPException(413, "Encrypted body is too large")
     if "plaintext" in body.envelope or "text" in body.envelope:
         raise HTTPException(400, "Plaintext not allowed on server")
 
@@ -1033,6 +1540,14 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 
             if not is_user and not is_group:
                 raise HTTPException(404, "Recipient not registered")
+
+            is_ratchet = body.envelope.get("ratchet") in ("1", 1)
+            if is_user and not is_ratchet and not ALLOW_LEGACY_DIRECT:
+                raise HTTPException(400, "Direct messages require Olm Double Ratchet")
+            if is_group and is_ratchet:
+                raise HTTPException(400, "Group messages must use the group envelope")
+            if is_group and not _is_group_envelope(body.envelope):
+                raise HTTPException(400, "Invalid group envelope")
                 
             # If it's a group, ensure sender is a member
             if is_group:
@@ -1049,8 +1564,8 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     
             # (#A2) ON CONFLICT: повтор с тем же client_id — не ошибка, а дубликат.
             cur.execute(
-                """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at)
-                   VALUES (%s, %s, %s, %s, %s)
+                """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at, recipient_device_id)
+                   VALUES (%s, %s, %s, %s, %s, %s)
                    ON CONFLICT (id) DO NOTHING""",
                 (
                     msg_id,
@@ -1058,6 +1573,7 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     body.recipient_id.lower(),
                     json.dumps(body.envelope),
                     _utc_now(),
+                    body.target_device_id if is_user else None,
                 ),
             )
             if cur.rowcount == 0:
@@ -1124,7 +1640,7 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             pass
 
     user_id = row["user_id"].lower()
-    await manager.connect(websocket, user_id)
+    await manager.connect(websocket, user_id, token)
     try:
         while True:
             # Keep alive and signaling
@@ -1168,11 +1684,12 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             except Exception:
                 pass
     except WebSocketDisconnect:
-        manager.disconnect(websocket, user_id)
+        manager.disconnect(websocket, user_id, token)
 
 
 class AckMessagesRequest(BaseModel):
     message_ids: list[str] = Field(min_length=1, max_length=500)
+    device_id: str = Field(default="primary", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
 
 @app.post("/messages/ack")
@@ -1183,18 +1700,21 @@ def ack_messages(body: AckMessagesRequest, current_user: str = Depends(get_curre
     now = _utc_now()
     with db_conn() as cur:
         cur.executemany(
-            """INSERT INTO message_receipts (message_id, user_id, acked_at)
-               VALUES (%s, %s, %s) ON CONFLICT (message_id, user_id) DO NOTHING""",
-            [(mid, current_user.lower(), now) for mid in body.message_ids],
+            """INSERT INTO message_receipts (message_id, user_id, device_id, acked_at)
+               VALUES (%s, %s, %s, %s) ON CONFLICT (message_id, user_id, device_id) DO NOTHING""",
+            [(mid, current_user.lower(), body.device_id, now) for mid in body.message_ids],
         )
     return {"ok": True, "acked": len(body.message_ids)}
 
 
 @app.get("/messages/inbox/{user_id}")
-def inbox(user_id: str, since: str = None, current_user: str = Depends(get_current_user)) -> dict:
+def inbox(user_id: str, since: str = None, device_id: str = "primary",
+          current_user: str = Depends(get_current_user)) -> dict:
     if user_id.lower() != current_user.lower():
         raise HTTPException(403, "Cannot read another user's inbox")
 
+    # Multi-device: NULL recipient_device_id = всему аккаунту (группы, legacy).
+    # Копии для чужих устройств в этот inbox не попадают.
     with db_conn() as cur:
         if since:
             cur.execute(
@@ -1202,9 +1722,10 @@ def inbox(user_id: str, since: str = None, current_user: str = Depends(get_curre
                    FROM messages m
                    WHERE (LOWER(m.recipient_id) = LOWER(%s) OR LOWER(m.recipient_id) IN (
                        SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
-                   )) AND m.created_at > %s
+                   )) AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
+                   AND m.created_at > %s
                    ORDER BY m.created_at ASC""",
-                (user_id, user_id, since),
+                (user_id, user_id, device_id, since),
             )
             rows = cur.fetchall()
         else:
@@ -1222,13 +1743,15 @@ def inbox(user_id: str, since: str = None, current_user: str = Depends(get_curre
                            AND LOWER(m.sender_id) != LOWER(%s)
                        )
                    )
+                   AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
                    AND NOT EXISTS (
                        SELECT 1 FROM message_receipts r
                        WHERE r.message_id = m.id AND LOWER(r.user_id) = LOWER(%s)
+                             AND r.device_id = %s
                    )
                    ORDER BY m.created_at ASC
                    LIMIT 200""",
-                (user_id, user_id, user_id, user_id),
+                (user_id, user_id, user_id, device_id, user_id, device_id),
             )
             rows = cur.fetchall()
     messages = [
@@ -1354,6 +1877,27 @@ def remove_group_member(group_id: str, user_id: str, current_user: str = Depends
             (group_id, user_id)
         )
     return {"ok": True}
+
+
+# --- Change member role (owner only): promote/demote admin ---
+@app.put("/groups/{group_id}/members/{user_id}/role")
+def set_member_role(group_id: str, user_id: str, role: str, current_user: str = Depends(get_current_user)) -> dict:
+    if role not in ("admin", "member"):
+        raise HTTPException(400, "role must be admin or member")
+    with db_conn() as cur:
+        cur.execute("SELECT owner_id FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+        g = cur.fetchone()
+        if not g:
+            raise HTTPException(404, "Group not found")
+        if g["owner_id"].lower() != current_user.lower():
+            raise HTTPException(403, "Only the owner can change roles")
+        if user_id.lower() == g["owner_id"].lower():
+            raise HTTPException(400, "Owner role cannot be changed")
+        cur.execute("SELECT 1 FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, user_id))
+        if not cur.fetchone():
+            raise HTTPException(404, "Not a member")
+        cur.execute("UPDATE group_members SET role = %s WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (role, group_id, user_id))
+    return {"ok": True, "role": role}
 
 
 # --- (#12) Edit group ---
@@ -1560,6 +2104,22 @@ async def upload_avatar(request: Request, file: UploadFile = File(...), current_
     return {"ok": True, "file_id": file_id}
 
 
+def _image_mime(path) -> str:
+    # nosniff запрещает браузеру угадывать тип: octet-stream не отрисуется
+    # как картинка. Определяем тип по сигнатуре файла сами.
+    with open(path, "rb") as f:
+        head = f.read(12)
+    if head.startswith(b"\x89PNG"):
+        return "image/png"
+    if head.startswith(b"\xff\xd8"):
+        return "image/jpeg"
+    if head[:4] == b"GIF8":
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return "application/octet-stream"
+
+
 @app.get("/avatars/{file_id}")
 @limiter.limit("200/minute")
 def download_avatar(request: Request, file_id: str) -> FileResponse:
@@ -1568,7 +2128,7 @@ def download_avatar(request: Request, file_id: str) -> FileResponse:
     file_path = AVATAR_DIR / file_id
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(404, "File not found")
-    return FileResponse(file_path)
+    return FileResponse(file_path, media_type=_image_mime(file_path))
 
 # (#A4) Удалены неиспользуемые API: магазин (items/buy/my-items) и
 # /groups/{id}/link (заглушка «комментариев») — клиент их никогда не звал.

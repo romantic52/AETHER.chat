@@ -60,7 +60,9 @@ private object ChatPlaybackCoordinator {
     private var stop: (() -> Unit)? = null
 
     fun claim(key: String, onStop: () -> Unit) {
-        if (owner != key) stop?.invoke()
+        // Останавливаем прежнее воспроизведение и при том же owner: два пузыря
+        // с одинаковым jsonText делят ключ, иначе второй стартует поверх первого.
+        stop?.takeIf { it !== onStop }?.invoke()
         owner = key
         stop = onStop
     }
@@ -71,6 +73,39 @@ private object ChatPlaybackCoordinator {
             stop = null
         }
     }
+}
+
+/**
+ * Глобальная скорость воспроизведения (1x → 1.5x → 2x) для голосовых и кружков:
+ * одна на весь файл, переживает переключение сообщений и чатов.
+ * minSdk 24 ≥ API 23, поэтому PlaybackParams доступен без проверки версии.
+ */
+private val playbackSpeedState = mutableStateOf(1f)
+
+/** Следующая скорость по циклу 1x → 1.5x → 2x → 1x. */
+private fun nextPlaybackSpeed(current: Float): Float = when {
+    current < 1.25f -> 1.5f
+    current < 1.75f -> 2f
+    else -> 1f
+}
+
+/** Подпись бейджа скорости. */
+private fun playbackSpeedLabel(speed: Float): String = when {
+    speed < 1.25f -> "1x"
+    speed < 1.75f -> "1.5x"
+    else -> "2x"
+}
+
+/**
+ * Скорость выставляем только играющему плееру: setSpeed на паузе сам запускает
+ * воспроизведение (особенность MediaPlayer), поэтому пауза остаётся паузой.
+ */
+private fun applyPlaybackSpeed(p: android.media.MediaPlayer, speed: Float) {
+    try {
+        if (p.isPlaying) {
+            p.playbackParams = android.media.PlaybackParams().setSpeed(speed)
+        }
+    } catch (_: Exception) {}
 }
 
 /**

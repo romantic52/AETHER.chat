@@ -84,6 +84,7 @@ fun MainScreen(
     onNavigateToProfileSettings: () -> Unit,
     onNavigateToNotificationsSettings: () -> Unit,
     onNavigateToPrivacySettings: () -> Unit,
+    onNavigateToSecuritySettings: () -> Unit = {},
     onNavigateToAboutApp: () -> Unit,
     onNavigateToExperiments: () -> Unit = {},
     onStartAudioCall: (String) -> Unit = {},
@@ -257,6 +258,32 @@ fun MainScreen(
                                             .size(26.dp)
                                             .graphicsLayer { scaleX = scale; scaleY = scale }
                                     )
+                                    // Бейдж непрочитанных на вкладке «Чаты» — как в Telegram
+                                    // (замьюченные чаты в счётчик не входят)
+                                    if (index == 2) {
+                                        val totalUnread = chats
+                                            .filter { !it.chat.isMuted }
+                                            .sumOf { it.chat.unreadCount }
+                                        if (totalUnread > 0) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .align(Alignment.Center)
+                                                    .offset(x = 14.dp, y = (-10).dp)
+                                                    .clip(CircleShape)
+                                                    .background(MaterialTheme.colorScheme.primary)
+                                                    .padding(horizontal = 5.dp, vertical = 1.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = if (totalUnread > 99) "99+" else totalUnread.toString(),
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onPrimary,
+                                                    fontWeight = FontWeight.Bold,
+                                                    maxLines = 1
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -308,6 +335,7 @@ fun MainScreen(
                         onNavigateToProfile = onNavigateToProfileSettings,
                         onNavigateToNotifications = onNavigateToNotificationsSettings,
                         onNavigateToPrivacy = onNavigateToPrivacySettings,
+                        onNavigateToSecurity = onNavigateToSecuritySettings,
                         onNavigateToAbout = onNavigateToAboutApp,
                         onNavigateToCustomization = onNavigateToCustomization,
                         onNavigateToExperiments = onNavigateToExperiments,

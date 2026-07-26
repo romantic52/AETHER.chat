@@ -18,6 +18,8 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -238,16 +240,28 @@ fun GroupInfoScreen(
                             }
                         }
                         members.forEach { m ->
-                            val canRemove = isAdmin &&
-                                !m.userId.equals(repo.myId, ignoreCase = true) &&
-                                !m.userId.equals(group?.ownerId ?: "", ignoreCase = true)
+                            val isThisOwner = m.userId.equals(group?.ownerId ?: "", ignoreCase = true)
+                            val isSelf = m.userId.equals(repo.myId, ignoreCase = true)
+                            val canRemove = isAdmin && !isSelf && !isThisOwner
+                            // Роли назначает только владелец, и не самому себе.
+                            val canToggleAdmin = isOwner && !isThisOwner
                             MemberRow(
                                 member = m,
                                 online = isOnline(lastActiveById[m.userId]),
-                                isOwner = m.userId.equals(group?.ownerId ?: "", ignoreCase = true),
+                                isOwner = isThisOwner,
                                 canRemove = canRemove,
+                                canToggleAdmin = canToggleAdmin,
                                 onClick = { onMemberClick(m.userId) },
-                                onRemove = { confirmRemove = m }
+                                onRemove = { confirmRemove = m },
+                                onToggleAdmin = {
+                                    val newRole = if (m.role == "admin") "member" else "admin"
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) { api.setMemberRole(groupId, m.userId, newRole) }
+                                            refreshKey++
+                                        } catch (e: Exception) { error = e.message }
+                                    }
+                                }
                             )
                         }
                     }
@@ -501,7 +515,9 @@ private fun MemberRow(
     isOwner: Boolean,
     canRemove: Boolean,
     onClick: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    canToggleAdmin: Boolean = false,
+    onToggleAdmin: () -> Unit = {}
 ) {
     val title = member.displayName.ifBlank { member.userId }
     Row(
@@ -546,6 +562,16 @@ private fun MemberRow(
                     sub,
                     fontSize = 13.sp,
                     color = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (canToggleAdmin) {
+            val admin = member.role == "admin"
+            IconButton(onClick = onToggleAdmin) {
+                Icon(
+                    if (admin) Icons.Filled.Shield else Icons.Outlined.Shield,
+                    contentDescription = if (admin) "Снять админа" else "Сделать админом",
+                    tint = if (admin) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

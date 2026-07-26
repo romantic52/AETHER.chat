@@ -45,6 +45,8 @@ fun LoginScreen(
     var showSettings by remember { mutableStateOf(false) }
     var rememberMe by remember { mutableStateOf(true) }
     var isSubmitting by remember { mutableStateOf(false) }
+    var totpNeeded by remember { mutableStateOf(false) }
+    var totpCode by remember { mutableStateOf("") }
 
     val coroutineScope = rememberCoroutineScope()
     val crypto = remember { E2ECrypto() }
@@ -80,7 +82,9 @@ fun LoginScreen(
                 }
                 generated
             } else {
-                val result = withContext(Dispatchers.IO) { api.login(normalizedUsername, password) }
+                val result = withContext(Dispatchers.IO) {
+                    api.login(normalizedUsername, password, totpCode.trim().takeIf { it.isNotBlank() })
+                }
                 val secure = SecurePrefs(context, normalizedUsername)
                 val restored = if (result.encryptedPrivateKeyB64.isNotEmpty() &&
                     result.encryptedPrivateKeyB64 != "null"
@@ -105,6 +109,11 @@ fun LoginScreen(
                 normalizedUsername,
                 rememberMe,
             )
+        } catch (e: RelayApi.TotpRequired) {
+            totpNeeded = true
+            totpCode = ""
+            error = if (e.invalid) "Неверный код 2FA — попробуйте ещё раз"
+            else "На аккаунте включена 2FA: введите код из аутентификатора"
         } catch (e: Exception) {
             error = e.message ?: "Ошибка сети"
         } finally {
@@ -228,6 +237,27 @@ fun LoginScreen(
                     ),
                     shape = RoundedCornerShape(16.dp)
                 )
+
+                AnimatedVisibility(visible = totpNeeded && !isRegister) {
+                    Column {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        OutlinedTextField(
+                            value = totpCode,
+                            onValueChange = { totpCode = it.filter(Char::isDigit).take(10) },
+                            placeholder = { Text("Код 2FA", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                            modifier = Modifier.fillMaxWidth(),
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
+                                unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                            ),
+                            shape = RoundedCornerShape(16.dp)
+                        )
+                    }
+                }
 
                 Spacer(modifier = Modifier.height(24.dp))
 

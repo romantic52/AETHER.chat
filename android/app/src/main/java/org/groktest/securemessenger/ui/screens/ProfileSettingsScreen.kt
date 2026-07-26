@@ -33,12 +33,17 @@ fun ProfileSettingsScreen(
     api: RelayApi,
     onBack: () -> Unit
 ) {
-    var username by remember { mutableStateOf(myId) }
+    // Не префиллим myId: покажем юзернейм только после загрузки профиля,
+    // иначе можно случайно сохранить внутренний id как юзернейм
+    var username by remember { mutableStateOf("") }
     var displayName by remember { mutableStateOf("") }
     var bio by remember { mutableStateOf("") }
     var avatarFileId by remember { mutableStateOf<String?>(null) }
     var isUploadingAvatar by remember { mutableStateOf(false) }
     var isSaving by remember { mutableStateOf(false) }
+    // Пока профиль не загружен — кнопка сохранения заблокирована,
+    // чтобы не затереть профиль пустыми полями
+    var isProfileLoaded by remember { mutableStateOf(false) }
 
     val context = androidx.compose.ui.platform.LocalContext.current
     val coroutineScope = rememberCoroutineScope()

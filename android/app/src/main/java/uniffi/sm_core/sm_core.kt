@@ -1003,6 +1003,24 @@ internal open class UniffiVTableCallbackInterfaceWsListener(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1078,6 +1096,8 @@ fun uniffi_sm_core_checksum_method_apiclient_add_group_member(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_avatar_url(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_bind_session_device(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_claim_keys(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_claim_keys_device(
@@ -1112,11 +1132,17 @@ fun uniffi_sm_core_checksum_method_apiclient_keys_count_device(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_keys_state(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_kick_device(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_leave_group(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_list_devices(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_list_sessions(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_login(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_login_totp(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_logout(
 ): Short
@@ -1134,6 +1160,14 @@ fun uniffi_sm_core_checksum_method_apiclient_set_session(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_set_token(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_totp_disable(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_totp_enable(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_totp_setup(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_totp_status(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_update_group(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_update_profile(
@@ -1147,6 +1181,8 @@ fun uniffi_sm_core_checksum_method_apiclient_upload_avatar(
 fun uniffi_sm_core_checksum_method_apiclient_upload_keys(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_upload_keys_device(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_wipe_account(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_clear_unread(
 ): Short
@@ -1315,6 +1351,8 @@ fun uniffi_sm_core_fn_method_apiclient_add_group_member(`ptr`: Pointer,`groupId`
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_avatar_url(`ptr`: Pointer,`fileId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_bind_session_device(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_apiclient_claim_keys(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_claim_keys_device(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1349,11 +1387,17 @@ fun uniffi_sm_core_fn_method_apiclient_keys_count_device(`ptr`: Pointer,`deviceI
 ): Int
 fun uniffi_sm_core_fn_method_apiclient_keys_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_kick_device(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_apiclient_leave_group(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_list_devices(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_list_sessions(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_login(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_login_totp(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,`totpCode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_logout(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1371,6 +1415,14 @@ fun uniffi_sm_core_fn_method_apiclient_set_session(`ptr`: Pointer,`token`: RustB
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_set_token(`ptr`: Pointer,`token`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_apiclient_totp_disable(`ptr`: Pointer,`code`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_apiclient_totp_enable(`ptr`: Pointer,`code`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_apiclient_totp_setup(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_totp_status(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
 fun uniffi_sm_core_fn_method_apiclient_update_group(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`name`: RustBuffer.ByValue,`description`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_update_profile(`ptr`: Pointer,`username`: RustBuffer.ByValue,`displayName`: RustBuffer.ByValue,`avatarFileId`: RustBuffer.ByValue,`bio`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1384,6 +1436,8 @@ fun uniffi_sm_core_fn_method_apiclient_upload_avatar(`ptr`: Pointer,`data`: Rust
 fun uniffi_sm_core_fn_method_apiclient_upload_keys(`ptr`: Pointer,`identityKeyB64`: RustBuffer.ByValue,`oneTimeKeysJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_upload_keys_device(`ptr`: Pointer,`identityKeyB64`: RustBuffer.ByValue,`oneTimeKeysJson`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_apiclient_wipe_account(`ptr`: Pointer,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_clone_corestore(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
@@ -1755,6 +1809,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_avatar_url() != 58647.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_bind_session_device() != 42000.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_claim_keys() != 26061.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1806,13 +1863,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_keys_state() != 3011.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_kick_device() != 2680.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_leave_group() != 41179.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_list_devices() != 53939.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_list_sessions() != 6890.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_login() != 31932.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_login_totp() != 23025.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_logout() != 62676.toShort()) {
@@ -1839,6 +1905,18 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_set_token() != 39719.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_totp_disable() != 9792.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_totp_enable() != 18492.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_totp_setup() != 51370.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_totp_status() != 33063.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_update_group() != 41570.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1858,6 +1936,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_upload_keys_device() != 51388.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_wipe_account() != 42919.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_clear_unread() != 41306.toShort()) {
@@ -2511,6 +2592,11 @@ public interface ApiClientInterface {
     fun `avatarUrl`(`fileId`: kotlin.String): kotlin.String
     
     /**
+     * Привязать текущую сессию к своему крипто-устройству (адресный выход).
+     */
+    fun `bindSessionDevice`(`deviceId`: kotlin.String)
+    
+    /**
      * Забрать prekey-bundle пира (identity + один OTK, сервер его удаляет).
      */
     fun `claimKeys`(`userId`: kotlin.String): PrekeyBundle
@@ -2557,6 +2643,11 @@ public interface ApiClientInterface {
      */
     fun `keysState`(): PrekeyState
     
+    /**
+     * Выкинуть устройство (сервер применяет правило 12 часов).
+     */
+    fun `kickDevice`(`deviceId`: kotlin.String)
+    
     fun `leaveGroup`(`groupId`: kotlin.String)
     
     /**
@@ -2564,7 +2655,18 @@ public interface ApiClientInterface {
      */
     fun `listDevices`(`userId`: kotlin.String): List<DeviceInfo>
     
+    /**
+     * {devices:[{device_id,device_created_at,sessions,current}], can_kick, kick_min_hours, unbound_sessions}
+     */
+    fun `listSessions`(): kotlin.String
+    
     fun `login`(`userId`: kotlin.String, `password`: kotlin.String): AuthSession
+    
+    /**
+     * Логин с опциональным 2FA-кодом. Сервер отвечает 401 detail=totp_required,
+     * когда на аккаунте включена 2FA — клиент повторяет вызов с кодом.
+     */
+    fun `loginTotp`(`userId`: kotlin.String, `password`: kotlin.String, `totpCode`: kotlin.String?): AuthSession
     
     fun `logout`()
     
@@ -2592,6 +2694,17 @@ public interface ApiClientInterface {
      */
     fun `setToken`(`token`: kotlin.String)
     
+    fun `totpDisable`(`code`: kotlin.String)
+    
+    fun `totpEnable`(`code`: kotlin.String)
+    
+    /**
+     * {secret, otpauth_uri} — новый секрет (2FA ещё не включена).
+     */
+    fun `totpSetup`(): kotlin.String
+    
+    fun `totpStatus`(): kotlin.Boolean
+    
     fun `updateGroup`(`groupId`: kotlin.String, `name`: kotlin.String?, `description`: kotlin.String?)
     
     fun `updateProfile`(`username`: kotlin.String?, `displayName`: kotlin.String?, `avatarFileId`: kotlin.String?, `bio`: kotlin.String?)
@@ -2614,6 +2727,11 @@ public interface ApiClientInterface {
     fun `uploadKeys`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String)
     
     fun `uploadKeysDevice`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String, `deviceId`: kotlin.String)
+    
+    /**
+     * «Удалить всё» по паролю: чистка сообщений, выход из групп, отзыв сессий.
+     */
+    fun `wipeAccount`(`password`: kotlin.String)
     
     companion object
 }
@@ -2753,6 +2871,21 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Привязать текущую сессию к своему крипто-устройству (адресный выход).
+     */
+    @Throws(CoreException::class)override fun `bindSessionDevice`(`deviceId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_bind_session_device(
+        it, FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
     
 
     
@@ -2986,6 +3119,21 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     
 
     
+    /**
+     * Выкинуть устройство (сервер применяет правило 12 часов).
+     */
+    @Throws(CoreException::class)override fun `kickDevice`(`deviceId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_kick_device(
+        it, FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
+    
+
+    
     @Throws(CoreException::class)override fun `leaveGroup`(`groupId`: kotlin.String)
         = 
     callWithPointer {
@@ -3014,12 +3162,45 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     
 
     
+    /**
+     * {devices:[{device_id,device_created_at,sessions,current}], can_kick, kick_min_hours, unbound_sessions}
+     */
+    @Throws(CoreException::class)override fun `listSessions`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_list_sessions(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CoreException::class)override fun `login`(`userId`: kotlin.String, `password`: kotlin.String): AuthSession {
             return FfiConverterTypeAuthSession.lift(
     callWithPointer {
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_login(
         it, FfiConverterString.lower(`userId`),FfiConverterString.lower(`password`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Логин с опциональным 2FA-кодом. Сервер отвечает 401 detail=totp_required,
+     * когда на аккаунте включена 2FA — клиент повторяет вызов с кодом.
+     */
+    @Throws(CoreException::class)override fun `loginTotp`(`userId`: kotlin.String, `password`: kotlin.String, `totpCode`: kotlin.String?): AuthSession {
+            return FfiConverterTypeAuthSession.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_login_totp(
+        it, FfiConverterString.lower(`userId`),FfiConverterString.lower(`password`),FfiConverterOptionalString.lower(`totpCode`),_status)
 }
     }
     )
@@ -3135,6 +3316,59 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     
 
     
+    @Throws(CoreException::class)override fun `totpDisable`(`code`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_totp_disable(
+        it, FfiConverterString.lower(`code`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `totpEnable`(`code`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_totp_enable(
+        it, FfiConverterString.lower(`code`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * {secret, otpauth_uri} — новый секрет (2FA ещё не включена).
+     */
+    @Throws(CoreException::class)override fun `totpSetup`(): kotlin.String {
+            return FfiConverterString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_totp_setup(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `totpStatus`(): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_totp_status(
+        it, _status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CoreException::class)override fun `updateGroup`(`groupId`: kotlin.String, `name`: kotlin.String?, `description`: kotlin.String?)
         = 
     callWithPointer {
@@ -3224,6 +3458,21 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_upload_keys_device(
         it, FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`oneTimeKeysJson`),FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * «Удалить всё» по паролю: чистка сообщений, выход из групп, отзыв сессий.
+     */
+    @Throws(CoreException::class)override fun `wipeAccount`(`password`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_wipe_account(
+        it, FfiConverterString.lower(`password`),_status)
 }
     }
     

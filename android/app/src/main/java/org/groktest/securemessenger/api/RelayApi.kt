@@ -45,15 +45,23 @@ class RelayApi(baseUrl: String) {
         }
     }
 
-    fun login(userId: String, password: String): LoginResult {
+    fun login(userId: String, password: String, totpCode: String? = null): LoginResult {
         try {
-            val result = core.login(userId, password)
+            val result = core.loginTotp(userId, password, totpCode)
             token = result.token
             return LoginResult(result.token, result.encryptedPrivateKeyB64)
         } catch (e: Exception) {
+            when (apiErrorDetail(e)) {
+                "totp_required" -> throw TotpRequired(invalid = false)
+                "totp_invalid" -> throw TotpRequired(invalid = true)
+            }
             throw IllegalStateException("Вход: ${apiErrorDetail(e)}")
         }
     }
+
+    /** Аккаунт защищён 2FA: нужен (или не подошёл) одноразовый код. */
+    class TotpRequired(val invalid: Boolean) :
+        RuntimeException(if (invalid) "Неверный код 2FA" else "Нужен код 2FA")
 
     private fun apiErrorDetail(error: Throwable): String = when (error) {
         is uniffi.sm_core.CoreException.Api -> {
@@ -259,6 +267,119 @@ class RelayApi(baseUrl: String) {
         }
     }
 
+    // --- Безопасность: сессии устройств, 2FA (TOTP), «удалить всё».
+    // Серверная часть общая с web/iOS (ветка web-secure). ---
+
+    data class DeviceSession(
+        val deviceId: String,
+        val createdAt: String,
+        val sessions: Int,
+        val current: Boolean,
+    )
+
+    data class SessionsInfo(
+        val devices: List<DeviceSession>,
+        val unboundSessions: Int,
+        val canKick: Boolean,
+        val kickMinHours: Int,
+    )
+
+    data class TotpSetup(val secret: String, val otpauthUri: String)
+
+    /** Привязать текущую сессию к своему крипто-устройству (адресный выход). */
+    fun bindSessionDevice(userId: String, deviceId: String) {
+        restoreSession(userId)
+        try {
+            core.bindSessionDevice(deviceId)
+        } catch (e: Exception) {
+            throw asHttpError("Привязка сессии", e)
+        }
+    }
+
+    fun listSessions(userId: String): SessionsInfo {
+        restoreSession(userId)
+        val raw = try {
+            core.listSessions()
+        } catch (e: Exception) {
+            throw asHttpError("Список сессий", e)
+        }
+        val json = JSONObject(raw)
+        val devices = json.optJSONArray("devices") ?: JSONArray()
+        return SessionsInfo(
+            devices = (0 until devices.length()).map { i ->
+                val d = devices.getJSONObject(i)
+                DeviceSession(
+                    deviceId = d.optString("device_id"),
+                    createdAt = d.optString("device_created_at"),
+                    sessions = d.optInt("sessions"),
+                    current = d.optBoolean("current"),
+                )
+            },
+            unboundSessions = json.optInt("unbound_sessions"),
+            canKick = json.optBoolean("can_kick"),
+            kickMinHours = json.optInt("kick_min_hours", 12),
+        )
+    }
+
+    /** Выкинуть устройство: сервер отзывает его сессии, ключи и живые WS (правило 12 ч — на сервере). */
+    fun kickDevice(userId: String, deviceId: String) {
+        restoreSession(userId)
+        try {
+            core.kickDevice(deviceId)
+        } catch (e: Exception) {
+            throw asHttpError("Выкинуть устройство", e)
+        }
+    }
+
+    fun totpStatus(userId: String): Boolean {
+        restoreSession(userId)
+        try {
+            return core.totpStatus()
+        } catch (e: Exception) {
+            throw asHttpError("Статус 2FA", e)
+        }
+    }
+
+    /** Новый секрет для аутентификатора; 2FA включится только после totpEnable с кодом. */
+    fun totpSetup(userId: String): TotpSetup {
+        restoreSession(userId)
+        val raw = try {
+            core.totpSetup()
+        } catch (e: Exception) {
+            throw asHttpError("Настройка 2FA", e)
+        }
+        val json = JSONObject(raw)
+        return TotpSetup(secret = json.optString("secret"), otpauthUri = json.optString("otpauth_uri"))
+    }
+
+    fun totpEnable(userId: String, code: String) {
+        restoreSession(userId)
+        try {
+            core.totpEnable(code)
+        } catch (e: Exception) {
+            throw asHttpError("Включение 2FA", e)
+        }
+    }
+
+    fun totpDisable(userId: String, code: String) {
+        restoreSession(userId)
+        try {
+            core.totpDisable(code)
+        } catch (e: Exception) {
+            throw asHttpError("Выключение 2FA", e)
+        }
+    }
+
+    /** «Удалить всё» по паролю: сервер чистит переписки, выводит из групп, отзывает остальные сессии. */
+    fun wipeAccount(userId: String, password: String) {
+        restoreSession(userId)
+        try {
+            core.wipeAccount(password)
+        } catch (e: Exception) {
+            throw asHttpError("Удаление данных", e)
+        }
+    }
+
     private fun asHttpError(action: String, error: Exception): RuntimeException =
         if (error is uniffi.sm_core.CoreException.Api) {
             HttpError(error.status.toInt(), "$action: ${apiErrorDetail(error)}")
@@ -345,18 +466,17 @@ class RelayApi(baseUrl: String) {
         buildList {
             for (index in 0 until members.length()) {
                 val member = members.optJSONObject(index) ?: continue
-                val userId = member.optString("user_id", member.optString("id"))
-                if (userId.isBlank()) continue
-                val username = member.optString("username")
+                val userId = jsonString(member, "user_id") ?: jsonString(member, "id") ?: continue
+                val username = jsonString(member, "username").orEmpty()
                 add(
                     GroupMember(
                         userId = userId,
                         username = username,
-                        displayName = member.optString("display_name").ifBlank {
-                            username.ifBlank { userId }
-                        },
-                        avatarFileId = member.optString("avatar_file_id").takeIf(String::isNotBlank),
-                        role = member.optString("role", "member"),
+                        // org.json: optString на JSON-null возвращает строку "null" — поэтому
+                        // читаем через null-safe jsonString, иначе имена участников = "null".
+                        displayName = jsonString(member, "display_name") ?: username.ifBlank { userId },
+                        avatarFileId = jsonString(member, "avatar_file_id"),
+                        role = jsonString(member, "role") ?: "member",
                     )
                 )
             }
@@ -485,6 +605,13 @@ class RelayApi(baseUrl: String) {
     fun joinGroup(groupId: String) {
         val body = "{}".toRequestBody("application/json".toMediaType())
         requestJson(authorizedRequest("$base/groups/$groupId/join").post(body).build())
+    }
+
+    /** Владелец назначает/снимает админа (role = "admin" | "member"). */
+    fun setMemberRole(groupId: String, userId: String, role: String) {
+        val u = java.net.URLEncoder.encode(userId, Charsets.UTF_8.name())
+        val body = "".toRequestBody("application/json".toMediaType())
+        requestJson(authorizedRequest("$base/groups/$groupId/members/$u/role?role=$role").put(body).build())
     }
 
     data class UserSearchResult(

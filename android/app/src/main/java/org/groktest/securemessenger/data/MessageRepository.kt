@@ -346,6 +346,10 @@ class MessageRepository(
         }
         scope.launch {
             runCatching { ensureOlmKeys() }
+            // Привязка сессии к крипто-устройству: адресный «выкинуть» на экране
+            // «Сессии и безопасность». Здесь, а не в login — сюда сходятся оба пути
+            // входа (пароль и восстановление по токену), а device_id уже отрезолвлен.
+            runCatching { api.bindSessionDevice(myId, myDeviceId()) }
             while (true) {
                 syncInbox()
                 delay(10_000)
