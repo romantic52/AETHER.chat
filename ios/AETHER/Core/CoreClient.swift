@@ -552,6 +552,13 @@ actor CoreClient {
         (try? store.masterPinGet(peerId: peerId.lowercased())) ?? nil
     }
 
+    /// Мастер-ключ, ожидающий решения пользователя (если есть). Сверять при
+    /// тревоге надо именно его — иначе экран показывал бы СТАРЫЙ ключ под
+    /// подписью «сверьте новый» и зелёную галочку «подтверждён».
+    func pendingMasterKey(for peerId: String) -> String? {
+        pendingMasterChanges[peerId.lowercased()]
+    }
+
     func setMasterVerified(_ peerId: String, _ verified: Bool) throws {
         try store.masterPinSetVerified(peerId: peerId.lowercased(), verified: verified)
     }
@@ -631,6 +638,10 @@ actor CoreClient {
             let keepEd = ((try? store.olmPinGet(peerKey: peerKey)) ?? nil)?.ed25519B64
             try store.olmPinAccept(peerKey: peerKey, curve25519B64: curve,
                                    ed25519B64: keepEd, nowTs: nowTs())
+            // Старая сессия мертва: ключ устройства сменился. Без её удаления
+            // исходящие продолжали бы уходить прежними ключами — claim при живой
+            // сессии не делается, и все новые проверки обходились бы стороной.
+            try? store.olmSessionDelete(peerId: peerKey)
             pendingInboundKeys.removeValue(forKey: peerKey)
         } else if let curve = pendingUnsignedDevices[peerKey] {
             // Пользователь осознанно доверяет устройству без cross-signing
