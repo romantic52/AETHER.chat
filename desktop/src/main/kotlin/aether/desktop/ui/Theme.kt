@@ -7,14 +7,20 @@ import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.graphics.Color
 
-/** Телеграмная палитра: light по умолчанию, dark по системной теме. */
+/**
+ * Телеграмная палитра: light по умолчанию, dark по системной теме.
+ *
+ * background — полотно ленты сообщений, surface — боковые панели, шапка и
+ * композер. В Telegram это РАЗНЫЕ плоскости; когда они совпадают, три колонки
+ * сливаются в одно серое поле и окно выглядит плоским.
+ */
 private val LightColors = lightColorScheme(
     primary = Color(0xFF3390EC),
     onPrimary = Color.White,
-    primaryContainer = Color(0xFFE7F3FF),
+    primaryContainer = Color(0xFFE3F2FD),
     onPrimaryContainer = Color(0xFF0F3E63),
     secondary = Color(0xFF707579),
-    background = Color(0xFFFFFFFF),
+    background = Color(0xFFE6EBEE),
     onBackground = Color(0xFF000000),
     surface = Color(0xFFFFFFFF),
     onSurface = Color(0xFF000000),
@@ -27,9 +33,9 @@ private val DarkColors = darkColorScheme(
     primary = Color(0xFF6AB2F2),
     onPrimary = Color(0xFF0E1621),
     primaryContainer = Color(0xFF2B5278),
-    onPrimaryContainer = Color(0xFFD6E7F7),
+    onPrimaryContainer = Color(0xFFE9F2FA),
     secondary = Color(0xFFAAAAAA),
-    background = Color(0xFF17212B),
+    background = Color(0xFF0E1621),
     onBackground = Color(0xFFF5F5F5),
     surface = Color(0xFF17212B),
     onSurface = Color(0xFFF5F5F5),
