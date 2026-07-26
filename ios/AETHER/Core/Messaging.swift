@@ -386,7 +386,12 @@ final class Messaging: ObservableObject {
         if !ackIds.isEmpty { try? await core.ack(ackIds) }
 
         await refreshChats()
-        if changed { inboxTick.fire() }
+        if changed {
+            inboxTick.fire()
+            // Догружаем свежие сообщения в резервную копию (если она включена).
+            // Копия шифруется на устройстве, поэтому это дешёвая фоновая работа.
+            Task.detached { [core] in await core.backupSyncUp() }
+        }
     }
 
     private enum IncomingResult {

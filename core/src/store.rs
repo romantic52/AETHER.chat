@@ -308,6 +308,25 @@ impl CoreStore {
         Ok(out)
     }
 
+    /// Сообщения для резервной копии: по возрастанию ts, начиная СТРОГО после
+    /// (after_ts, after_id) — пара нужна, чтобы сообщения с одинаковой меткой
+    /// времени не выпадали из бэкапа и не дублировались.
+    pub fn messages_for_backup(
+        &self,
+        after_ts: i64,
+        after_id: String,
+        limit: u32,
+    ) -> Result<Vec<StoredMessage>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut stmt = c.prepare(&format!(
+            "SELECT {MSG_COLS} FROM messages
+             WHERE ts > ?1 OR (ts = ?1 AND id > ?2)
+             ORDER BY ts ASC, id ASC LIMIT ?3"
+        ))?;
+        let rows = stmt.query_map(params![after_ts, after_id, limit], row_to_msg)?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
     pub fn update_reactions(&self, id: String, reactions_json: String) -> Result<(), CoreError> {
         self.conn.lock().unwrap()
             .execute("UPDATE messages SET reactions_json=?2 WHERE id=?1", params![id, reactions_json])?;

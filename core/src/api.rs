@@ -82,6 +82,14 @@ pub struct PrekeyBundle {
     pub device_sig_b64: Option<String>,
 }
 
+/// Чанк резервной копии истории (шифротекст AES-256-GCM; сервер его не читает).
+#[derive(uniffi::Record)]
+pub struct BackupChunk {
+    pub seq: i64,
+    pub nonce_b64: String,
+    pub ciphertext_b64: String,
+}
+
 /// Крипто-устройство аккаунта (multi-device): свой Olm-аккаунт на устройство.
 #[derive(uniffi::Record)]
 pub struct DeviceInfo {
@@ -302,6 +310,36 @@ impl ApiClient {
     pub fn claim_keys(&self, user_id: String) -> Result<PrekeyBundle, CoreError> {
         let v = self.post(&format!("/keys/claim/{user_id}"), serde_json::json!({}))?;
         Ok(parse_bundle(&v))
+    }
+
+    // --- Резервная копия истории (P9): сервер хранит только шифротекст ---
+
+    /// Выгрузить чанк истории. Возвращает присвоенный сервером seq.
+    pub fn backup_upload(&self, nonce_b64: String, ciphertext_b64: String) -> Result<i64, CoreError> {
+        let v = self.put("/backup/history", serde_json::json!({
+            "nonce_b64": nonce_b64,
+            "ciphertext_b64": ciphertext_b64,
+        }))?;
+        Ok(v["seq"].as_i64().unwrap_or(0))
+    }
+
+    /// Чанки, загруженные после указанного seq (для восстановления на новом устройстве).
+    pub fn backup_fetch(&self, after_seq: i64, limit: u32) -> Result<Vec<BackupChunk>, CoreError> {
+        let v = self.get(&format!("/backup/history?after_seq={after_seq}&limit={limit}"))?;
+        let chunks = v["chunks"].as_array().cloned().unwrap_or_default();
+        Ok(chunks
+            .iter()
+            .map(|c| BackupChunk {
+                seq: c["seq"].as_i64().unwrap_or(0),
+                nonce_b64: c["nonce_b64"].as_str().unwrap_or_default().to_string(),
+                ciphertext_b64: c["ciphertext_b64"].as_str().unwrap_or_default().to_string(),
+            })
+            .collect())
+    }
+
+    /// Удалить резервную копию целиком (выключение тумблера).
+    pub fn backup_delete(&self) -> Result<(), CoreError> {
+        self.delete("/backup/history").map(|_| ())
     }
 
     pub fn update_profile(

@@ -145,6 +145,14 @@ pub fn olm_master_public(account_secret_b64: String) -> Result<String, CoreError
     aether_ratchet_core::master_public(&account_secret_b64).map_err(err)
 }
 
+/// Ключ шифрования резервной копии истории (P9): AES-256-GCM, выводится из
+/// приватного ключа аккаунта — доступен на любом устройстве после входа,
+/// сервер вывести его не может.
+#[uniffi::export]
+pub fn backup_key(account_secret_b64: String) -> Result<String, CoreError> {
+    aether_ratchet_core::backup_key(&account_secret_b64).map_err(err)
+}
+
 #[uniffi::export]
 pub fn olm_sign_device(
     account_secret_b64: String,

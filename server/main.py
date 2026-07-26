@@ -493,6 +493,21 @@ def init_db() -> None:
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE signed_devices ADD COLUMN cross_signed INTEGER NOT NULL DEFAULT 0")
 
+        # P9: резервная копия истории. Сервер хранит ТОЛЬКО шифротекст
+        # (AES-256-GCM ключом, выведенным из приватного ключа аккаунта) —
+        # прочитать его он не может, как и конверты сообщений.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS history_backups (
+                seq BIGSERIAL PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                nonce_b64 TEXT NOT NULL,
+                ciphertext_b64 TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_history_backups_user ON history_backups(user_id, seq)")
+
         # Контроль сессий: сессия привязывается к крипто-устройству (клиент
         # сообщает device_id после логина) — чтобы можно было выкинуть
         # конкретное устройство. 2FA: TOTP-секрет на аккаунт.
@@ -1020,6 +1035,8 @@ async def wipe_account(body: WipeRequest, authorization: str = Header(None),
         purged = cur.rowcount
         cur.execute("DELETE FROM group_members WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
         left_groups = cur.rowcount
+        # «Удалить всё» обязано забирать и резервную копию истории.
+        cur.execute("DELETE FROM history_backups WHERE user_id = LOWER(%s)", (current_user,))
         cur.execute(
             "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND token != %s RETURNING token",
             (current_user, token))
@@ -1296,6 +1313,65 @@ def keys_count(device_id: str = "primary", current_user: str = Depends(get_curre
         row = cur.fetchone()
     return {"count": row["n"] if row else 0,
             "identity_key_b64": dev["identity_key_b64"] if dev else None}
+
+
+# --- P9: резервная копия истории (сервер видит только шифротекст) ---
+
+MAX_BACKUP_CHUNK_BYTES = 1_000_000
+MAX_BACKUP_CHUNKS = 20_000
+
+
+class BackupChunkRequest(BaseModel):
+    nonce_b64: str = Field(min_length=8, max_length=64)
+    ciphertext_b64: str = Field(min_length=1, max_length=1_400_000)
+
+
+@app.put("/backup/history")
+@limiter.limit("120/minute")
+def backup_upload(body: BackupChunkRequest, request: Request,
+                  current_user: str = Depends(get_current_user)) -> dict:
+    """Принять чанк резервной копии. Содержимое серверу непрозрачно: это
+    AES-256-GCM под ключом, выведенным из приватного ключа аккаунта."""
+    if len(_decode_b64url(body.ciphertext_b64, "ciphertext_b64")) > MAX_BACKUP_CHUNK_BYTES:
+        raise HTTPException(413, "Backup chunk is too large")
+    if len(_decode_b64url(body.nonce_b64, "nonce_b64")) != 12:
+        raise HTTPException(400, "nonce_b64 must encode 12 bytes")
+    with db_conn() as cur:
+        cur.execute("SELECT COUNT(*) AS n FROM history_backups WHERE user_id = LOWER(%s)",
+                    (current_user,))
+        if (cur.fetchone()["n"] or 0) >= MAX_BACKUP_CHUNKS:
+            raise HTTPException(413, "Backup quota exceeded")
+        cur.execute(
+            """INSERT INTO history_backups (user_id, nonce_b64, ciphertext_b64, created_at)
+               VALUES (LOWER(%s), %s, %s, %s) RETURNING seq""",
+            (current_user, body.nonce_b64, body.ciphertext_b64, _utc_now()))
+        seq = cur.fetchone()["seq"]
+    return {"ok": True, "seq": seq}
+
+
+@app.get("/backup/history")
+def backup_fetch(after_seq: int = 0, limit: int = 50,
+                 current_user: str = Depends(get_current_user)) -> dict:
+    """Отдать чанки резервной копии по возрастанию seq (для восстановления)."""
+    limit = max(1, min(limit, 200))
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT seq, nonce_b64, ciphertext_b64 FROM history_backups
+               WHERE user_id = LOWER(%s) AND seq > %s ORDER BY seq ASC LIMIT %s""",
+            (current_user, after_seq, limit))
+        rows = cur.fetchall()
+    return {"chunks": [{"seq": r["seq"], "nonce_b64": r["nonce_b64"],
+                        "ciphertext_b64": r["ciphertext_b64"]} for r in rows],
+            "has_more": len(rows) == limit}
+
+
+@app.delete("/backup/history")
+def backup_delete(current_user: str = Depends(get_current_user)) -> dict:
+    """Удалить резервную копию целиком — выключение тумблера в клиенте."""
+    with db_conn() as cur:
+        cur.execute("DELETE FROM history_backups WHERE user_id = LOWER(%s)", (current_user,))
+        removed = cur.rowcount
+    return {"ok": True, "removed_chunks": removed}
 
 
 @app.get("/users/me/dialogs")
