@@ -5,6 +5,14 @@ import Foundation
 //
 // Ядро (ApiClient, CoreStore, WsClient и свободные функции crypto/protocol) генерируется
 // UniFFI в Core/Generated/sm_core.swift. Здесь — тонкая типобезопасная фасадная прослойка.
+
+/// Тревога доверия ключам (TOFU/подписи, SEC HIGH-2). Отдельный тип, потому что
+/// ядро маппит в CoreError.Crypto ВСЁ подряд (включая битый base64) — по нему
+/// нельзя отличить «подмена ключей» от «мусор в одном бандле».
+struct KeyTrustAlert: Error {
+    let message: String
+}
+
 actor CoreClient {
     static let baseURL = "https://YOUR-SERVER-HOST.nip.io"
 
@@ -382,29 +390,53 @@ actor CoreClient {
 
     private func nowTs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
-    /// Гейт исходящих: верификация подписи бандла + TOFU-пин olm-identity.
-    /// Бросает при неверной подписи, стриппинге подписи и смене ключа.
-    private func verifyAndPinBundle(peer: String, deviceId: String, bundle: PrekeyBundle) throws {
+    /// Разобрать ключ пина/сессии обратно в (peer, device).
+    private func splitSessionKey(_ peerKey: String) -> (peer: String, device: String) {
+        guard let range = peerKey.range(of: "::") else { return (peerKey, "primary") }
+        return (String(peerKey[..<range.lowerBound]), String(peerKey[range.upperBound...]))
+    }
+
+    /// Проверка подписи бандла. Возвращает ВЕРИФИЦИРОВАННЫЙ ed25519 (nil — легаси-бандл
+    /// без подписей). Частично подписанный бандл (есть часть полей) отвергается: честный
+    /// сервер такой не отдаёт, а «мягкий» проход пинил бы непроверенный ключ.
+    private func verifiedEd25519(peer: String, deviceId: String, bundle: PrekeyBundle) throws -> String? {
         let key = sessionKey(peer, deviceId)
-        if let ed = bundle.ed25519KeyB64, let idSig = bundle.identitySigB64,
-           let otkSig = bundle.oneTimeKeySigB64 {
+        let pinnedEd = ((try? store.olmPinGet(peerKey: key)) ?? nil)?.ed25519B64
+        let anySig = bundle.ed25519KeyB64 != nil || bundle.identitySigB64 != nil
+            || bundle.oneTimeKeySigB64 != nil
+        guard anySig || pinnedEd != nil else { return nil }   // легаси-путь: TOFU только по curve
+        guard let ed = bundle.ed25519KeyB64, let idSig = bundle.identitySigB64,
+              let otkSig = bundle.oneTimeKeySigB64 else {
+            throw KeyTrustAlert(message: pinnedEd != nil
+                ? "prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером"
+                : "неполный подписанный prekey-бандл — возможна подмена сервером")
+        }
+        do {
             try olmVerifyPrekeyBundle(userId: peer, deviceId: deviceId,
                                       identityKeyB64: bundle.identityKeyB64,
                                       ed25519KeyB64: ed, identitySigB64: idSig,
                                       otkId: bundle.oneTimeKeyId,
                                       otkB64: bundle.oneTimeKeyB64,
                                       otkSigB64: otkSig)
-        } else {
-            let pin = (try? store.olmPinGet(peerKey: key)) ?? nil
-            if pin?.ed25519B64 != nil {
-                throw CoreError.Crypto(msg: "prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером")
-            }
+        } catch {
+            throw KeyTrustAlert(message: "подпись prekey-бандла не сошлась — возможна подмена ключей сервером")
         }
+        return ed
+    }
+
+    /// Гейт исходящих: верификация подписи бандла + TOFU-пин olm-identity.
+    /// Бросает KeyTrustAlert при неверной/неполной подписи, стриппинге и смене ключа —
+    /// только эти ошибки роняют отправку целиком (см. sendDirect).
+    private func verifyAndPinBundle(peer: String, deviceId: String, bundle: PrekeyBundle) throws {
+        let key = sessionKey(peer, deviceId)
+        // В пин уходит только ПРОВЕРЕННЫЙ ed25519: иначе сервер мог бы подсунуть
+        // свой ed в неподписанном бандле и намертво поссорить нас с честным пиром.
+        let ed = try verifiedEd25519(peer: peer, deviceId: deviceId, bundle: bundle)
         let status = try store.olmPinCheck(peerKey: key, curve25519B64: bundle.identityKeyB64,
-                                           ed25519B64: bundle.ed25519KeyB64, nowTs: nowTs())
+                                           ed25519B64: ed, nowTs: nowTs())
         if status == .mismatch {
             pendingKeyChanges[key] = bundle
-            throw CoreError.Crypto(msg: "olm-ключ собеседника изменился — сверьте цифры безопасности или примите новый ключ")
+            throw KeyTrustAlert(message: "olm-ключ собеседника изменился — сверьте цифры безопасности или примите новый ключ")
         }
     }
 
@@ -416,17 +448,22 @@ actor CoreClient {
             ?? pendingInboundKeys.keys.first(where: matches)
     }
 
-    /// Явно принять новый ключ устройства пира. Для исходящих — перепин + немедленная
-    /// установка сессии из уже склеймленного бандла (OTK не сжигается повторно).
-    /// Для входящих — перепин curve-ключа; сессию заведёт следующий prekey-конверт
-    /// (отклонённое сообщение ретраится поллингом и вскроется само).
+    /// Явно принять новый ключ устройства пира. Для исходящих бандл берётся СВЕЖИМ
+    /// claim'ом: отложенный в стэше OTK мог быть давно израсходован или вытеснен, а
+    /// olmCreateOutbound — чистая математика и молча собрала бы мёртвую сессию.
+    /// Пин обновляется только после успешного создания сессии. Для входящих —
+    /// перепин curve-ключа; сессию заведёт следующий prekey-конверт (отклонённое
+    /// сообщение ретраится поллингом и вскроется само).
     func acceptNewOlmKey(peerKey: String) throws {
-        if let bundle = pendingKeyChanges[peerKey] {
-            try store.olmPinAccept(peerKey: peerKey, curve25519B64: bundle.identityKeyB64,
-                                   ed25519B64: bundle.ed25519KeyB64, nowTs: nowTs())
+        if pendingKeyChanges[peerKey] != nil {
+            let (peer, device) = splitSessionKey(peerKey)
+            let bundle = try api.claimKeysDevice(userId: peer, deviceId: device)
+            let ed = try verifiedEd25519(peer: peer, deviceId: device, bundle: bundle)
             let session = try olmCreateOutbound(accountPickle: olmAccount(),
                                                 theirIdentityB64: bundle.identityKeyB64,
                                                 theirOneTimeKeyB64: bundle.oneTimeKeyB64)
+            try store.olmPinAccept(peerKey: peerKey, curve25519B64: bundle.identityKeyB64,
+                                   ed25519B64: ed, nowTs: nowTs())
             try store.olmSessionSet(peerId: peerKey, sessionJson: session)
             pendingKeyChanges.removeValue(forKey: peerKey)
         } else if let curve = pendingInboundKeys[peerKey] {
@@ -481,10 +518,11 @@ actor CoreClient {
                                                    theirIdentityB64: bundle.identityKeyB64,
                                                    theirOneTimeKeyB64: bundle.oneTimeKeyB64)
                 sessions.append((dev, pickle))
-            } catch let error as CoreError {
-                if case .Crypto = error { throw error }   // тревога безопасности — стоп всей отправке
-                if firstError == nil { firstError = error }   // сеть/404: устройство пропускаем
+            } catch let alert as KeyTrustAlert {
+                // Тревога доверия ключам — стоп всей отправке, ни одна копия не ушла.
+                throw CoreError.Crypto(msg: alert.message)
             } catch {
+                // Сеть, 404/409, битый бандл одного устройства — пропускаем его.
                 if firstError == nil { firstError = error }
             }
         }

@@ -459,6 +459,9 @@ let olmIdentityPins = Object.create(null);
 // TOFU-пины ed25519-ключей устройств (SEC HIGH-2): deviceKey -> ed25519_b64.
 // Отдельно от curve-пинов ради обратной совместимости формата стейта.
 let olmEdPins = Object.create(null);
+// Непринятые смены ключа (deviceKey -> {peerId, identity}): баннер в чате.
+// Живут в памяти вкладки — после перезагрузки тревога всплывёт заново.
+let pendingKeyChanges = Object.create(null);
 // Multi-device: этот браузер — отдельное криптоустройство аккаунта.
 // 'primary' — только если аккаунт ещё нигде не имел Olm-ключей (легаси-совместимость).
 let myDeviceId = '';
@@ -684,6 +687,58 @@ async function ensureRatchetKeys() {
     await saveRatchetState(true);
 }
 
+/// Ключи непринятых смен для текущего открытого чата.
+function pendingKeysForPeer(peerId) {
+    if (!peerId) return [];
+    const id = String(peerId).toLowerCase();
+    return Object.keys(pendingKeyChanges).filter(k => k === id || k.startsWith(`${id}::`));
+}
+
+function renderKeyChangeBar() {
+    const bar = document.getElementById('key-change-bar');
+    if (!bar) return;
+    bar.classList.toggle('hidden', pendingKeysForPeer(selectedPeer).length === 0);
+}
+
+/// Явное принятие нового ключа: снимаем пины и мёртвые сессии этого устройства.
+/// Отклонённое входящее prekey-сообщение вскроется само на следующем поллинге,
+/// исходящие пойдут через свежий claim.
+async function acceptPendingKeyChanges() {
+    const keys = pendingKeysForPeer(selectedPeer);
+    if (!keys.length) return;
+    for (const key of keys) {
+        delete olmIdentityPins[key];
+        delete olmEdPins[key];
+        delete olmSessions[key];
+        delete pendingKeyChanges[key];
+    }
+    await saveRatchetState();
+    renderKeyChangeBar();
+    showStatus('Новый ключ принят — сообщения синхронизируются', 'success');
+    pollInbox().catch(() => {});
+}
+
+/// Проверка подписи prekey-бандла (SEC HIGH-2). Возвращает ВЕРИФИЦИРОВАННЫЙ
+/// ed25519 или '' для легаси-бандла без подписей. Частично подписанный бандл
+/// отвергается: честный сервер такой не отдаёт (чистка OTK + анти-даунгрейд),
+/// а «мягкий» проход пинил бы непроверенный ключ.
+function verifyBundleSignature(api, peerId, deviceId, bundle, key) {
+    const bundleEd = typeof bundle.ed25519_key_b64 === 'string' ? bundle.ed25519_key_b64 : '';
+    const idSig = typeof bundle.identity_sig_b64 === 'string' ? bundle.identity_sig_b64 : '';
+    const otk = bundle.one_time_key || {};
+    const otkSig = typeof otk.sig_b64 === 'string' ? otk.sig_b64 : '';
+    if (!bundleEd && !idSig && !otkSig && !olmEdPins[key]) return '';   // легаси: TOFU по curve
+    if (!(bundleEd && idSig && otkSig)) {
+        throw new Error(olmEdPins[key]
+            ? 'Prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером'
+            : 'Неполный подписанный prekey-бандл — возможна подмена сервером');
+    }
+    // Бросает при неверной подписи (канон ядра AETHER-IDKEY-1/AETHER-OTK-1).
+    api.verify_prekey_bundle(peerId, deviceId, bundle.identity_key_b64,
+                             bundleEd, idSig, otk.key_id, otk.key_b64, otkSig);
+    return bundleEd;
+}
+
 async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
     return runRatchetSerial(async () => {
         const api = await loadRatchetApi();
@@ -703,29 +758,29 @@ async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
             // SEC HIGH-2: верификация подписи бандла и TOFU-пин ДО создания
             // сессии — подменённый сервером бандл не порождает ни сессии,
             // ни зря сожжённого локального состояния.
-            const bundleEd = typeof bundle.ed25519_key_b64 === 'string' ? bundle.ed25519_key_b64 : '';
-            const idSig = typeof bundle.identity_sig_b64 === 'string' ? bundle.identity_sig_b64 : '';
-            const otk = bundle.one_time_key || {};
-            const otkSig = typeof otk.sig_b64 === 'string' ? otk.sig_b64 : '';
-            if (bundleEd && idSig && otkSig) {
-                // Бросает при неверной подписи (канон ядра AETHER-IDKEY-1/AETHER-OTK-1).
-                api.verify_prekey_bundle(peerId, deviceId, bundle.identity_key_b64,
-                                         bundleEd, idSig, otk.key_id, otk.key_b64, otkSig);
-            } else if (olmEdPins[key]) {
-                throw new Error('Prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером');
-            }
+            const verifiedEd = verifyBundleSignature(api, peerId, deviceId, bundle, key);
             const pinned = olmIdentityPins[key];
             const changed = (pinned && pinned !== bundle.identity_key_b64)
-                || (olmEdPins[key] && bundleEd && olmEdPins[key] !== bundleEd);
+                || (olmEdPins[key] && verifiedEd && olmEdPins[key] !== verifiedEd);
             if (changed) {
                 const accept = window.confirm(
                     'Ключ шифрования собеседника изменился. Это смена устройства или переустановка приложения — либо попытка подмены. ' +
                     'Сверьте цифры безопасности по другому каналу. Принять новый ключ и продолжить отправку?');
-                if (!accept) throw new Error('Identity-ключ собеседника изменился — отправка отменена');
+                if (!accept) {
+                    // Отказ не должен терять тревогу: баннер в чате оставляет путь
+                    // принять ключ позже, после сверки.
+                    pendingKeyChanges[key] = { peerId, identity: bundle.identity_key_b64 };
+                    renderKeyChangeBar();
+                    throw new Error('Identity-ключ собеседника изменился — отправка отменена');
+                }
                 delete olmEdPins[key];
+                delete pendingKeyChanges[key];
+                renderKeyChangeBar();
             }
             olmIdentityPins[key] = bundle.identity_key_b64;
-            if (bundleEd) olmEdPins[key] = bundleEd;
+            // Пиним ТОЛЬКО проверенный ed25519: иначе сервер подсунул бы свой ключ
+            // в неподписанном бандле и намертво поссорил нас с честным пиром.
+            if (verifiedEd) olmEdPins[key] = verifiedEd;
             session = api.create_outbound(
                 olmAccountPickle,
                 bundle.identity_key_b64,
@@ -768,6 +823,10 @@ async function openRatchetEnvelope(peerId, envelope) {
         const key = deviceKey(peerId, senderDevice);
         const pinned = olmIdentityPins[key];
         if (pinned && pinned !== identity) {
+            // Тревога TOFU: сообщение не вскрываем и не ack'аем, но запоминаем —
+            // без этого чат заклинивало бы навсегда (принять новый ключ было негде).
+            pendingKeyChanges[key] = { peerId, identity };
+            renderKeyChangeBar();
             throw new Error('Identity-ключ собеседника изменился');
         }
         olmIdentityPins[key] = identity;
@@ -2088,22 +2147,32 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                 // устройству получателя (multi-device fanout).
                 const devices = await getPeerDevices(targetPeer);
                 if (!devices.length) throw new Error('У получателя нет Olm-устройств');
-                let firstData = null;
+                // Фаза 1: конверты для ВСЕХ устройств (claim + верификация подписи +
+                // TOFU-пин). Тревога доверия ключам роняет отправку целиком, пока ни
+                // одна копия не ушла — иначе часть копий уже была бы у сервера.
+                const prepared = [];
                 for (const dev of devices) {
-                    const devEnvelope = await ratchetEnvelopeForDevice(targetPeer, dev.device_id, wireJson);
+                    prepared.push({
+                        deviceId: dev.device_id,
+                        envelope: await ratchetEnvelopeForDevice(targetPeer, dev.device_id, wireJson)
+                    });
+                }
+                // Фаза 2: доставка копий; сетевой сбой на не-первой копии не роняет отправку.
+                let firstData = null;
+                for (const item of prepared) {
                     const res = await fetch(`${serverUrl}/messages`, {
                         method: 'POST',
                         headers: authHeaders({ 'Content-Type': 'application/json' }),
                         body: JSON.stringify({
                             sender_id: myId,
                             recipient_id: targetPeer,
-                            envelope: devEnvelope,
+                            envelope: item.envelope,
                             client_id: firstData ? crypto.randomUUID() : clientId,
-                            target_device_id: dev.device_id
+                            target_device_id: item.deviceId
                         })
                     });
                     if (!res.ok) {
-                        if (firstData) { console.error('Fanout copy failed for', dev.device_id, res.status); continue; }
+                        if (firstData) { console.error('Fanout copy failed for', item.deviceId, res.status); continue; }
                         throw new Error('Ошибка отправки');
                     }
                     if (!firstData) firstData = await res.json();
@@ -2751,6 +2820,7 @@ function selectContact(peerId) {
     activeChatWindow.classList.remove('hidden');
     
     updateActiveChatHeader(peerId);
+    renderKeyChangeBar();
     if (!profileCache[peerId]) fetchPeerProfile(peerId);
     
     chatScreen.classList.add('chat-open');
@@ -5983,6 +6053,16 @@ function pinMessage(peerId, msgId) {
         sendPayloadMessage({ type: msgId ? 'pin' : 'unpin', target_id: msgId || '' }, peerId);
     }
 }
+
+(function initKeyChangeUI() {
+    const acceptBtn = document.getElementById('key-change-accept');
+    if (acceptBtn) {
+        acceptBtn.addEventListener('click', () => {
+            if (!window.confirm('Принять новый ключ шифрования собеседника? Делайте это только после сверки по другому каналу.')) return;
+            acceptPendingKeyChanges().catch(e => showStatus(`Не удалось принять ключ: ${e.message}`, 'error'));
+        });
+    }
+})();
 
 (function initPinUI() {
     const bar = document.getElementById('pinned-bar');
