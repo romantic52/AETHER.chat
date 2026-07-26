@@ -40,6 +40,9 @@ class MessageRepository(
     private var cachedOlmIdentity = ""
     private val outboxSignal = Channel<Unit>(Channel.CONFLATED)
     private val mediaDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    // Сообщения, чьи байты заливаются прямо сейчас: outbox не должен взяться
+    // за ту же отправку вторым потоком и залить файл дважды.
+    private val uploadsInFlight = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile private var appActive = true
 
     // ------------------------------------------------------------------
@@ -781,7 +784,10 @@ class MessageRepository(
     }
 
     private fun buildWire(msg: MessageEntity): String {
-        val isMedia = msg.text.startsWith("{\"type\":\"media\"")
+        // По полю, а не по началу строки: порядок ключей в JSONObject не задан,
+        // а сюда теперь попадают и медиа, чей payload достраивался после заливки.
+        val isMedia = msg.text.trimStart().startsWith("{") &&
+            runCatching { JSONObject(msg.text).optString("type") == "media" }.getOrDefault(false)
         return if (isMedia) {
             val o = JSONObject(msg.text)
             if (msg.forwardedFrom != null) o.put("fwd_from", msg.forwardedFrom)
@@ -804,6 +810,8 @@ class MessageRepository(
             val blockedPeers = HashSet<String>()
             for (msg in store.getPendingOutgoing()) {
                 if (msg.peerId.lowercase() in blockedPeers) continue
+                // Отправку, которая прямо сейчас заливает байты, не трогаем.
+                if (msg.msgId in uploadsInFlight) continue
                 val localId = localRecordingId(msg.text)
                 if (localId != null && !findLocalRecordingFile(localId).let { it.exists() && it.length() > 0L }) {
                     log("Outbox: локальная запись потеряна msg=${msg.msgId}")
@@ -811,12 +819,21 @@ class MessageRepository(
                     attempts.remove(msg.msgId)
                     continue
                 }
+                val pendingFile = pendingUploadFile(msg.text)
+                if (pendingFile != null && !(pendingFile.isFile && pendingFile.length() > 0L)) {
+                    log("Outbox: исходный файл потерян msg=${msg.msgId}")
+                    store.updateStatus(msg.msgId, -1)
+                    attempts.remove(msg.msgId)
+                    continue
+                }
                 try {
-                    if (localId != null) {
-                        uploadLocalRecording(msg)
-                    } else {
-                        sendWire(msg.peerId, buildWire(msg), clientMsgId = msg.msgId)
-                        store.updateStatus(msg.msgId, 1)
+                    when {
+                        localId != null -> uploadLocalRecording(msg)
+                        pendingFile != null -> uploadPendingMedia(msg, pendingFile, deleteSource = false)
+                        else -> {
+                            sendWire(msg.peerId, buildWire(msg), clientMsgId = msg.msgId)
+                            store.updateStatus(msg.msgId, 1)
+                        }
                     }
                     attempts.remove(msg.msgId)
                 } catch (e: KeyTrustStore.KeyChangedException) {
@@ -913,62 +930,42 @@ class MessageRepository(
         return try {
             for (file in files) {
                 if (!file.isFile || file.length() == 0L) continue
-                val symKey = crypto.generateSymmetricKey()
-                val tmp = File.createTempFile("aether_up", null)
-                val jsonText: String
-                try {
-                    val nonceB64 = file.inputStream().use { input ->
-                        tmp.outputStream().use { output ->
-                            crypto.encryptStream(input, output, symKey)
+
+                val mimeType = probeMime(file)
+                val pending = JSONObject()
+                    .put("type", "media")
+                    .put("local_path", file.absolutePath)
+                    .put("mime_type", mimeType)
+                if (asFile) {
+                    pending.put("kind", "file")
+                    pending.put("file_name", file.name)
+                    pending.put("file_size", file.length())
+                } else {
+                    pending.put("kind", mediaKindFor(mimeType))
+                    if (mimeType.startsWith("image/")) {
+                        queryImageSize(file)?.let { (width, height) ->
+                            pending.put("width", width).put("height", height)
                         }
                     }
-
-                    val fileId = api.uploadFile(tmp)
-                    val cacheTarget = mediaCacheFile(fileId, nonceB64, symKey.keyB64)
-                    if (!cacheTarget.exists() || cacheTarget.length() == 0L) {
-                        file.copyTo(cacheTarget, overwrite = true)
-                    }
-
-                    val mimeType = probeMime(file)
-                    val jsonObj = JSONObject()
-                        .put("type", "media")
-                        .put("file_id", fileId)
-                        .put("sym_key", symKey.keyB64)
-                        .put("mime_type", mimeType)
-                        .put("nonce", nonceB64)
-                    if (asFile) {
-                        jsonObj.put("kind", "file")
-                        jsonObj.put("file_name", file.name)
-                        jsonObj.put("file_size", file.length())
-                    } else {
-                        jsonObj.put("kind", mediaKindFor(mimeType))
-                        if (mimeType.startsWith("image/")) {
-                            queryImageSize(file)?.let { (width, height) ->
-                                jsonObj.put("width", width).put("height", height)
-                            }
-                        }
-                    }
-                    if (caption != null && file == files.first()) jsonObj.put("caption", caption)
-                    decorate?.invoke(jsonObj)
-                    jsonText = jsonObj.toString()
-                } finally {
-                    tmp.delete()
                 }
+                if (caption != null && file == files.first()) pending.put("caption", caption)
+                decorate?.invoke(pending)
 
-                val clientId = UUID.randomUUID().toString()
-                sendWire(peerId, jsonText, clientMsgId = clientId)
-
-                ensureChatExists(peerId)
-                store.insertMessage(
-                    MessageEntity(
-                        msgId = clientId,
-                        peerId = peerId,
-                        isOut = true,
-                        text = jsonText,
-                        timestamp = System.currentTimeMillis(),
-                        status = 1
-                    )
+                // Строку в ленте заводим ДО заливки: иначе окно молчит всё
+                // время шифрования и отправки, а показывать прогресс не на чем.
+                // Побочно это страхует от потери: не доехавшую заливку добьёт
+                // outbox по local_path.
+                val row = MessageEntity(
+                    msgId = UUID.randomUUID().toString(),
+                    peerId = peerId,
+                    isOut = true,
+                    text = pending.toString(),
+                    timestamp = System.currentTimeMillis(),
+                    status = 0,
                 )
+                ensureChatExists(peerId)
+                store.insertMessage(row)
+                uploadPendingMedia(row, file, deleteSource = false)
             }
             null
         } catch (e: Exception) { e }
@@ -1026,19 +1023,27 @@ class MessageRepository(
         null
     }
 
-    private fun cachedLocalRecording(jsonText: String): File? =
-        localRecordingId(jsonText)?.let(::findLocalRecordingFile)
+    /** Файл, выбранный пользователем и ещё не залитый (payload с local_path). */
+    private fun pendingUploadFile(jsonText: String): File? = try {
+        JSONObject(jsonText).optString("local_path").takeIf(String::isNotBlank)?.let(::File)
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Местные байты ещё не залитого сообщения: своё фото видно сразу. */
+    private fun cachedLocalSource(jsonText: String): File? =
+        (localRecordingId(jsonText)?.let(::findLocalRecordingFile) ?: pendingUploadFile(jsonText))
             ?.takeIf { it.exists() && it.length() > 0L }
 
     fun cachedMediaFile(jsonText: String): File? =
-        cachedLocalRecording(jsonText) ?: mediaRef(jsonText)?.let {
+        cachedLocalSource(jsonText) ?: mediaRef(jsonText)?.let {
             mediaCacheFile(it.fileId, it.nonce, it.key)
                 .takeIf { file -> file.exists() && file.length() > 0L }
         }
 
     suspend fun downloadMedia(jsonText: String): File? {
         return try {
-            cachedLocalRecording(jsonText)?.let { return it }
+            cachedLocalSource(jsonText)?.let { return it }
             val ref = mediaRef(jsonText) ?: return null
             val cacheKey = "${ref.fileId}|${ref.nonce}|${ref.key}"
             val cacheFile = mediaCacheFile(ref.fileId, ref.nonce, ref.key)
@@ -1047,13 +1052,24 @@ class MessageRepository(
             val lock = mediaDownloadLocks.getOrPut(cacheKey) { Mutex() }
             val result = lock.withLock {
                 if (cacheFile.exists() && cacheFile.length() > 0L) return@withLock cacheFile
-                val encryptedBytes = api.downloadFile(ref.fileId)
-                val plain = crypto.decryptBytes(
-                    encryptedBytes,
-                    ref.nonce,
-                    E2ECrypto.SymmetricKey(ref.key),
-                )
-                cacheBytes(plain, cacheFile)
+                // Размер известен не всегда (его несут только payload'ы файлов) —
+                // остальное досчитает Content-Length ответа.
+                TransferProgress.start(ref.fileId, ref.sizeBytes, TransferDirection.DOWNLOAD)
+                try {
+                    val encryptedBytes = api.downloadFile(ref.fileId) { done, total ->
+                        TransferProgress.update(ref.fileId, done, total)
+                    }
+                    val plain = crypto.decryptBytes(
+                        encryptedBytes,
+                        ref.nonce,
+                        E2ECrypto.SymmetricKey(ref.key),
+                    )
+                    cacheBytes(plain, cacheFile)
+                    TransferProgress.finish(ref.fileId)
+                } catch (e: Exception) {
+                    TransferProgress.fail(ref.fileId)
+                    throw e
+                }
                 cacheFile
             }
             mediaDownloadLocks.remove(cacheKey)
@@ -1105,38 +1121,65 @@ class MessageRepository(
             ?: throw IllegalArgumentException("Нет локальной записи")
         val source = findLocalRecordingFile(localId)
         require(source.exists() && source.length() > 0L) { "Локальная запись потеряна" }
+        uploadPendingMedia(msg, source, deleteSource = true)
+    }
 
-        val payload = JSONObject(msg.text)
-        val symKey = crypto.generateSymmetricKey()
-        val encrypted = File.createTempFile("aether_rec", null)
-        val nonceB64: String
-        val fileId: String
+    /**
+     * Шифрует локальный файл, заливает его и достраивает payload сообщения
+     * настоящими file_id/sym_key/nonce. Общий путь для свежей отправки и для
+     * повтора из outbox. [deleteSource] снимает исходник только у записей из
+     * outbox-папки: файл, выбранный пользователем, трогать нельзя.
+     */
+    private suspend fun uploadPendingMedia(msg: MessageEntity, source: File, deleteSource: Boolean) {
+        if (!uploadsInFlight.add(msg.msgId)) return
+        // Отметку держим до самого конца: пока payload не переписан, сообщение
+        // числится неотправленным, и освободись отметка раньше — outbox залил
+        // бы тот же файл вторым разом.
         try {
-            nonceB64 = source.inputStream().use { input ->
-                encrypted.outputStream().use { output ->
-                    crypto.encryptStream(input, output, symKey)
+            val payload = JSONObject(msg.text)
+            val symKey = crypto.generateSymmetricKey()
+            val encrypted = File.createTempFile("aether_up", null)
+            // Прогресс заводим до шифрования: на большом файле оно само по себе
+            // заметно, а байты в сеть пойдут только после него.
+            TransferProgress.start(msg.msgId, source.length(), TransferDirection.UPLOAD)
+            val nonceB64: String
+            val fileId: String
+            try {
+                nonceB64 = source.inputStream().use { input ->
+                    encrypted.outputStream().use { output ->
+                        crypto.encryptStream(input, output, symKey)
+                    }
                 }
+                fileId = api.uploadFile(encrypted) { done, total ->
+                    TransferProgress.update(msg.msgId, done, total)
+                }
+            } catch (e: Exception) {
+                TransferProgress.fail(msg.msgId)
+                throw e
+            } finally {
+                encrypted.delete()
             }
-            fileId = api.uploadFile(encrypted)
+            TransferProgress.finish(msg.msgId)
+
+            val finalCache = mediaCacheFile(fileId, nonceB64, symKey.keyB64)
+            if (!finalCache.exists() || finalCache.length() == 0L) {
+                source.copyTo(finalCache, overwrite = true)
+            }
+            payload.remove("local_id")
+            payload.remove("local_path")
+            val wireJson = payload
+                .put("file_id", fileId)
+                .put("sym_key", symKey.keyB64)
+                .put("nonce", nonceB64)
+                .toString()
+
+            store.updatePayload(msg.msgId, wireJson)
+            if (deleteSource) source.delete()
+            sendWire(msg.peerId, wireJson, clientMsgId = msg.msgId)
+            store.updateStatus(msg.msgId, 1)
         } finally {
-            encrypted.delete()
+            uploadsInFlight.remove(msg.msgId)
         }
-
-        val finalCache = mediaCacheFile(fileId, nonceB64, symKey.keyB64)
-        if (!finalCache.exists() || finalCache.length() == 0L) {
-            source.copyTo(finalCache, overwrite = true)
-        }
-        payload.remove("local_id")
-        val wireJson = payload
-            .put("file_id", fileId)
-            .put("sym_key", symKey.keyB64)
-            .put("nonce", nonceB64)
-            .toString()
-
-        store.updatePayload(msg.msgId, wireJson)
-        source.delete()
-        sendWire(msg.peerId, wireJson, clientMsgId = msg.msgId)
-        store.updateStatus(msg.msgId, 1)
     }
 
     private fun normalizeIncomingPayload(obj: JSONObject): JSONObject {

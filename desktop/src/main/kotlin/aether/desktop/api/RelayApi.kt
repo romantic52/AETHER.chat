@@ -653,8 +653,11 @@ class RelayApi(baseUrl: String) {
         throw IllegalStateException("Upload failed: ${apiErrorDetail(e)}")
     }
 
-    /** Стриминговая загрузка больших шифрованных файлов (multipart вручную). */
-    fun uploadFile(file: File): String {
+    /**
+     * Стриминговая загрузка больших шифрованных файлов (multipart вручную).
+     * [onProgress] получает (отправлено, всего) по мере вычитывания файла.
+     */
+    fun uploadFile(file: File, onProgress: ((Long, Long) -> Unit)? = null): String {
         val boundary = "aether-" + java.util.UUID.randomUUID().toString()
         val head = (
             "--$boundary\r\n" +
@@ -662,17 +665,24 @@ class RelayApi(baseUrl: String) {
                 "Content-Type: application/octet-stream\r\n\r\n"
             ).toByteArray(Charsets.UTF_8)
         val tail = "\r\n--$boundary--\r\n".toByteArray(Charsets.UTF_8)
-        val length = head.size.toLong() + file.length() + tail.size
+        val payloadSize = file.length()
+        val length = head.size.toLong() + payloadSize + tail.size
         val request = authorizedRequest("$base/upload")
             .header("Content-Type", "multipart/form-data; boundary=$boundary")
             .POST(
                 HttpRequest.BodyPublishers.fromPublisher(
                     HttpRequest.BodyPublishers.ofInputStream {
+                        // Поток открывается внутри лямбды: клиент вправе
+                        // запросить тело заново, и тогда счётчик начнётся с нуля.
+                        val body = file.inputStream().buffered()
                         SequenceInputStream(
                             java.util.Collections.enumeration(
                                 listOf(
                                     ByteArrayInputStream(head),
-                                    file.inputStream().buffered(),
+                                    // Считаем только сам файл: head и tail — это
+                                    // десятки байт, в прогрессе они лишний шум.
+                                    if (onProgress == null) body
+                                    else CountingInputStream(body, payloadSize, onProgress),
                                     ByteArrayInputStream(tail),
                                 )
                             )
@@ -695,10 +705,72 @@ class RelayApi(baseUrl: String) {
         throw IllegalStateException("Avatar upload failed: ${apiErrorDetail(e)}")
     }
 
-    fun downloadFile(fileId: String): ByteArray = try {
-        core.download(fileId)
-    } catch (e: Exception) {
-        throw IllegalStateException("Download failed: ${apiErrorDetail(e)}")
+    /**
+     * [onProgress] получает (получено, всего). С колбэком качаем сами, потоком:
+     * ядро отдаёт файл одним куском и о ходе загрузки сообщить не может. Если
+     * свой путь не сработал, остаётся штатная загрузка через ядро.
+     */
+    fun downloadFile(fileId: String, onProgress: ((Long, Long) -> Unit)? = null): ByteArray {
+        if (onProgress != null) {
+            streamDownload(fileId, onProgress)?.let { return it }
+        }
+        return try {
+            core.download(fileId)
+        } catch (e: Exception) {
+            throw IllegalStateException("Download failed: ${apiErrorDetail(e)}")
+        }
+    }
+
+    private fun streamDownload(fileId: String, onProgress: (Long, Long) -> Unit): ByteArray? = try {
+        val request = authorizedRequest("$base/download/${urlEncode(fileId)}").GET().build()
+        val response = http.send(request, HttpResponse.BodyHandlers.ofInputStream())
+        if (response.statusCode() !in 200..299) {
+            response.body().close()
+            null
+        } else {
+            val total = response.headers().firstValueAsLong("content-length").orElse(0L)
+            response.body().use { input ->
+                val collected = java.io.ByteArrayOutputStream()
+                val chunk = ByteArray(1 shl 16)
+                var done = 0L
+                while (true) {
+                    val read = input.read(chunk)
+                    if (read < 0) break
+                    collected.write(chunk, 0, read)
+                    done += read
+                    onProgress(done, total)
+                }
+                collected.toByteArray()
+            }
+        }
+    } catch (_: Exception) {
+        null
+    }
+
+    /** Обёртка над потоком, докладывающая, сколько байт уже прошло. */
+    private class CountingInputStream(
+        source: java.io.InputStream,
+        private val total: Long,
+        private val onProgress: (Long, Long) -> Unit,
+    ) : java.io.FilterInputStream(source) {
+        private var done = 0L
+
+        override fun read(): Int {
+            val value = super.read()
+            if (value >= 0) advance(1L)
+            return value
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int {
+            val read = super.read(buffer, offset, length)
+            if (read > 0) advance(read.toLong())
+            return read
+        }
+
+        private fun advance(count: Long) {
+            done += count
+            onProgress(done, total)
+        }
     }
 
     companion object {
