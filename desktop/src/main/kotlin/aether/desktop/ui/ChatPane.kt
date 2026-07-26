@@ -30,6 +30,7 @@ import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.automirrored.filled.Forward
 import androidx.compose.material.icons.filled.AttachFile
 import androidx.compose.material.icons.filled.Close
@@ -90,6 +91,8 @@ fun ChatPane(
     onShowInfo: () -> Unit,
     onForwardRequest: (List<MessageEntity>) -> Unit,
     onOpenViewer: (List<MessageEntity>, Int) -> Unit,
+    /** Переход в другой чат (обсуждение канала). */
+    onOpenPeer: (String) -> Unit = {},
 ) {
     // Поток и позиция скролла привязаны к peerId: без key() при смене чата на
     // мгновение показывалась лента предыдущего и переносился скролл.
@@ -122,6 +125,9 @@ fun ChatPane(
         now = System.currentTimeMillis()
     }
 
+    // У канала может быть связанная группа-обсуждение — как в Telegram.
+    var discussionId by remember(peerId) { mutableStateOf<String?>(null) }
+
     // Всё, что ходит в сеть или в ядро, — на IO: иначе открытие чата
     // подвешивает окно на время запросов.
     LaunchedEffect(peerId) {
@@ -129,9 +135,13 @@ fun ChatPane(
             session.store.preloadMessages(peerId)
             val loaded = session.store.getChat(peerId)
             val allowed = runCatching { session.repository.canPostTo(peerId) }.getOrDefault(true)
+            val discussion = if (loaded?.type == 2) {
+                runCatching { session.repository.discussionGroupFor(peerId) }.getOrNull()
+            } else null
             withContext(Dispatchers.Main) {
                 chat = loaded
                 canPost = allowed
+                discussionId = discussion
             }
             session.repository.sendReadReceipt(peerId)
             if (loaded?.type == 0 && !peerId.equals(session.myId, ignoreCase = true)) {
@@ -417,6 +427,11 @@ fun ChatPane(
                             color = if (subtitle == "печатает…") MaterialTheme.colorScheme.primary
                             else MaterialTheme.colorScheme.onSurfaceVariant,
                         )
+                    }
+                }
+                discussionId?.let { discussion ->
+                    IconButton(onClick = { onOpenPeer(discussion) }) {
+                        Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = "Обсуждение")
                     }
                 }
                 IconButton(onClick = { searchOpen = !searchOpen; if (!searchOpen) searchQuery = "" }) {

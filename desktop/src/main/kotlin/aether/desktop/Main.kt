@@ -94,6 +94,22 @@ fun main() {
                         typingUntil[peer.lowercase()] = System.currentTimeMillis() + 5_000
                     }
                 },
+                onWsEvent = { event ->
+                    // Звонков на десктопе в v1 нет, но молчать о входящем нельзя:
+                    // человек сидит за ПК и не слышит телефон.
+                    if (event.optString("type") == "webrtc_offer") {
+                        aether.desktop.media.UiSounds.playReceived()
+                        if (settings.notificationsEnabled) {
+                            trayState.sendNotification(
+                                Notification(
+                                    title = "Входящий звонок",
+                                    message = "${event.optString("sender_id")} звонит вам — ответьте с телефона",
+                                    type = Notification.Type.Info,
+                                )
+                            )
+                        }
+                    }
+                },
             )
         }
 

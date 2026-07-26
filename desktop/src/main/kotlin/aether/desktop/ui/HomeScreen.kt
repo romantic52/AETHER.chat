@@ -119,6 +119,7 @@ fun HomeScreen(
                         viewerItems = items
                         viewerIndex = index
                     },
+                    onOpenPeer = { selectedPeer = it },
                 )
             }
         }

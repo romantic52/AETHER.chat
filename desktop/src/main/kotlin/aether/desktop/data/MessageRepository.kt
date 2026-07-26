@@ -422,10 +422,12 @@ class MessageRepository(
             val next = current?.copy(
                 name = group.name.ifBlank { current.name },
                 type = if (group.isChannel) 2 else 1,
+                avatarFileId = group.avatarFileId ?: current.avatarFileId,
             ) ?: ChatEntity(
                 peerId = group.id,
                 name = group.name.ifBlank { group.id },
                 type = if (group.isChannel) 2 else 1,
+                avatarFileId = group.avatarFileId,
             )
             if (current == null) store.insertChat(next) else if (current != next) store.updateChat(next)
         }
@@ -791,6 +793,9 @@ class MessageRepository(
         return if (isMedia) {
             val o = JSONObject(msg.text)
             if (msg.forwardedFrom != null) o.put("fwd_from", msg.forwardedFrom)
+            // В сеть кружок уходит как video_msg — так шлёт Android, и старые
+            // клиенты другого имени не знают (локально храним video_note).
+            if (o.optString("kind") == "video_note") o.put("kind", "video_msg")
             o.toString()
         } else {
             val o = JSONObject().put("type", "text").put("text", msg.text)
@@ -1229,6 +1234,17 @@ class MessageRepository(
         }
         if (!obj.has("waveform")) {
             obj.optJSONObject("media")?.optJSONArray("waveform")?.let { obj.put("waveform", it) }
+        }
+        // Старый веб кладёт имя и размер файла в legacy-полях даже при type=media —
+        // без маппинга такие документы показывались безымянным «Файлом».
+        if (!obj.has("file_name")) {
+            firstString(obj, "filename", "fileName", "name")?.let { obj.put("file_name", it) }
+        }
+        if (!obj.has("file_size")) {
+            when {
+                obj.has("size") -> obj.put("file_size", obj.optLong("size"))
+                obj.has("fileSize") -> obj.put("file_size", obj.optLong("fileSize"))
+            }
         }
         return obj
     }

@@ -296,12 +296,46 @@ private fun MediaContent(session: AppSession, message: MessageEntity, actions: M
         when {
             kind == "image" -> InlineImage(session, message, onOpen = { actions.onOpenMedia(message) })
             kind == "voice" -> VoiceRow(session, message, payload)
-            kind == "video_note" -> OpenExternallyRow(session, message, Icons.Filled.PlayCircle, "Видеосообщение")
-            kind == "video" -> OpenExternallyRow(session, message, Icons.Filled.PlayCircle, "Видео")
+            kind == "video_note" -> InlineVideo(session, message, note = true)
+            kind == "video" -> InlineVideo(session, message, note = false)
             else -> FileRow(session, message, payload)
         }
         if (caption.isNotBlank()) {
             Text(caption, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.padding(top = 4.dp))
+        }
+    }
+}
+
+/** Кружок или видео: файл скачивается в кеш и играет прямо в ленте. */
+@Composable
+private fun InlineVideo(session: AppSession, message: MessageEntity, note: Boolean) {
+    var file by remember(message.msgId) { mutableStateOf<File?>(null) }
+    var failed by remember(message.msgId) { mutableStateOf(false) }
+    LaunchedEffect(message.msgId, message.text) {
+        file = withContext(Dispatchers.IO) { session.repository.downloadMedia(message.text) }
+        if (file == null) failed = true
+    }
+    val current = file
+    when {
+        current != null && note -> VideoNoteView(current, message.msgId)
+        current != null -> VideoFileView(current, message.msgId)
+        failed -> OpenExternallyRow(
+            session, message, Icons.Filled.PlayCircle,
+            if (note) "Видеосообщение" else "Видео",
+        )
+        else -> {
+            val transfer = transferOf(message)
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                CircularProgressIndicator(modifier = Modifier.size(28.dp), strokeWidth = 3.dp)
+                Text(
+                    transfer?.let(::transferLabel) ?: "Загрузка…",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
     }
 }

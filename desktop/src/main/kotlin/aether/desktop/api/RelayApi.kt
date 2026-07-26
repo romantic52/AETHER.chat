@@ -372,6 +372,7 @@ class RelayApi(baseUrl: String) {
         val linkedGroupId: String? = null,
         val ownerId: String = "",
         val description: String = "",
+        val avatarFileId: String? = null,
     )
 
     fun getMyGroups(): List<GroupInfo> {
@@ -392,6 +393,7 @@ class RelayApi(baseUrl: String) {
                         linkedGroupId = group.optString("linked_group_id").takeIf(String::isNotBlank),
                         ownerId = group.optString("owner_id", group.optString("owner")),
                         description = group.optString("description"),
+                        avatarFileId = jsonString(group, "avatar_file_id"),
                     )
                 )
             }
