@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
@@ -29,6 +30,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.ui.input.key.key
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.ApplicationScope
 import androidx.compose.ui.window.Notification
@@ -57,6 +60,9 @@ fun main() {
 
         val settings = remember { UiSettings() }
         var theme by remember { mutableStateOf(settings.theme) }
+        // Масштаб читается один раз при старте: смена в настройках применяется
+        // после перезапуска, окно настроек об этом предупреждает.
+        val uiScale = remember { settings.uiScale }
         LaunchedEffect(Unit) { aether.desktop.media.UiSounds.enabled = settings.soundsEnabled }
 
         // Окно живёт в трее: закрытие прячет его, как в Telegram Desktop.
@@ -122,7 +128,13 @@ fun main() {
                             trayState.sendNotification(
                                 Notification(
                                     title = entry.chat.name,
-                                    message = messagePreview(entry.lastText, "Новое сообщение"),
+                                    // Без превью текст сообщения в уведомление не попадает —
+                                    // только факт его прихода.
+                                    message = if (settings.notificationPreview) {
+                                        messagePreview(entry.lastText, "Новое сообщение")
+                                    } else {
+                                        "Новое сообщение"
+                                    },
                                     type = Notification.Type.Info,
                                 )
                             )
@@ -176,6 +188,9 @@ fun main() {
             },
         ) {
             LaunchedEffect(window) {
+                // Минимальный размер держит окно пригодным: без него его можно
+                // схлопнуть в полосу.
+                window.minimumSize = java.awt.Dimension(640, 480)
                 window.addWindowFocusListener(object : java.awt.event.WindowFocusListener {
                     override fun windowGainedFocus(e: java.awt.event.WindowEvent?) { windowFocused = true }
                     override fun windowLostFocus(e: java.awt.event.WindowEvent?) { windowFocused = false }
@@ -200,31 +215,36 @@ fun main() {
                     )
                 )
             }
-            AetherTheme(mode = theme) {
-                Surface(modifier = Modifier.fillMaxSize()) {
-                    AppContent(
-                        auth = auth,
-                        session = session,
-                        restoring = restoring,
-                        typingUntil = typingUntil,
-                        settings = settings,
-                        theme = theme,
-                        onThemeChange = {
-                            theme = it
-                            settings.theme = it
-                        },
-                        onLoggedIn = { account -> scope.launch(Dispatchers.IO) { openSession(account) } },
-                        onLogout = {
-                            val active = session ?: return@AppContent
-                            scope.launch {
-                                withContext(Dispatchers.IO) {
-                                    auth.logout(active.account)
-                                    active.close()
+            // Масштаб применяется через плотность: все dp-размеры растут
+            // пропорционально, fontScale системы при этом не трогаем.
+            val base = LocalDensity.current
+            CompositionLocalProvider(LocalDensity provides Density(base.density * uiScale, base.fontScale)) {
+                AetherTheme(mode = theme) {
+                    Surface(modifier = Modifier.fillMaxSize()) {
+                        AppContent(
+                            auth = auth,
+                            session = session,
+                            restoring = restoring,
+                            typingUntil = typingUntil,
+                            settings = settings,
+                            theme = theme,
+                            onThemeChange = {
+                                theme = it
+                                settings.theme = it
+                            },
+                            onLoggedIn = { account -> scope.launch(Dispatchers.IO) { openSession(account) } },
+                            onLogout = {
+                                val active = session ?: return@AppContent
+                                scope.launch {
+                                    withContext(Dispatchers.IO) {
+                                        auth.logout(active.account)
+                                        active.close()
+                                    }
+                                    session = null
                                 }
-                                session = null
-                            }
-                        },
-                    )
+                            },
+                        )
+                    }
                 }
             }
         }
