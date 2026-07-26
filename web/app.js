@@ -456,6 +456,9 @@ let olmAccountPickle = '';
 let olmIdentityB64 = '';
 let olmSessions = Object.create(null);
 let olmIdentityPins = Object.create(null);
+// TOFU-пины ed25519-ключей устройств (SEC HIGH-2): deviceKey -> ed25519_b64.
+// Отдельно от curve-пинов ради обратной совместимости формата стейта.
+let olmEdPins = Object.create(null);
 // Multi-device: этот браузер — отдельное криптоустройство аккаунта.
 // 'primary' — только если аккаунт ещё нигде не имел Olm-ключей (легаси-совместимость).
 let myDeviceId = '';
@@ -565,7 +568,8 @@ async function saveRatchetState(updateServerBackup = false) {
         account_pickle: olmAccountPickle,
         account_identity: olmIdentityB64,
         sessions: olmSessions,
-        identity_pins: olmIdentityPins
+        identity_pins: olmIdentityPins,
+        identity_ed_pins: olmEdPins
     }, myPin, getSalt(myId));
     localStorage.setItem(`ratchet_${myId}`, encrypted);
 
@@ -627,6 +631,8 @@ async function prepareRatchetState(password) {
         ? Object.assign(Object.create(null), localState.sessions) : Object.create(null);
     olmIdentityPins = sameAccount && localState.identity_pins && typeof localState.identity_pins === 'object'
         ? Object.assign(Object.create(null), localState.identity_pins) : Object.create(null);
+    olmEdPins = sameAccount && localState.identity_ed_pins && typeof localState.identity_ed_pins === 'object'
+        ? Object.assign(Object.create(null), localState.identity_ed_pins) : Object.create(null);
 
     await ensureRatchetKeys();
 }
@@ -644,24 +650,38 @@ async function ensureRatchetKeys() {
         localStorage.setItem(`device_id_${myId}`, myDeviceId);
     }
     const serverCount = Number(countData.count) || 0;
-    let oneTimeKeys = {};
-    let accountChanged = false;
-    if (serverCount < 20) {
-        const publish = JSON.parse(api.account_generate_otks(olmAccountPickle, Math.max(50 - serverCount, 20)));
-        olmAccountPickle = publish.account_pickle;
-        olmIdentityB64 = publish.identity_key_b64;
-        oneTimeKeys = JSON.parse(publish.one_time_keys_json);
-        accountChanged = true;
+    // Подписанные бандлы (SEC HIGH-2): публикация всегда с ed25519 + подписями.
+    // Один раз после апдейта форсим перепубликацию, чтобы заместить на сервере
+    // неподписанные OTK, даже если их там ещё много.
+    const signedFlagKey = `olm_signed_v1_${myId}`;
+    const signedPublished = localStorage.getItem(signedFlagKey) === '1';
+    if (serverCount >= 20 && signedPublished && serverIdentity === olmIdentityB64) {
+        peerDevicesCache = Object.create(null);
+        return;
     }
+    const publish = JSON.parse(api.account_generate_otks_signed(
+        olmAccountPickle, Math.max(50 - serverCount, 20), myId, myDeviceId));
+    olmAccountPickle = publish.account_pickle;
+    olmIdentityB64 = publish.identity_key_b64;
+    const oneTimeKeys = JSON.parse(publish.one_time_keys_json);
+    const otkSignatures = JSON.parse(publish.otk_signatures_json);
 
     const uploadRes = await fetch(`${serverUrl}/keys/upload`, {
         method: 'PUT',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
-        body: JSON.stringify({ identity_key_b64: olmIdentityB64, one_time_keys: oneTimeKeys, device_id: myDeviceId })
+        body: JSON.stringify({
+            identity_key_b64: olmIdentityB64,
+            ed25519_key_b64: publish.ed25519_key_b64,
+            identity_sig_b64: publish.identity_sig_b64,
+            one_time_keys: oneTimeKeys,
+            otk_signatures: otkSignatures,
+            device_id: myDeviceId
+        })
     });
     if (!uploadRes.ok) throw new Error('Не удалось опубликовать prekeys');
+    localStorage.setItem(signedFlagKey, '1');
     peerDevicesCache = Object.create(null);
-    await saveRatchetState(accountChanged || !loginEncOlmAccountB64);
+    await saveRatchetState(true);
 }
 
 async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
@@ -680,16 +700,37 @@ async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
                 throw new Error(formatServerError(data, 'У получателя нет доступных prekeys'));
             }
             const bundle = await claimRes.json();
+            // SEC HIGH-2: верификация подписи бандла и TOFU-пин ДО создания
+            // сессии — подменённый сервером бандл не порождает ни сессии,
+            // ни зря сожжённого локального состояния.
+            const bundleEd = typeof bundle.ed25519_key_b64 === 'string' ? bundle.ed25519_key_b64 : '';
+            const idSig = typeof bundle.identity_sig_b64 === 'string' ? bundle.identity_sig_b64 : '';
+            const otk = bundle.one_time_key || {};
+            const otkSig = typeof otk.sig_b64 === 'string' ? otk.sig_b64 : '';
+            if (bundleEd && idSig && otkSig) {
+                // Бросает при неверной подписи (канон ядра AETHER-IDKEY-1/AETHER-OTK-1).
+                api.verify_prekey_bundle(peerId, deviceId, bundle.identity_key_b64,
+                                         bundleEd, idSig, otk.key_id, otk.key_b64, otkSig);
+            } else if (olmEdPins[key]) {
+                throw new Error('Prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером');
+            }
+            const pinned = olmIdentityPins[key];
+            const changed = (pinned && pinned !== bundle.identity_key_b64)
+                || (olmEdPins[key] && bundleEd && olmEdPins[key] !== bundleEd);
+            if (changed) {
+                const accept = window.confirm(
+                    'Ключ шифрования собеседника изменился. Это смена устройства или переустановка приложения — либо попытка подмены. ' +
+                    'Сверьте цифры безопасности по другому каналу. Принять новый ключ и продолжить отправку?');
+                if (!accept) throw new Error('Identity-ключ собеседника изменился — отправка отменена');
+                delete olmEdPins[key];
+            }
+            olmIdentityPins[key] = bundle.identity_key_b64;
+            if (bundleEd) olmEdPins[key] = bundleEd;
             session = api.create_outbound(
                 olmAccountPickle,
                 bundle.identity_key_b64,
                 bundle.one_time_key.key_b64
             );
-            const pinned = olmIdentityPins[key];
-            if (pinned && pinned !== bundle.identity_key_b64) {
-                throw new Error('Identity-ключ собеседника изменился');
-            }
-            olmIdentityPins[key] = bundle.identity_key_b64;
             slot = 'outbound';
         }
 

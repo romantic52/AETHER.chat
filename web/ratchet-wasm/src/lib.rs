@@ -32,6 +32,67 @@ pub fn account_generate_otks(account_pickle: &str, count: u32) -> Result<String,
 }
 
 #[wasm_bindgen]
+pub fn account_ed25519(account_pickle: &str) -> Result<String, JsValue> {
+    aether_ratchet_core::account_ed25519(account_pickle).map_err(js_err)
+}
+
+#[wasm_bindgen]
+pub fn account_generate_otks_signed(
+    account_pickle: &str,
+    count: u32,
+    user_id: &str,
+    device_id: &str,
+) -> Result<String, JsValue> {
+    json(
+        &aether_ratchet_core::account_generate_otks_signed(account_pickle, count, user_id, device_id)
+            .map_err(js_err)?,
+    )
+}
+
+#[wasm_bindgen]
+pub fn verify_identity(
+    user_id: &str,
+    device_id: &str,
+    identity_key_b64: &str,
+    ed25519_key_b64: &str,
+    identity_sig_b64: &str,
+) -> Result<(), JsValue> {
+    aether_ratchet_core::verify_identity(
+        user_id,
+        device_id,
+        identity_key_b64,
+        ed25519_key_b64,
+        identity_sig_b64,
+    )
+    .map_err(js_err)
+}
+
+#[wasm_bindgen]
+#[allow(clippy::too_many_arguments)]
+pub fn verify_prekey_bundle(
+    user_id: &str,
+    device_id: &str,
+    identity_key_b64: &str,
+    ed25519_key_b64: &str,
+    identity_sig_b64: &str,
+    otk_id: &str,
+    otk_b64: &str,
+    otk_sig_b64: &str,
+) -> Result<(), JsValue> {
+    aether_ratchet_core::verify_prekey_bundle(
+        user_id,
+        device_id,
+        identity_key_b64,
+        ed25519_key_b64,
+        identity_sig_b64,
+        otk_id,
+        otk_b64,
+        otk_sig_b64,
+    )
+    .map_err(js_err)
+}
+
+#[wasm_bindgen]
 pub fn create_outbound(
     account_pickle: &str,
     their_identity_b64: &str,

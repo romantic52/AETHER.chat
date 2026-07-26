@@ -705,6 +705,26 @@ final class Messaging: ObservableObject {
         }
     }
 
+    // MARK: - TOFU olm-identity (SEC HIGH-2)
+
+    /// Непринятая смена olm-ключа собеседника (peerKey) — баннер в чате.
+    func pendingOlmKeyChange(for peerId: String) async -> String? {
+        await core.pendingKeyChange(for: peerId)
+    }
+
+    /// Явное принятие нового ключа; отклонённые входящие вскроются следующим
+    /// поллингом, упавшие исходящие пользователь ретраит с самого сообщения.
+    @discardableResult
+    func acceptNewOlmKey(peerKey: String) async -> Bool {
+        do {
+            try await core.acceptNewOlmKey(peerKey: peerKey)
+            inboxTick.fire()
+            return true
+        } catch {
+            return false
+        }
+    }
+
     func sendReaction(to peer: String, target: String, emoji: String, isGroup: Bool) async {
         await applyReaction(target: target, emoji: emoji, from: myId.lowercased())
         inboxTick.fire()

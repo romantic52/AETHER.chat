@@ -47,6 +47,33 @@ pub struct KeyPin {
     pub first_seen: i64,
 }
 
+/// TOFU-пин olm-identity устройства пира (Double Ratchet, SEC HIGH-2).
+/// peer_key — то же соглашение, что у olm_sessions: "peer" (primary) или "peer::device".
+/// ed25519_b64 = None, пока от устройства не видели подписанный бандл.
+#[derive(uniffi::Record, Clone)]
+pub struct OlmPin {
+    pub peer_key: String,
+    pub curve25519_b64: String,
+    pub ed25519_b64: Option<String>,
+    pub verified: bool,
+    pub first_seen: i64,
+    pub prev_curve25519_b64: Option<String>,
+    pub prev_ed25519_b64: Option<String>,
+    pub changed_ts: Option<i64>,
+}
+
+/// Итог TOFU-проверки olm-identity.
+#[derive(uniffi::Enum, Clone, PartialEq, Eq, Debug)]
+pub enum OlmPinStatus {
+    /// Первый контакт — ключ запинен (trust on first use).
+    FirstUse,
+    /// Совпало с пином (в т.ч. дозаполнен ed25519, которого раньше не видели).
+    Match,
+    /// Расхождение с пином — смена устройства или атака. Пин НЕ обновлён;
+    /// принять новый ключ можно только явным olm_pin_accept.
+    Mismatch,
+}
+
 /// Уведомления об изменениях БД (реактивный UI, модель Room.Flow) — реализует платформа.
 /// Kotlin: Store-слой подписывается и мапит в Flow; Swift может игнорировать (свой поллинг).
 #[uniffi::export(callback_interface)]
@@ -103,6 +130,16 @@ CREATE TABLE IF NOT EXISTS olm_sessions (
     peer_id TEXT PRIMARY KEY,
     session_json TEXT NOT NULL,
     updated_ts INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS olm_pins (
+    peer_key TEXT PRIMARY KEY,
+    curve25519_b64 TEXT NOT NULL,
+    ed25519_b64 TEXT,
+    verified INTEGER NOT NULL DEFAULT 0,
+    first_seen INTEGER NOT NULL DEFAULT 0,
+    prev_curve25519_b64 TEXT,
+    prev_ed25519_b64 TEXT,
+    changed_ts INTEGER
 );
 "#;
 
@@ -501,6 +538,119 @@ impl CoreStore {
         Ok(())
     }
 
+    // ---- TOFU-пины olm-identity (Double Ratchet, SEC HIGH-2) ----
+
+    pub fn olm_pin_get(&self, peer_key: String) -> Result<Option<OlmPin>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT peer_key, curve25519_b64, ed25519_b64, verified, first_seen,
+                    prev_curve25519_b64, prev_ed25519_b64, changed_ts
+             FROM olm_pins WHERE peer_key=?1",
+            params![peer_key.to_lowercase()],
+            |row| Ok(OlmPin {
+                peer_key: row.get(0)?,
+                curve25519_b64: row.get(1)?,
+                ed25519_b64: row.get(2)?,
+                verified: row.get::<_, i64>(3)? != 0,
+                first_seen: row.get(4)?,
+                prev_curve25519_b64: row.get(5)?,
+                prev_ed25519_b64: row.get(6)?,
+                changed_ts: row.get(7)?,
+            }),
+        ).optional()?)
+    }
+
+    /// TOFU-гейт: сверить olm-identity устройства с пином (и запинить при первом контакте).
+    /// ed25519_b64 = None на входящих (в конверте только curve25519) — тогда сверяется
+    /// лишь curve-ключ; при Mismatch пин НЕ трогается. Анти-даунгрейд «бандл без подписи,
+    /// хотя ed25519 уже запинен» — ответственность вызывающего (см. olm_pin_get).
+    pub fn olm_pin_check(
+        &self,
+        peer_key: String,
+        curve25519_b64: String,
+        ed25519_b64: Option<String>,
+        now_ts: i64,
+    ) -> Result<OlmPinStatus, CoreError> {
+        let key = peer_key.to_lowercase();
+        let existing = self.olm_pin_get(key.clone())?;
+        let c = self.conn.lock().unwrap();
+        match existing {
+            None => {
+                c.execute(
+                    "INSERT INTO olm_pins (peer_key, curve25519_b64, ed25519_b64, verified, first_seen)
+                     VALUES (?1, ?2, ?3, 0, ?4)",
+                    params![key, curve25519_b64, ed25519_b64, now_ts],
+                )?;
+                Ok(OlmPinStatus::FirstUse)
+            }
+            Some(pin) => {
+                if pin.curve25519_b64 != curve25519_b64 {
+                    return Ok(OlmPinStatus::Mismatch);
+                }
+                match (&pin.ed25519_b64, &ed25519_b64) {
+                    (Some(pinned), Some(seen)) if pinned != seen => Ok(OlmPinStatus::Mismatch),
+                    (None, Some(seen)) => {
+                        c.execute(
+                            "UPDATE olm_pins SET ed25519_b64=?2 WHERE peer_key=?1",
+                            params![key, seen],
+                        )?;
+                        Ok(OlmPinStatus::Match)
+                    }
+                    _ => Ok(OlmPinStatus::Match),
+                }
+            }
+        }
+    }
+
+    /// Явное принятие нового ключа пользователем (после Mismatch). Старый пин уходит
+    /// в prev_*, verified сбрасывается. Тихих перепинов в ядре нет — только этот путь.
+    pub fn olm_pin_accept(
+        &self,
+        peer_key: String,
+        curve25519_b64: String,
+        ed25519_b64: Option<String>,
+        now_ts: i64,
+    ) -> Result<(), CoreError> {
+        let key = peer_key.to_lowercase();
+        let existing = self.olm_pin_get(key.clone())?;
+        let c = self.conn.lock().unwrap();
+        match existing {
+            Some(old) => {
+                c.execute(
+                    "UPDATE olm_pins SET curve25519_b64=?2, ed25519_b64=?3, verified=0,
+                            prev_curve25519_b64=?4, prev_ed25519_b64=?5, changed_ts=?6
+                     WHERE peer_key=?1",
+                    params![key, curve25519_b64, ed25519_b64,
+                            old.curve25519_b64, old.ed25519_b64, now_ts],
+                )?;
+            }
+            None => {
+                c.execute(
+                    "INSERT INTO olm_pins (peer_key, curve25519_b64, ed25519_b64, verified, first_seen)
+                     VALUES (?1, ?2, ?3, 0, ?4)",
+                    params![key, curve25519_b64, ed25519_b64, now_ts],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn olm_pin_set_verified(&self, peer_key: String, verified: bool) -> Result<(), CoreError> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE olm_pins SET verified=?2 WHERE peer_key=?1",
+            params![peer_key.to_lowercase(), verified as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn olm_pin_delete(&self, peer_key: String) -> Result<(), CoreError> {
+        self.conn.lock().unwrap().execute(
+            "DELETE FROM olm_pins WHERE peer_key=?1",
+            params![peer_key.to_lowercase()],
+        )?;
+        Ok(())
+    }
+
     // ---- Meta (курсор inbox и пр.) ----
 
     pub fn meta_get(&self, key: String) -> Result<Option<String>, CoreError> {
@@ -590,6 +740,32 @@ mod tests {
             payload_json: r#"{"type":"text","text":"hi"}"#.into(), status: if outgoing { 0 } else { 1 },
             ts, reactions_json: "{}".into(), edited: false, deleted: false,
         }
+    }
+
+    #[test]
+    fn olm_pin_tofu_semantics() {
+        let s = store();
+        // Первый контакт (входящий, только curve) — TOFU.
+        assert_eq!(s.olm_pin_check("Bob::ios-1".into(), "curveA".into(), None, 10).unwrap(), OlmPinStatus::FirstUse);
+        // Повтор — Match; регистр peer_key не важен.
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveA".into(), None, 11).unwrap(), OlmPinStatus::Match);
+        // Claim принёс ed25519 — дозаполнение без тревоги.
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveA".into(), Some("edA".into()), 12).unwrap(), OlmPinStatus::Match);
+        assert_eq!(s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap().ed25519_b64.as_deref(), Some("edA"));
+        // Смена curve или ed — Mismatch, пин не тронут.
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveB".into(), None, 13).unwrap(), OlmPinStatus::Mismatch);
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveA".into(), Some("edB".into()), 14).unwrap(), OlmPinStatus::Mismatch);
+        let pin = s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap();
+        assert_eq!(pin.curve25519_b64, "curveA");
+        // Явное принятие нового ключа: старый уходит в prev_*, verified сброшен.
+        s.olm_pin_set_verified("bob::ios-1".into(), true).unwrap();
+        s.olm_pin_accept("bob::ios-1".into(), "curveB".into(), Some("edB".into()), 15).unwrap();
+        let pin = s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap();
+        assert_eq!(pin.curve25519_b64, "curveB");
+        assert_eq!(pin.prev_curve25519_b64.as_deref(), Some("curveA"));
+        assert_eq!(pin.prev_ed25519_b64.as_deref(), Some("edA"));
+        assert!(!pin.verified);
+        assert_eq!(pin.changed_ts, Some(15));
     }
 
     #[test]

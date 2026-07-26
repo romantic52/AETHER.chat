@@ -465,6 +465,16 @@ def init_db() -> None:
                ON CONFLICT (user_id, device_id) DO NOTHING""",
             (_utc_now(),),
         )
+        # Подписанные prekey-бандлы (SEC HIGH-2): ed25519-ключ устройства,
+        # подпись его identity и per-OTK подписи. NULL — легаси до апдейта клиента.
+        for table, col in (("crypto_devices", "ed25519_key_b64"),
+                           ("crypto_devices", "identity_sig_b64"),
+                           ("one_time_keys", "sig_b64")):
+            cur.execute(
+                """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                   WHERE table_name=%s AND column_name=%s)""", (table, col))
+            if not cur.fetchone()[0]:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
 
         # Контроль сессий: сессия привязывается к крипто-устройству (клиент
         # сообщает device_id после логина) — чтобы можно было выкинуть
@@ -616,6 +626,11 @@ class UploadKeysRequest(BaseModel):
     one_time_keys: dict[str, str] = Field(default_factory=dict, max_length=100)
     # Multi-device: старые клиенты поле не шлют и остаются устройством 'primary'.
     device_id: str = Field(default="primary", min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    # Подписанный бандл (SEC HIGH-2). Легаси-клиенты полей не шлют.
+    ed25519_key_b64: Optional[str] = Field(default=None, min_length=16, max_length=128)
+    identity_sig_b64: Optional[str] = Field(default=None, min_length=16, max_length=256)
+    # {key_id: sig_b64}, ключи совпадают с one_time_keys.
+    otk_signatures: dict[str, str] = Field(default_factory=dict, max_length=100)
 
 
 class UpdateOlmBackupRequest(BaseModel):
@@ -996,6 +1011,39 @@ def _validate_key_b64(value: object, field: str) -> None:
         raise HTTPException(400, f"{field} must encode 32 bytes")
 
 
+def _validate_sig_b64(value: object, field: str) -> None:
+    """Ed25519-подпись — ровно 64 байта."""
+    raw = _decode_b64url(value, field)
+    if len(raw) != 64:
+        raise HTTPException(400, f"{field} must encode 64 bytes")
+
+
+def _verify_upload_signatures(user_id: str, body: "UploadKeysRequest") -> None:
+    """Проверка подписей бандла (SEC HIGH-2). Канон должен побайтно совпадать
+    с ядром (core/ratchet-core): AETHER-IDKEY-1 / AETHER-OTK-1.
+    Сервер не доверенная сторона — это защита от битых клиентов и мусора
+    в директории, настоящая проверка выполняется получателем при claim."""
+    from nacl.signing import VerifyKey
+    from nacl.exceptions import BadSignatureError
+    vk = VerifyKey(_decode_b64url(body.ed25519_key_b64, "ed25519_key_b64"))
+    ident_canon = f"AETHER-IDKEY-1|{user_id.lower()}|{body.device_id}|{body.identity_key_b64}"
+    try:
+        vk.verify(ident_canon.encode(), _decode_b64url(body.identity_sig_b64, "identity_sig_b64"))
+    except BadSignatureError:
+        raise HTTPException(400, "identity signature invalid")
+    for key_id, key_b64 in body.one_time_keys.items():
+        sig = body.otk_signatures.get(key_id)
+        if sig is None:
+            raise HTTPException(400, f"one-time key {key_id} lacks signature")
+        _validate_sig_b64(sig, "otk signature")
+        otk_canon = (f"AETHER-OTK-1|{user_id.lower()}|{body.device_id}|"
+                     f"{body.identity_key_b64}|{key_id}|{key_b64}")
+        try:
+            vk.verify(otk_canon.encode(), _decode_b64url(sig, "otk signature"))
+        except BadSignatureError:
+            raise HTTPException(400, f"one-time key {key_id} signature invalid")
+
+
 def _validate_ratchet_envelope(envelope: dict) -> None:
     if _envelope_size(envelope) > MAX_ENVELOPE_BYTES:
         raise HTTPException(413, "Encrypted envelope is too large")
@@ -1023,21 +1071,40 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                 current_user: str = Depends(get_current_user)) -> dict:
     _validate_key_b64(body.identity_key_b64, "identity_key_b64")
     device_id = body.device_id
+    signed = body.ed25519_key_b64 is not None or body.identity_sig_b64 is not None
+    if signed:
+        # Подписанный бандл — оба поля обязательны и подписи должны сходиться.
+        if not (body.ed25519_key_b64 and body.identity_sig_b64):
+            raise HTTPException(400, "Signed upload requires ed25519_key_b64 and identity_sig_b64")
+        _validate_key_b64(body.ed25519_key_b64, "ed25519_key_b64")
+        _validate_sig_b64(body.identity_sig_b64, "identity_sig_b64")
+        _verify_upload_signatures(current_user, body)
     with db_conn() as cur:
         cur.execute(
-            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
+            "SELECT identity_key_b64, ed25519_key_b64 FROM crypto_devices "
+            "WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (current_user, device_id))
         previous = cur.fetchone()
-        if previous and previous["identity_key_b64"] != body.identity_key_b64:
+        if previous and previous.get("ed25519_key_b64") and not signed:
+            # Анти-даунгрейд: раз устройство публиковало подписанные бандлы,
+            # неподписанные больше не принимаем (стриппинг подписи невозможен).
+            raise HTTPException(400, "Signed uploads required for this device")
+        if previous and (previous["identity_key_b64"] != body.identity_key_b64
+                         or (previous.get("ed25519_key_b64") or None) != body.ed25519_key_b64):
             # OTKs are bound to the identity that generated them. A rotated
             # account must not leave stale OTKs for the next claimant.
             cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
                         (current_user, device_id))
         cur.execute(
-            """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64, created_at)
-               VALUES (LOWER(%s), %s, %s, %s)
-               ON CONFLICT (user_id, device_id) DO UPDATE SET identity_key_b64 = EXCLUDED.identity_key_b64""",
-            (current_user, device_id, body.identity_key_b64, _utc_now()))
+            """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64,
+                                           ed25519_key_b64, identity_sig_b64, created_at)
+               VALUES (LOWER(%s), %s, %s, %s, %s, %s)
+               ON CONFLICT (user_id, device_id) DO UPDATE
+               SET identity_key_b64 = EXCLUDED.identity_key_b64,
+                   ed25519_key_b64 = EXCLUDED.ed25519_key_b64,
+                   identity_sig_b64 = EXCLUDED.identity_sig_b64""",
+            (current_user, device_id, body.identity_key_b64,
+             body.ed25519_key_b64, body.identity_sig_b64, _utc_now()))
         if device_id == "primary":
             # Legacy-клиенты и старый claim читают identity из users — держим в синхроне.
             cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
@@ -1047,9 +1114,11 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                 raise HTTPException(400, "Invalid one-time key")
             _validate_key_b64(key_b64, "one_time_key")
             cur.execute(
-                "INSERT INTO one_time_keys (user_id, device_id, key_id, key_b64) VALUES (%s, %s, %s, %s) "
+                "INSERT INTO one_time_keys (user_id, device_id, key_id, key_b64, sig_b64) "
+                "VALUES (%s, %s, %s, %s, %s) "
                 "ON CONFLICT (user_id, device_id, key_id) DO NOTHING",
-                (current_user.lower(), device_id, str(key_id), str(key_b64)))
+                (current_user.lower(), device_id, str(key_id), str(key_b64),
+                 body.otk_signatures.get(key_id) if signed else None))
     return {"ok": True}
 
 
@@ -1123,10 +1192,13 @@ def list_devices(user_id: str, current_user: str = Depends(get_current_user)) ->
     """Все крипто-устройства пользователя: отправитель шифрует копию каждому."""
     with db_conn() as cur:
         cur.execute(
-            "SELECT device_id, identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
+            "SELECT device_id, identity_key_b64, ed25519_key_b64, identity_sig_b64 "
+            "FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
             (user_id,))
         rows = cur.fetchall()
-    return {"devices": [{"device_id": r["device_id"], "identity_key_b64": r["identity_key_b64"]} for r in rows]}
+    return {"devices": [{"device_id": r["device_id"], "identity_key_b64": r["identity_key_b64"],
+                         "ed25519_key_b64": r.get("ed25519_key_b64"),
+                         "identity_sig_b64": r.get("identity_sig_b64")} for r in rows]}
 
 
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
@@ -1138,7 +1210,8 @@ def claim_keys(user_id: str, request: Request, device_id: str = "primary",
                current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            "SELECT identity_key_b64, ed25519_key_b64, identity_sig_b64 "
+            "FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
             (user_id, device_id))
         row = cur.fetchone()
         if row is None:
@@ -1146,14 +1219,17 @@ def claim_keys(user_id: str, request: Request, device_id: str = "primary",
         cur.execute(
             "DELETE FROM one_time_keys WHERE ctid IN "
             "(SELECT ctid FROM one_time_keys WHERE user_id = %s AND device_id = %s LIMIT 1) "
-            "RETURNING key_id, key_b64",
+            "RETURNING key_id, key_b64, sig_b64",
             (user_id.lower(), device_id))
         otk = cur.fetchone()
     if otk is None:
         raise HTTPException(409, "No one-time keys available")
     return {"user_id": user_id.lower(), "device_id": device_id,
             "identity_key_b64": row["identity_key_b64"],
-            "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"]}}
+            "ed25519_key_b64": row.get("ed25519_key_b64"),
+            "identity_sig_b64": row.get("identity_sig_b64"),
+            "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"],
+                             "sig_b64": otk.get("sig_b64")}}
 
 
 @app.put("/users/me/profile")

@@ -5,15 +5,29 @@ use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use vodozemac::olm::{Account, AccountPickle, OlmMessage, Session, SessionConfig, SessionPickle};
-use vodozemac::Curve25519PublicKey;
+use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature};
 
 pub type Result<T> = std::result::Result<T, String>;
+
+/// Версионные префиксы канона подписей prekey-бандла. Менять только с bump'ом версии.
+pub const IDENTITY_SIG_VERSION: &str = "AETHER-IDKEY-1";
+pub const OTK_SIG_VERSION: &str = "AETHER-OTK-1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Publish {
     pub account_pickle: String,
     pub identity_key_b64: String,
     pub one_time_keys_json: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublishSigned {
+    pub account_pickle: String,
+    pub identity_key_b64: String,
+    pub ed25519_key_b64: String,
+    pub identity_sig_b64: String,
+    pub one_time_keys_json: String,
+    pub otk_signatures_json: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -108,6 +122,110 @@ pub fn account_generate_otks(account_pickle: &str, count: u32) -> Result<Publish
     })
 }
 
+pub fn account_ed25519(account_pickle: &str) -> Result<String> {
+    Ok(account_from(account_pickle)?.ed25519_key().to_base64())
+}
+
+/// Канон подписи identity: связывает ed25519-ключ с (user, device, curve25519).
+/// user_id нормализуется в lowercase — сервер оперирует lowercase-идентификаторами.
+fn identity_canon(user_id: &str, device_id: &str, curve_b64: &str) -> String {
+    format!(
+        "{IDENTITY_SIG_VERSION}|{}|{}|{}",
+        user_id.to_lowercase(),
+        device_id,
+        curve_b64
+    )
+}
+
+/// Канон подписи OTK: привязывает одноразовый ключ к владельцу и его identity —
+/// сервер не может ни подменить ключи, ни выдать чужой бандл за запрошенный.
+fn otk_canon(user_id: &str, device_id: &str, curve_b64: &str, otk_id: &str, otk_b64: &str) -> String {
+    format!(
+        "{OTK_SIG_VERSION}|{}|{}|{}|{}|{}",
+        user_id.to_lowercase(),
+        device_id,
+        curve_b64,
+        otk_id,
+        otk_b64
+    )
+}
+
+pub fn account_generate_otks_signed(
+    account_pickle: &str,
+    count: u32,
+    user_id: &str,
+    device_id: &str,
+) -> Result<PublishSigned> {
+    let mut account = account_from(account_pickle)?;
+    account.generate_one_time_keys(count as usize);
+    let curve_b64 = account.curve25519_key().to_base64();
+    let ed_b64 = account.ed25519_key().to_base64();
+    let identity_sig_b64 = account
+        .sign(identity_canon(user_id, device_id, &curve_b64).as_bytes())
+        .to_base64();
+    let mut keys = serde_json::Map::new();
+    let mut sigs = serde_json::Map::new();
+    for (id, key) in account.one_time_keys() {
+        let id_b64 = id.to_base64();
+        let key_b64 = key.to_base64();
+        let sig = account
+            .sign(otk_canon(user_id, device_id, &curve_b64, &id_b64, &key_b64).as_bytes())
+            .to_base64();
+        keys.insert(id_b64.clone(), serde_json::Value::String(key_b64));
+        sigs.insert(id_b64, serde_json::Value::String(sig));
+    }
+    account.mark_keys_as_published();
+    Ok(PublishSigned {
+        identity_key_b64: curve_b64,
+        ed25519_key_b64: ed_b64,
+        identity_sig_b64,
+        one_time_keys_json: serde_json::Value::Object(keys).to_string(),
+        otk_signatures_json: serde_json::Value::Object(sigs).to_string(),
+        account_pickle: account_to(&account)?,
+    })
+}
+
+fn ed25519_verify(ed_b64: &str, message: &str, sig_b64: &str, what: &str) -> Result<()> {
+    let ed = Ed25519PublicKey::from_base64(ed_b64).map_err(err)?;
+    let sig = Ed25519Signature::from_base64(sig_b64).map_err(err)?;
+    ed.verify(message.as_bytes(), &sig)
+        .map_err(|_| format!("olm: подпись {what} не сошлась — возможна подмена ключей сервером"))
+}
+
+pub fn verify_identity(
+    user_id: &str,
+    device_id: &str,
+    curve_b64: &str,
+    ed_b64: &str,
+    identity_sig_b64: &str,
+) -> Result<()> {
+    ed25519_verify(
+        ed_b64,
+        &identity_canon(user_id, device_id, curve_b64),
+        identity_sig_b64,
+        "identity",
+    )
+}
+
+pub fn verify_prekey_bundle(
+    user_id: &str,
+    device_id: &str,
+    curve_b64: &str,
+    ed_b64: &str,
+    identity_sig_b64: &str,
+    otk_id: &str,
+    otk_b64: &str,
+    otk_sig_b64: &str,
+) -> Result<()> {
+    verify_identity(user_id, device_id, curve_b64, ed_b64, identity_sig_b64)?;
+    ed25519_verify(
+        ed_b64,
+        &otk_canon(user_id, device_id, curve_b64, otk_id, otk_b64),
+        otk_sig_b64,
+        "one-time key",
+    )
+}
+
 pub fn create_outbound(
     account_pickle: &str,
     their_identity_b64: &str,
@@ -169,6 +287,47 @@ pub fn decrypt(session_pickle: &str, message_type: u32, body_b64: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn signed_prekeys_verify_and_catch_substitution() {
+        let bob = account_generate_otks_signed(&account_new().unwrap(), 2, "Bob", "primary").unwrap();
+        let otks: serde_json::Value = serde_json::from_str(&bob.one_time_keys_json).unwrap();
+        let sigs: serde_json::Value = serde_json::from_str(&bob.otk_signatures_json).unwrap();
+        let (otk_id, otk_b64) = otks
+            .as_object()
+            .unwrap()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_owned()))
+            .next()
+            .unwrap();
+        let otk_sig = sigs[&otk_id].as_str().unwrap();
+
+        // Честный бандл проходит; user_id регистронезависим.
+        verify_prekey_bundle(
+            "bob", "primary", &bob.identity_key_b64, &bob.ed25519_key_b64,
+            &bob.identity_sig_b64, &otk_id, &otk_b64, otk_sig,
+        )
+        .unwrap();
+
+        // Подмена любого элемента канона ловится.
+        let mallory = account_generate_otks_signed(&account_new().unwrap(), 1, "bob", "primary").unwrap();
+        assert!(verify_identity("alice", "primary", &bob.identity_key_b64, &bob.ed25519_key_b64, &bob.identity_sig_b64).is_err());
+        assert!(verify_identity("bob", "ios-x", &bob.identity_key_b64, &bob.ed25519_key_b64, &bob.identity_sig_b64).is_err());
+        assert!(verify_identity("bob", "primary", &mallory.identity_key_b64, &bob.ed25519_key_b64, &bob.identity_sig_b64).is_err());
+        assert!(verify_identity("bob", "primary", &bob.identity_key_b64, &mallory.ed25519_key_b64, &bob.identity_sig_b64).is_err());
+        assert!(verify_prekey_bundle(
+            "bob", "primary", &bob.identity_key_b64, &bob.ed25519_key_b64,
+            &bob.identity_sig_b64, &otk_id, &mallory.identity_key_b64, otk_sig,
+        )
+        .is_err());
+
+        // Подписанные OTK пригодны для обычного X3DH.
+        let alice = account_new().unwrap();
+        let session = create_outbound(&alice, &bob.identity_key_b64, &otk_b64).unwrap();
+        let msg = encrypt(&session, "проверка").unwrap();
+        let inbound = create_inbound(&bob.account_pickle, &account_identity(&alice).unwrap(), &msg.body_b64).unwrap();
+        assert_eq!(inbound.plaintext, "проверка");
+    }
 
     #[test]
     fn ratchet_two_way() {

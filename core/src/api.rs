@@ -48,12 +48,33 @@ fn raw_json<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> 
     Ok(v.to_string())
 }
 
+/// Непустое строковое поле или None (сервер отдаёт null у легаси-записей).
+fn opt_str(v: &serde_json::Value, key: &str) -> Option<String> {
+    v[key].as_str().filter(|s| !s.is_empty()).map(str::to_string)
+}
+
+fn parse_bundle(v: &serde_json::Value) -> PrekeyBundle {
+    PrekeyBundle {
+        identity_key_b64: v["identity_key_b64"].as_str().unwrap_or_default().to_string(),
+        one_time_key_id: v["one_time_key"]["key_id"].as_str().unwrap_or_default().to_string(),
+        one_time_key_b64: v["one_time_key"]["key_b64"].as_str().unwrap_or_default().to_string(),
+        ed25519_key_b64: opt_str(v, "ed25519_key_b64"),
+        identity_sig_b64: opt_str(v, "identity_sig_b64"),
+        one_time_key_sig_b64: opt_str(&v["one_time_key"], "sig_b64"),
+    }
+}
+
 /// Prekey-bundle пира для установки Olm-сессии (identity + один one-time key).
+/// Поля подписи (SEC HIGH-2) — None у легаси-бандлов, загруженных до апдейта;
+/// клиент обязан верифицировать их через olm_verify_prekey_bundle перед сессией.
 #[derive(uniffi::Record)]
 pub struct PrekeyBundle {
     pub identity_key_b64: String,
     pub one_time_key_id: String,
     pub one_time_key_b64: String,
+    pub ed25519_key_b64: Option<String>,
+    pub identity_sig_b64: Option<String>,
+    pub one_time_key_sig_b64: Option<String>,
 }
 
 /// Крипто-устройство аккаунта (multi-device): свой Olm-аккаунт на устройство.
@@ -61,6 +82,8 @@ pub struct PrekeyBundle {
 pub struct DeviceInfo {
     pub device_id: String,
     pub identity_key_b64: String,
+    pub ed25519_key_b64: Option<String>,
+    pub identity_sig_b64: Option<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -271,11 +294,7 @@ impl ApiClient {
     /// Забрать prekey-bundle пира (identity + один OTK, сервер его удаляет).
     pub fn claim_keys(&self, user_id: String) -> Result<PrekeyBundle, CoreError> {
         let v = self.post(&format!("/keys/claim/{user_id}"), serde_json::json!({}))?;
-        Ok(PrekeyBundle {
-            identity_key_b64: v["identity_key_b64"].as_str().unwrap_or_default().to_string(),
-            one_time_key_id: v["one_time_key"]["key_id"].as_str().unwrap_or_default().to_string(),
-            one_time_key_b64: v["one_time_key"]["key_b64"].as_str().unwrap_or_default().to_string(),
-        })
+        Ok(parse_bundle(&v))
     }
 
     pub fn update_profile(
@@ -361,6 +380,8 @@ impl ApiClient {
             .map(|d| DeviceInfo {
                 device_id: d["device_id"].as_str().unwrap_or_default().to_string(),
                 identity_key_b64: d["identity_key_b64"].as_str().unwrap_or_default().to_string(),
+                ed25519_key_b64: opt_str(d, "ed25519_key_b64"),
+                identity_sig_b64: opt_str(d, "identity_sig_b64"),
             })
             .collect())
     }
@@ -380,6 +401,30 @@ impl ApiClient {
         .map(|_| ())
     }
 
+    /// Публикация подписанного бандла (SEC HIGH-2): ed25519 + подпись identity +
+    /// per-OTK подписи (JSON {key_id: sig_b64}, ключи совпадают с one_time_keys_json).
+    pub fn upload_keys_device_signed(
+        &self,
+        identity_key_b64: String,
+        ed25519_key_b64: String,
+        identity_sig_b64: String,
+        one_time_keys_json: String,
+        otk_signatures_json: String,
+        device_id: String,
+    ) -> Result<(), CoreError> {
+        let otks: serde_json::Value = serde_json::from_str(&one_time_keys_json).map_err(CoreError::bad)?;
+        let sigs: serde_json::Value = serde_json::from_str(&otk_signatures_json).map_err(CoreError::bad)?;
+        self.put("/keys/upload", serde_json::json!({
+            "identity_key_b64": identity_key_b64,
+            "ed25519_key_b64": ed25519_key_b64,
+            "identity_sig_b64": identity_sig_b64,
+            "one_time_keys": otks,
+            "otk_signatures": sigs,
+            "device_id": device_id,
+        }))
+        .map(|_| ())
+    }
+
     pub fn keys_count_device(&self, device_id: String) -> Result<u32, CoreError> {
         let v = self.get(&format!("/keys/count?device_id={}", urlencode(&device_id)))?;
         Ok(v["count"].as_u64().unwrap_or(0) as u32)
@@ -390,11 +435,7 @@ impl ApiClient {
             &format!("/keys/claim/{user_id}?device_id={}", urlencode(&device_id)),
             serde_json::json!({}),
         )?;
-        Ok(PrekeyBundle {
-            identity_key_b64: v["identity_key_b64"].as_str().unwrap_or_default().to_string(),
-            one_time_key_id: v["one_time_key"]["key_id"].as_str().unwrap_or_default().to_string(),
-            one_time_key_b64: v["one_time_key"]["key_b64"].as_str().unwrap_or_default().to_string(),
-        })
+        Ok(parse_bundle(&v))
     }
 
     /// Отправка адресной копии конверта устройству получателя.
