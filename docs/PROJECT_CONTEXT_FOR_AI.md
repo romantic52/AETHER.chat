@@ -40,8 +40,12 @@ box для 1:1 — если у получателя нет prekeys, сообще
 
 Функции ядра (UniFFI, camelCase в Swift/Kotlin):
 - `olmAccountNew() -> String` (pickle аккаунта)
-- `olmAccountIdentity(accountPickle) -> String`
+- `olmAccountIdentity(accountPickle) -> String`, `olmAccountEd25519(accountPickle) -> String`
 - `olmAccountGenerateOtks(accountPickle, count) -> {accountPickle, identityKeyB64, oneTimeKeysJson}`
+- **P7 (подписанные prekeys):** `olmAccountGenerateOtksSigned(accountPickle, count, userId,
+  deviceId) -> OlmPublishSigned{+ed25519KeyB64, identitySigB64, otkSignaturesJson}`;
+  `olmVerifyPrekeyBundle(...)`, `olmVerifyIdentity(...)`; TOFU-пины в store:
+  `olmPinGet/Check/Accept/SetVerified/Delete` (peer_key = "peer" или "peer::device")
 - `olmCreateOutbound(accountPickle, theirIdentityB64, theirOneTimeKeyB64) -> sessionPickle`
 - `olmEncrypt(sessionPickle, plaintext) -> {sessionPickle, messageType, bodyB64}`
 - `olmCreateInbound(accountPickle, theirIdentityB64, bodyB64) -> {accountPickle, sessionPickle, plaintext}`
@@ -66,9 +70,12 @@ type: 0 = prekey (ставит сессию), 1 = normal. Отправляетс
 
 ## 5. Серверные эндпоинты (prekey + сообщения)
 
-- `PUT /keys/upload {identity_key_b64, one_time_keys:{id:key}}`
-- `GET /keys/count -> {count}`
-- `POST /keys/claim/{user_id} -> {identity_key_b64, one_time_key:{key_id,key_b64}}` (OTK удаляется атомарно)
+- `PUT /keys/upload {identity_key_b64, one_time_keys:{id:key}, device_id,
+  ed25519_key_b64?, identity_sig_b64?, otk_signatures?:{id:sig}}` — P7: сервер
+  верифицирует подписи (PyNaCl), анти-даунгрейд после первой подписанной публикации
+- `GET /keys/count -> {count, identity_key_b64}`
+- `POST /keys/claim/{user_id}?device_id= -> {identity_key_b64, ed25519_key_b64?,
+  identity_sig_b64?, one_time_key:{key_id,key_b64,sig_b64?}}` (OTK удаляется атомарно)
 - `POST /messages {sender_id, recipient_id, envelope, client_id}` — валидация конверта
   ветвится по `envelope.ratchet` (ratchet: {olm_identity,type,body_b64}; иначе legacy box).
 - `GET /messages/inbox/{user_id}?since=`, `POST /messages/ack`
@@ -82,8 +89,10 @@ box-ключей, темы, RU/EN.
 
 ## 7. Известные недостатки (бэклог)
 
-- **SEC HIGH-2:** prekey-бандлы не подписаны → сервер может MITM'ить установку сессии.
-  Нет TOFU на olm-identity (для box-ключей TOFU есть). ПРИОРИТЕТ.
+- ~~SEC HIGH-2~~ **ЗАКРЫТ (P7):** prekey-бандлы подписаны Ed25519 (канон
+  `AETHER-IDKEY-1`/`AETHER-OTK-1`), TOFU-пин olm-identity в ядре (`olm_pins`),
+  анти-даунгрейд на сервере. См. `P7_SIGNED_PREKEYS_DESIGN.md`. Осталось:
+  перевести экран сверки (KeyVerificationView) с box-ключей на olm + QR.
 - **SEC MED-3:** claim без rate-limit → исчерпание чужих OTK (DoS). Нужен fallback-key +
   лимит. (vodozemac умеет `generate_fallback_key`.)
 - **SEC MED-4:** одна Olm-сессия на пира, входящий prekey её затирает → форс-сброс.

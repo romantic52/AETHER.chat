@@ -16,6 +16,16 @@ pub struct OlmPublish {
 }
 
 #[derive(uniffi::Record)]
+pub struct OlmPublishSigned {
+    pub account_pickle: String,
+    pub identity_key_b64: String,
+    pub ed25519_key_b64: String,
+    pub identity_sig_b64: String,
+    pub one_time_keys_json: String,
+    pub otk_signatures_json: String,
+}
+
+#[derive(uniffi::Record)]
 pub struct OlmEncrypted {
     pub session_pickle: String,
     pub message_type: u32,
@@ -58,6 +68,74 @@ pub fn olm_account_generate_otks(account_pickle: String, count: u32) -> Result<O
         identity_key_b64: result.identity_key_b64,
         one_time_keys_json: result.one_time_keys_json,
     })
+}
+
+#[uniffi::export]
+pub fn olm_account_ed25519(account_pickle: String) -> Result<String, CoreError> {
+    aether_ratchet_core::account_ed25519(&account_pickle).map_err(err)
+}
+
+#[uniffi::export]
+pub fn olm_account_generate_otks_signed(
+    account_pickle: String,
+    count: u32,
+    user_id: String,
+    device_id: String,
+) -> Result<OlmPublishSigned, CoreError> {
+    let result =
+        aether_ratchet_core::account_generate_otks_signed(&account_pickle, count, &user_id, &device_id)
+            .map_err(err)?;
+    Ok(OlmPublishSigned {
+        account_pickle: result.account_pickle,
+        identity_key_b64: result.identity_key_b64,
+        ed25519_key_b64: result.ed25519_key_b64,
+        identity_sig_b64: result.identity_sig_b64,
+        one_time_keys_json: result.one_time_keys_json,
+        otk_signatures_json: result.otk_signatures_json,
+    })
+}
+
+#[uniffi::export]
+pub fn olm_verify_identity(
+    user_id: String,
+    device_id: String,
+    identity_key_b64: String,
+    ed25519_key_b64: String,
+    identity_sig_b64: String,
+) -> Result<(), CoreError> {
+    aether_ratchet_core::verify_identity(
+        &user_id,
+        &device_id,
+        &identity_key_b64,
+        &ed25519_key_b64,
+        &identity_sig_b64,
+    )
+    .map_err(err)
+}
+
+#[uniffi::export]
+#[allow(clippy::too_many_arguments)]
+pub fn olm_verify_prekey_bundle(
+    user_id: String,
+    device_id: String,
+    identity_key_b64: String,
+    ed25519_key_b64: String,
+    identity_sig_b64: String,
+    otk_id: String,
+    otk_b64: String,
+    otk_sig_b64: String,
+) -> Result<(), CoreError> {
+    aether_ratchet_core::verify_prekey_bundle(
+        &user_id,
+        &device_id,
+        &identity_key_b64,
+        &ed25519_key_b64,
+        &identity_sig_b64,
+        &otk_id,
+        &otk_b64,
+        &otk_sig_b64,
+    )
+    .map_err(err)
 }
 
 #[uniffi::export]

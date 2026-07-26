@@ -73,6 +73,9 @@ struct ChatView: View {
     @State private var showAvatarPicker = false
     @State private var avatarPickerItem: PhotosPickerItem?
 
+    // TOFU: непринятая смена olm-ключа собеседника (SEC HIGH-2) — баннер.
+    @State private var pendingKeyChange: String?
+
     init(peerId: String, isGroup: Bool) {
         self.peerId = peerId
         self.isGroup = isGroup
@@ -134,6 +137,11 @@ struct ChatView: View {
                             .ignoresSafeArea(edges: .top)
                             .transition(.opacity)
                             .allowsHitTesting(false)
+                    }
+                }
+                .safeAreaInset(edge: .top) {
+                    if let peerKey = pendingKeyChange, !isGroup {
+                        keyChangeBanner(peerKey: peerKey)
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
@@ -243,6 +251,7 @@ struct ChatView: View {
         .task(id: peerId) {
             vm.bind(peerId: peerId, isGroup: isGroup, session: session, messaging: messaging)
             await vm.onAppear()
+            if !isGroup { pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId) }
             #if DEBUG
             if let msg = ProcessInfo.processInfo.environment["AETHER_SEND"], !msg.isEmpty {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -273,6 +282,9 @@ struct ChatView: View {
         }
         .onReceive(messaging.inboxTick.$tick.dropFirst()) { _ in
             vm.requestReload()
+            if !isGroup {
+                Task { pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId) }
+            }
         }
         .sheet(item: $pickerFor) { msg in
             ReactionPicker { emoji in
@@ -419,6 +431,35 @@ struct ChatView: View {
     // toolbarBackground(.hidden) не убирает стеклянную подложку).
     // Слева — отдельная круглая «назад», остальное (шапка чата + звонки + меню) —
     // единая скруглённая стеклянная панель, в стиле нижнего композера.
+    /// Баннер «ключ собеседника изменился» (TOFU, SEC HIGH-2): переустановка
+    /// приложения у пира или атака — решает пользователь, тихих перепинов нет.
+    private func keyChangeBanner(peerKey: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Ключ шифрования собеседника изменился", systemImage: "exclamationmark.shield.fill")
+                .font(.footnote.weight(.semibold))
+            Text("Это смена устройства или переустановка приложения — либо попытка подмены. Сверьте цифры безопасности по другому каналу, прежде чем принимать.")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            HStack {
+                Button("Принять новый ключ") {
+                    Task {
+                        await messaging.acceptNewOlmKey(peerKey: peerKey)
+                        pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId)
+                    }
+                }
+                .font(.footnote.weight(.semibold))
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
+                Spacer()
+            }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.orange.opacity(0.4)))
+        .padding(.horizontal, 12)
+        .padding(.top, 6)
+    }
+
     private var chatTopBar: some View {
         HStack(spacing: 10) {
             // 48 = высота стеклянной капсулы (аватар 36 + 6+6 вертикальных отступов).

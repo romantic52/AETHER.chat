@@ -351,16 +351,90 @@ actor CoreClient {
             let acct = try olmAccount()
             let device = myDeviceId()
             let count = (try? api.keysCountDevice(deviceId: device)) ?? 0
-            guard count < 20 else { return }
-            let published = try olmAccountGenerateOtks(accountPickle: acct, count: 40)
+            // Форс-перепубликация один раз после апдейта: подписанный бандл должен
+            // заместить неподписанные OTK на сервере (SEC HIGH-2), даже если их ≥20.
+            let signedPublished = ((try? store.metaGet(key: "olm_signed_v1")) ?? nil) == "1"
+            guard count < 20 || !signedPublished else { return }
+            let published = try olmAccountGenerateOtksSigned(accountPickle: acct, count: 40,
+                                                             userId: myId, deviceId: device)
             try store.metaSet(key: "olm_account", value: published.accountPickle)
             myOlmIdentity = published.identityKeyB64
-            try api.uploadKeysDevice(identityKeyB64: published.identityKeyB64,
-                                     oneTimeKeysJson: published.oneTimeKeysJson,
-                                     deviceId: device)
+            try api.uploadKeysDeviceSigned(identityKeyB64: published.identityKeyB64,
+                                           ed25519KeyB64: published.ed25519KeyB64,
+                                           identitySigB64: published.identitySigB64,
+                                           oneTimeKeysJson: published.oneTimeKeysJson,
+                                           otkSignaturesJson: published.otkSignaturesJson,
+                                           deviceId: device)
+            try store.metaSet(key: "olm_signed_v1", value: "1")
             deviceCache.removeAll()
         } catch {
             // Не критично для UI: повторится при следующем старте/приёме.
+        }
+    }
+
+    // MARK: - TOFU olm-identity (SEC HIGH-2)
+
+    /// Ожидающие подтверждения смены ключа: peerKey → бандл, который не прошёл пин.
+    /// Пользователь принимает новый ключ явно (acceptNewOlmKey) — тихих перепинов нет.
+    private var pendingKeyChanges: [String: PrekeyBundle] = [:]
+    /// То же для входящих: в конверте только curve-identity, бандла нет.
+    private var pendingInboundKeys: [String: String] = [:]
+
+    private func nowTs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
+
+    /// Гейт исходящих: верификация подписи бандла + TOFU-пин olm-identity.
+    /// Бросает при неверной подписи, стриппинге подписи и смене ключа.
+    private func verifyAndPinBundle(peer: String, deviceId: String, bundle: PrekeyBundle) throws {
+        let key = sessionKey(peer, deviceId)
+        if let ed = bundle.ed25519KeyB64, let idSig = bundle.identitySigB64,
+           let otkSig = bundle.oneTimeKeySigB64 {
+            try olmVerifyPrekeyBundle(userId: peer, deviceId: deviceId,
+                                      identityKeyB64: bundle.identityKeyB64,
+                                      ed25519KeyB64: ed, identitySigB64: idSig,
+                                      otkId: bundle.oneTimeKeyId,
+                                      otkB64: bundle.oneTimeKeyB64,
+                                      otkSigB64: otkSig)
+        } else {
+            let pin = (try? store.olmPinGet(peerKey: key)) ?? nil
+            if pin?.ed25519B64 != nil {
+                throw CoreError.Crypto(msg: "prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером")
+            }
+        }
+        let status = try store.olmPinCheck(peerKey: key, curve25519B64: bundle.identityKeyB64,
+                                           ed25519B64: bundle.ed25519KeyB64, nowTs: nowTs())
+        if status == .mismatch {
+            pendingKeyChanges[key] = bundle
+            throw CoreError.Crypto(msg: "olm-ключ собеседника изменился — сверьте цифры безопасности или примите новый ключ")
+        }
+    }
+
+    /// Есть ли непринятая смена ключа у пира (для алерта/баннера в чате).
+    func pendingKeyChange(for peerId: String) -> String? {
+        let id = peerId.lowercased()
+        let matches: (String) -> Bool = { $0 == id || $0.hasPrefix("\(id)::") }
+        return pendingKeyChanges.keys.first(where: matches)
+            ?? pendingInboundKeys.keys.first(where: matches)
+    }
+
+    /// Явно принять новый ключ устройства пира. Для исходящих — перепин + немедленная
+    /// установка сессии из уже склеймленного бандла (OTK не сжигается повторно).
+    /// Для входящих — перепин curve-ключа; сессию заведёт следующий prekey-конверт
+    /// (отклонённое сообщение ретраится поллингом и вскроется само).
+    func acceptNewOlmKey(peerKey: String) throws {
+        if let bundle = pendingKeyChanges[peerKey] {
+            try store.olmPinAccept(peerKey: peerKey, curve25519B64: bundle.identityKeyB64,
+                                   ed25519B64: bundle.ed25519KeyB64, nowTs: nowTs())
+            let session = try olmCreateOutbound(accountPickle: olmAccount(),
+                                                theirIdentityB64: bundle.identityKeyB64,
+                                                theirOneTimeKeyB64: bundle.oneTimeKeyB64)
+            try store.olmSessionSet(peerId: peerKey, sessionJson: session)
+            pendingKeyChanges.removeValue(forKey: peerKey)
+        } else if let curve = pendingInboundKeys[peerKey] {
+            try store.olmPinAccept(peerKey: peerKey, curve25519B64: curve,
+                                   ed25519B64: nil, nowTs: nowTs())
+            pendingInboundKeys.removeValue(forKey: peerKey)
+        } else {
+            throw CoreError.BadInput(msg: "нет ожидающей смены ключа")
         }
     }
 
@@ -386,21 +460,40 @@ actor CoreClient {
         // устройству получателя. Пустой список = легаси-путь на primary.
         var devices = (try? peerDevices(id)) ?? []
         if devices.isEmpty {
-            devices = [DeviceInfo(deviceId: "primary", identityKeyB64: "")]
+            devices = [DeviceInfo(deviceId: "primary", identityKeyB64: "",
+                                  ed25519KeyB64: nil, identitySigB64: nil)]
         }
-        var firstMessageId: String? = nil
+        // Фаза 1 — сессии: claim + верификация подписи бандла + TOFU-пин (SEC HIGH-2)
+        // для ВСЕХ устройств до отправки первой копии. Крипто-тревога (смена ключа,
+        // битая подпись) роняет отправку целиком — никаких «ушло наполовину».
+        var sessions: [(device: DeviceInfo, pickle: String)] = []
         var firstError: Error? = nil
         for dev in devices {
+            let key = sessionKey(id, dev.deviceId)
+            if let existing = ((try? store.olmSessionGet(peerId: key)) ?? nil) {
+                sessions.append((dev, existing))
+                continue
+            }
+            do {
+                let bundle = try api.claimKeysDevice(userId: id, deviceId: dev.deviceId)
+                try verifyAndPinBundle(peer: id, deviceId: dev.deviceId, bundle: bundle)
+                let pickle = try olmCreateOutbound(accountPickle: olmAccount(),
+                                                   theirIdentityB64: bundle.identityKeyB64,
+                                                   theirOneTimeKeyB64: bundle.oneTimeKeyB64)
+                sessions.append((dev, pickle))
+            } catch let error as CoreError {
+                if case .Crypto = error { throw error }   // тревога безопасности — стоп всей отправке
+                if firstError == nil { firstError = error }   // сеть/404: устройство пропускаем
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        // Фаза 2 — шифрование и отправка копий.
+        var firstMessageId: String? = nil
+        for (dev, pickle) in sessions {
             do {
                 let key = sessionKey(id, dev.deviceId)
-                var sessionPickle = try store.olmSessionGet(peerId: key)
-                if sessionPickle == nil {
-                    let bundle = try api.claimKeysDevice(userId: id, deviceId: dev.deviceId)
-                    sessionPickle = try olmCreateOutbound(accountPickle: olmAccount(),
-                                                          theirIdentityB64: bundle.identityKeyB64,
-                                                          theirOneTimeKeyB64: bundle.oneTimeKeyB64)
-                }
-                let enc = try olmEncrypt(sessionPickle: sessionPickle!, plaintext: wirePayload)
+                let enc = try olmEncrypt(sessionPickle: pickle, plaintext: wirePayload)
                 try store.olmSessionSet(peerId: key, sessionJson: enc.sessionPickle)
                 let envelope = try ratchetEnvelope(type: enc.messageType, body: enc.bodyB64)
                 let cid = firstMessageId == nil ? clientId : UUID().uuidString.lowercased()
@@ -461,6 +554,19 @@ actor CoreClient {
             senderDevice = devices.first(where: { $0.identityKeyB64 == senderIdentity })?.deviceId ?? "primary"
         }
         let key = sessionKey(peer, senderDevice)
+
+        // TOFU-гейт входящих (SEC HIGH-2): olm_identity конверта сверяется с пином
+        // ДО расшифровки. Расхождение = смена устройства пира или спуфинг авторства
+        // сервером — сообщение отклоняется, тихого перепина нет.
+        guard !senderIdentity.isEmpty else {
+            throw CoreError.Crypto(msg: "ratchet: конверт без olm_identity")
+        }
+        let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
+                                              ed25519B64: nil, nowTs: nowTs())
+        if pinStatus == .mismatch {
+            pendingInboundKeys[key] = senderIdentity
+            throw CoreError.Crypto(msg: "ratchet: olm-ключ отправителя не совпадает с запиненным — возможна подмена")
+        }
 
         // Есть сессия — пробуем ею. prekey (type 0) при живой сессии — обычное дело
         // (пир ещё не увидел наш ответ), сессия его тоже расшифрует.
