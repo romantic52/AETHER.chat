@@ -16,6 +16,9 @@ pub const OTK_SIG_VERSION: &str = "AETHER-OTK-1";
 pub const DEVICE_SIG_VERSION: &str = "AETHER-DEVSIG-1";
 /// Домен вывода мастер-ключа из приватного ключа аккаунта.
 const MASTER_DERIVE_DOMAIN: &str = "AETHER-MASTER-1";
+/// Домен вывода ключа резервной копии истории (P9). Отдельный домен —
+/// компрометация бэкап-ключа не должна давать подписи устройств, и наоборот.
+const BACKUP_DERIVE_DOMAIN: &str = "AETHER-BACKUP-1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Publish {
@@ -242,20 +245,38 @@ pub fn verify_prekey_bundle(
 // не требует нового хранилища и работает для существующих аккаунтов. Пиры пинят
 // МАСТЕР — добавление устройства владельцем проверяется подписью, а не доверием.
 
-fn master_signing_key(account_secret_b64: &str) -> Result<ed25519_dalek::SigningKey> {
+/// 32 байта, выведенные из приватного ключа аккаунта с разделением доменов.
+fn derive_from_account(account_secret_b64: &str, domain: &str) -> Result<[u8; 32]> {
     use sha2::{Digest, Sha512};
     let secret = decode_b64(account_secret_b64)?;
     if secret.len() != 32 {
-        return Err(err("мастер-ключ: приватный ключ аккаунта должен быть 32 байта"));
+        return Err(err("приватный ключ аккаунта должен быть 32 байта"));
     }
     let mut hasher = Sha512::new();
-    hasher.update(MASTER_DERIVE_DOMAIN.as_bytes());
+    hasher.update(domain.as_bytes());
     hasher.update(b"|");
     hasher.update(&secret);
     let digest = hasher.finalize();
-    let mut seed = [0u8; 32];
-    seed.copy_from_slice(&digest[..32]);
-    Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest[..32]);
+    Ok(out)
+}
+
+fn master_signing_key(account_secret_b64: &str) -> Result<ed25519_dalek::SigningKey> {
+    Ok(ed25519_dalek::SigningKey::from_bytes(&derive_from_account(
+        account_secret_b64,
+        MASTER_DERIVE_DOMAIN,
+    )?))
+}
+
+/// Ключ шифрования резервной копии истории (AES-256-GCM). Выводится из
+/// приватного ключа аккаунта, поэтому доступен на любом устройстве сразу после
+/// входа по паролю, а сервер вывести его не может.
+pub fn backup_key(account_secret_b64: &str) -> Result<String> {
+    Ok(URL_SAFE_NO_PAD.encode(derive_from_account(
+        account_secret_b64,
+        BACKUP_DERIVE_DOMAIN,
+    )?))
 }
 
 fn device_canon(user_id: &str, device_id: &str, curve_b64: &str, ed_b64: &str) -> String {
@@ -391,6 +412,18 @@ pub fn decrypt(session_pickle: &str, message_type: u32, body_b64: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn backup_key_is_deterministic_and_domain_separated() {
+        let secret = URL_SAFE_NO_PAD.encode([7u8; 32]);
+        let other = URL_SAFE_NO_PAD.encode([8u8; 32]);
+        let key = backup_key(&secret).unwrap();
+        assert_eq!(backup_key(&secret).unwrap(), key, "вывод детерминирован");
+        assert_ne!(backup_key(&other).unwrap(), key, "разные аккаунты — разные ключи");
+        // Разделение доменов: бэкап-ключ не совпадает с мастер-ключом.
+        assert_ne!(key, master_public(&secret).unwrap());
+        assert_eq!(decode_b64(&key).unwrap().len(), 32);
+    }
 
     #[test]
     fn master_cross_signing_binds_devices_to_account() {

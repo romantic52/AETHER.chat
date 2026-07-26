@@ -948,6 +948,119 @@ actor CoreClient {
     }
     func totalUnread() -> Int64 { (try? store.totalUnread()) ?? 0 }
 
+    // MARK: - Резервная копия истории (P9)
+    //
+    // Сервер хранит только шифротекст: история пакуется в JSON и шифруется
+    // AES-256-GCM ключом, выведенным из приватного ключа аккаунта. Значит копию
+    // расшифрует любое устройство владельца сразу после входа по паролю, а
+    // сервер — никогда. Плата та же, что и у мастер-ключа: подобрав пароль к
+    // сохранённому на сервере приватному ключу, копию можно прочитать.
+
+    static let backupEnabledKey = "history_backup_enabled"
+    private static let backupCursorTs = "history_backup_ts"
+    private static let backupCursorId = "history_backup_id"
+    private static let backupRestoredSeq = "history_backup_seq"
+
+    var backupEnabled: Bool { ((try? store.metaGet(key: Self.backupEnabledKey)) ?? nil) == "1" }
+
+    private func backupKeyB64() throws -> String {
+        guard !myPrivateKey.isEmpty else {
+            throw CoreError.BadInput(msg: "нет ключа аккаунта")
+        }
+        return try backupKey(accountSecretB64: myPrivateKey)
+    }
+
+    /// Включить/выключить резервную копию. Выключение удаляет её с сервера
+    /// и сбрасывает курсор — повторное включение выгрузит историю заново.
+    func setBackupEnabled(_ on: Bool) throws {
+        if on {
+            _ = try backupKeyB64()   // без ключа аккаунта включать нечего
+            try store.metaSet(key: Self.backupEnabledKey, value: "1")
+        } else {
+            try store.metaSet(key: Self.backupEnabledKey, value: "0")
+            try api.backupDelete()
+            try store.metaSet(key: Self.backupCursorTs, value: "0")
+            try store.metaSet(key: Self.backupCursorId, value: "")
+        }
+    }
+
+    /// Выгрузить новые сообщения. Идемпотентно: курсор (ts, id) двигается только
+    /// после успешной загрузки чанка, поэтому обрыв связи не теряет и не дублирует.
+    @discardableResult
+    func backupSyncUp(limit: UInt32 = 200) -> Int {
+        guard backupEnabled else { return 0 }
+        var uploaded = 0
+        do {
+            let key = try backupKeyB64()
+            while true {
+                let ts = Int64((try? store.metaGet(key: Self.backupCursorTs)) ?? "0" ?? "0") ?? 0
+                let lastId = ((try? store.metaGet(key: Self.backupCursorId)) ?? nil) ?? ""
+                let batch = try store.messagesForBackup(afterTs: ts, afterId: lastId, limit: limit)
+                guard let last = batch.last else { break }
+                let payload = batch.map { m -> [String: Any] in
+                    ["id": m.id, "peer_id": m.peerId, "outgoing": m.outgoing,
+                     "sender_id": m.senderId, "payload_json": m.payloadJson,
+                     "status": Int(m.status), "ts": m.ts,
+                     "reactions_json": m.reactionsJson, "edited": m.edited, "deleted": m.deleted]
+                }
+                let json = try JSONSerialization.data(withJSONObject: payload)
+                let sealed = try aesEncrypt(keyB64: key, plaintext: json)
+                _ = try api.backupUpload(nonceB64: sealed.nonceB64,
+                                         ciphertextB64: b64urlEncode(data: Data(sealed.ciphertext)))
+                try store.metaSet(key: Self.backupCursorTs, value: String(last.ts))
+                try store.metaSet(key: Self.backupCursorId, value: last.id)
+                uploaded += batch.count
+                if batch.count < Int(limit) { break }
+            }
+        } catch {
+            // Не критично: догрузим при следующем проходе.
+        }
+        return uploaded
+    }
+
+    /// Скачать и вложить резервную копию (новое устройство/переустановка).
+    /// Возвращает число восстановленных сообщений.
+    @discardableResult
+    func backupRestore() throws -> Int {
+        let key = try backupKeyB64()
+        var restored = 0
+        var after = Int64((try? store.metaGet(key: Self.backupRestoredSeq)) ?? "0" ?? "0") ?? 0
+        while true {
+            let chunks = try api.backupFetch(afterSeq: after, limit: 50)
+            if chunks.isEmpty { break }
+            for chunk in chunks {
+                let raw = try aesDecrypt(keyB64: key, nonceB64: chunk.nonceB64,
+                                         ciphertext: try b64urlDecode(s: chunk.ciphertextB64))
+                if let rows = try? JSONSerialization.jsonObject(with: Data(raw)) as? [[String: Any]] {
+                    for row in rows { restored += restoreRow(row) ? 1 : 0 }
+                }
+                after = chunk.seq
+                try store.metaSet(key: Self.backupRestoredSeq, value: String(after))
+            }
+        }
+        return restored
+    }
+
+    private func restoreRow(_ row: [String: Any]) -> Bool {
+        guard let id = row["id"] as? String, let peer = row["peer_id"] as? String,
+              let payload = row["payload_json"] as? String, let ts = row["ts"] as? Int64 else {
+            return false
+        }
+        if (try? store.messageExists(id: id)) == true { return false }
+        let message = StoredMessage(
+            id: id, peerId: peer, outgoing: row["outgoing"] as? Bool ?? false,
+            senderId: row["sender_id"] as? String ?? peer, payloadJson: payload,
+            status: Int32(row["status"] as? Int ?? 1), ts: ts,
+            reactionsJson: row["reactions_json"] as? String ?? "{}",
+            edited: row["edited"] as? Bool ?? false, deleted: row["deleted"] as? Bool ?? false)
+        try? store.insertMessage(m: message)
+        // Чат восстанавливаем без счётчика непрочитанного: это старая переписка.
+        let text = Wire.parse(payload)?.text ?? ""
+        try? store.touchChat(peerId: peer, isGroup: false, title: "", lastText: text,
+                             lastTs: ts, incUnread: false)
+        return true
+    }
+
     func metaGet(_ key: String) -> String? { try? store.metaGet(key: key) ?? nil }
     func metaSet(_ key: String, _ value: String) { try? store.metaSet(key: key, value: value) }
 
