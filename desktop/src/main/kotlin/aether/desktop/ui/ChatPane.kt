@@ -4,6 +4,13 @@ import aether.desktop.AppSession
 import aether.desktop.data.ChatEntity
 import aether.desktop.data.MessageEntity
 import androidx.compose.foundation.background
+import androidx.compose.foundation.draganddrop.dragAndDropTarget
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.draganddrop.DragAndDropEvent
+import androidx.compose.ui.draganddrop.DragAndDropTarget
+import androidx.compose.ui.draganddrop.awtTransferable
+import androidx.compose.ui.input.key.isCtrlPressed
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -55,6 +62,10 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+@OptIn(
+    androidx.compose.foundation.ExperimentalFoundationApi::class,
+    androidx.compose.ui.ExperimentalComposeUiApi::class,
+)
 @Composable
 fun ChatPane(
     session: AppSession,
@@ -62,6 +73,7 @@ fun ChatPane(
     typingUntil: Long,
     onShowInfo: () -> Unit,
     onForwardRequest: (MessageEntity) -> Unit,
+    onOpenViewer: (List<MessageEntity>, Int) -> Unit,
 ) {
     // Поток и позиция скролла привязаны к peerId: без key() при смене чата на
     // мгновение показывалась лента предыдущего и переносился скролл.
@@ -106,12 +118,23 @@ fun ChatPane(
         }
     }
 
-    // Новые входящие в открытом чате: квитанция «прочитано» и сброс непрочитанного.
-    LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) {
-            listState.scrollToItem((messages.size - 1).coerceAtLeast(0))
+    // Автоскролл только если пользователь уже внизу: иначе чтение истории
+    // дёргало бы ленту при каждом входящем (в Telegram так же).
+    val atBottom by remember {
+        derivedStateOf {
+            val last = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+            last >= listState.layoutInfo.totalItemsCount - 2
         }
-        session.repository.sendReadReceipt(peerId)
+    }
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty() && atBottom) {
+            listState.animateScrollToItem((messages.size - 1).coerceAtLeast(0))
+        }
+        if (atBottom) session.repository.sendReadReceipt(peerId)
+    }
+    // При открытии чата всегда показываем конец ленты.
+    LaunchedEffect(peerId, messages.isNotEmpty()) {
+        if (messages.isNotEmpty()) listState.scrollToItem((messages.size - 1).coerceAtLeast(0))
     }
 
     fun send() {
@@ -136,22 +159,69 @@ fun ChatPane(
         }
     }
 
-    fun pickAndSend(asFile: Boolean) {
-        val dialog = FileDialog(null as java.awt.Frame?, "Выбор файла", FileDialog.LOAD)
-        dialog.isMultipleMode = true
-        dialog.isVisible = true
-        val files = dialog.files?.toList().orEmpty().filter(File::isFile)
-        if (files.isEmpty()) return
+    /** Общий путь отправки файлов: пикер, перетаскивание, вставка из буфера. */
+    fun sendFiles(files: List<File>, asFile: Boolean) {
+        val real = files.filter { it.isFile && it.length() > 0L }
+        if (real.isEmpty()) return
         // Шифрование и заливка файла — не на UI-потоке, иначе окно замирает
         // на всё время отправки.
         scope.launch(Dispatchers.IO) {
-            val error = if (asFile) session.repository.sendFiles(peerId, files, null)
-            else session.repository.sendMedia(peerId, files, null)
+            val error = if (asFile) session.repository.sendFiles(peerId, real, null)
+            else session.repository.sendMedia(peerId, real, null)
             if (error == null) session.store.preloadMessages(peerId)
         }
     }
 
+    fun pickAndSend(asFile: Boolean) {
+        val dialog = FileDialog(null as java.awt.Frame?, "Выбор файла", FileDialog.LOAD)
+        dialog.isMultipleMode = true
+        dialog.isVisible = true
+        sendFiles(dialog.files?.toList().orEmpty(), asFile)
+    }
+
+    /** Ctrl+V: скриншот или файлы из буфера уходят как вложение (как в Telegram). */
+    fun pasteFromClipboard(): Boolean {
+        val clipboard = java.awt.Toolkit.getDefaultToolkit().systemClipboard
+        val contents = runCatching { clipboard.getContents(null) }.getOrNull() ?: return false
+        if (contents.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+            @Suppress("UNCHECKED_CAST")
+            val files = runCatching {
+                contents.getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor) as List<File>
+            }.getOrNull().orEmpty()
+            if (files.isNotEmpty()) {
+                sendFiles(files, asFile = false)
+                return true
+            }
+        }
+        if (contents.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.imageFlavor)) {
+            val image = runCatching {
+                contents.getTransferData(java.awt.datatransfer.DataFlavor.imageFlavor) as java.awt.Image
+            }.getOrNull() ?: return false
+            val buffered = java.awt.image.BufferedImage(
+                image.getWidth(null).coerceAtLeast(1),
+                image.getHeight(null).coerceAtLeast(1),
+                java.awt.image.BufferedImage.TYPE_INT_RGB,
+            )
+            buffered.createGraphics().apply {
+                drawImage(image, 0, 0, null)
+                dispose()
+            }
+            val target = File.createTempFile("aether_paste", ".png")
+            javax.imageio.ImageIO.write(buffered, "png", target)
+            sendFiles(listOf(target), asFile = false)
+            return true
+        }
+        return false
+    }
+
+    val viewable = remember(messages) { viewableMedia(messages) }
+    var dragOver by remember(peerId) { mutableStateOf(false) }
+
     val actions = MessageActions(
+        onOpenMedia = { message ->
+            val position = viewable.indexOfFirst { it.msgId == message.msgId }
+            onOpenViewer(viewable, position.coerceAtLeast(0))
+        },
         onReply = { replyTo = it; editing = null },
         onEdit = { editing = it; replyTo = null; input = it.text },
         onForward = onForwardRequest,
@@ -204,10 +274,39 @@ fun ChatPane(
             }
         }
 
-        // Лента сообщений
+        // Лента сообщений + перетаскивание файлов в чат
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
         LazyColumn(
             state = listState,
-            modifier = Modifier.weight(1f).fillMaxWidth(),
+            modifier = Modifier.fillMaxSize()
+                .dragAndDropTarget(
+                    shouldStartDragAndDrop = { true },
+                    target = remember(peerId) {
+                        object : DragAndDropTarget {
+                            override fun onEntered(event: DragAndDropEvent) { dragOver = true }
+                            override fun onExited(event: DragAndDropEvent) { dragOver = false }
+                            override fun onEnded(event: DragAndDropEvent) { dragOver = false }
+                            override fun onDrop(event: DragAndDropEvent): Boolean {
+                                dragOver = false
+                                val data = event.awtTransferable
+                                if (!data.isDataFlavorSupported(java.awt.datatransfer.DataFlavor.javaFileListFlavor)) {
+                                    return false
+                                }
+                                @Suppress("UNCHECKED_CAST")
+                                val files = runCatching {
+                                    data.getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor) as List<File>
+                                }.getOrNull().orEmpty()
+                                if (files.isEmpty()) return false
+                                // Картинки уходят как фото, остальное — документами.
+                                val images = files.filter { isImageFile(it) }
+                                val documents = files - images.toSet()
+                                if (images.isNotEmpty()) sendFiles(images, asFile = false)
+                                if (documents.isNotEmpty()) sendFiles(documents, asFile = true)
+                                return true
+                            }
+                        }
+                    },
+                ),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(vertical = 8.dp),
         ) {
             itemsIndexed(messages, key = { _, m -> m.msgId }) { index, message ->
@@ -233,6 +332,49 @@ fun ChatPane(
                     isGroupChat = (chat?.type ?: 0) in 1..2,
                     actions = actions,
                 )
+            }
+        }
+
+            // Кнопка «вниз» появляется, когда лента прокручена вверх.
+            androidx.compose.animation.AnimatedVisibility(
+                visible = !atBottom && messages.isNotEmpty(),
+                modifier = Modifier.align(Alignment.BottomEnd).padding(16.dp),
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+            ) {
+                Surface(
+                    shape = androidx.compose.foundation.shape.CircleShape,
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 4.dp,
+                    modifier = Modifier.size(44.dp).clickable {
+                        scope.launch { listState.animateScrollToItem(messages.lastIndex.coerceAtLeast(0)) }
+                    },
+                ) {
+                    Box(contentAlignment = Alignment.Center) {
+                        Icon(
+                            Icons.Filled.KeyboardArrowDown,
+                            contentDescription = "Вниз",
+                            tint = MaterialTheme.colorScheme.primary,
+                        )
+                    }
+                }
+            }
+
+            // Подсветка зоны перетаскивания
+            if (dragOver) {
+                Box(
+                    modifier = Modifier.fillMaxSize()
+                        .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.10f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Surface(shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surface) {
+                        Text(
+                            "Отпустите, чтобы отправить",
+                            style = MaterialTheme.typography.titleMedium,
+                            modifier = Modifier.padding(horizontal = 20.dp, vertical = 12.dp),
+                        )
+                    }
+                }
             }
         }
 
@@ -297,13 +439,30 @@ fun ChatPane(
                             .weight(1f)
                             .heightIn(max = 140.dp)
                             .onPreviewKeyEvent { event ->
-                                if (event.type == KeyEventType.KeyDown &&
-                                    event.key == Key.Enter && !event.isShiftPressed
-                                ) {
-                                    send()
-                                    true
-                                } else {
-                                    false
+                                if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+                                when {
+                                    // Enter отправляет, Shift+Enter — перенос строки.
+                                    event.key == Key.Enter && !event.isShiftPressed -> { send(); true }
+                                    // Ctrl+V: картинка или файлы из буфера уходят вложением.
+                                    event.key == Key.V && event.isCtrlPressed -> pasteFromClipboard()
+                                    // Esc снимает ответ/редактирование.
+                                    event.key == Key.Escape && (replyTo != null || editing != null) -> {
+                                        if (editing != null) input = ""
+                                        editing = null
+                                        replyTo = null
+                                        true
+                                    }
+                                    // Стрелка вверх в пустом поле — правка последнего своего.
+                                    event.key == Key.DirectionUp && input.isEmpty() -> {
+                                        messages.lastOrNull { it.isOut && !it.text.startsWith("{\"type\"") }
+                                            ?.let { last ->
+                                                editing = last
+                                                replyTo = null
+                                                input = last.text
+                                            }
+                                        true
+                                    }
+                                    else -> false
                                 }
                             },
                     )
@@ -332,6 +491,7 @@ fun ChatPane(
             }
         }
     }
+
 }
 
 private fun formatPresence(lastActive: String?): String {
@@ -346,3 +506,7 @@ private fun formatPresence(lastActive: String?): String {
             .format(java.util.Date(ts))
     }
 }
+
+/** Картинка ли это по расширению — для раскладки перетащенных файлов. */
+internal fun isImageFile(file: File): Boolean =
+    file.extension.lowercase() in setOf("png", "jpg", "jpeg", "gif", "webp", "bmp")

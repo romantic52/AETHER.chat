@@ -24,10 +24,25 @@ dependencies {
     implementation("org.json:json:20240303")
     // Рендер QR-кода привязки (кодирование, оффлайн).
     implementation("com.google.zxing:core:3.5.3")
+    // Голосовые: Android пишет AAC в MP4, веб — mp3/webm. SPI-декодеры
+    // подключаются к javax.sound.sampled, поэтому проигрывание идёт внутри
+    // приложения, а не системным плеером.
+    implementation("com.tianscar.javasound:jaad:0.9.4")
+    implementation("com.tianscar.javasound:javasound-mp3:1.9.8")
+    // Запись голосовых: чистая Java-реализация LAME (MP3 играют все клиенты).
+    implementation("de.sciss:jump3r:1.0.5")
 }
 
 kotlin {
     jvmToolchain(21)
+}
+
+// JNA прибита жёстко: через неё UniFFI грузит sm_core.dll и работает DPAPI.
+// Транзитивный подъём версии от сторонних библиотек ломает и то, и другое.
+configurations.all {
+    resolutionStrategy {
+        force("net.java.dev.jna:jna:5.14.0", "net.java.dev.jna:jna-platform:5.14.0")
+    }
 }
 
 // Headless-smoke авторизации (DevSmoke.kt): .\gradlew.bat smoke

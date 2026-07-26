@@ -39,9 +39,17 @@ private val DarkColors = darkColorScheme(
 )
 
 @Composable
-fun AetherTheme(content: @Composable () -> Unit) {
+fun AetherTheme(
+    mode: aether.desktop.data.UiSettings.ThemeMode = aether.desktop.data.UiSettings.ThemeMode.SYSTEM,
+    content: @Composable () -> Unit,
+) {
+    val dark = when (mode) {
+        aether.desktop.data.UiSettings.ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        aether.desktop.data.UiSettings.ThemeMode.LIGHT -> false
+        aether.desktop.data.UiSettings.ThemeMode.DARK -> true
+    }
     MaterialTheme(
-        colorScheme = if (isSystemInDarkTheme()) DarkColors else LightColors,
+        colorScheme = if (dark) DarkColors else LightColors,
         content = content,
     )
 }

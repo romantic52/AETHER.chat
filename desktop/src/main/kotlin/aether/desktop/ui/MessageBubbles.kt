@@ -23,6 +23,12 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.PlayCircle
+import androidx.compose.material.icons.filled.PauseCircle
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import kotlinx.coroutines.launch
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -58,6 +64,8 @@ data class MessageActions(
     val onReact: (MessageEntity, String) -> Unit,
     val onRetry: (MessageEntity) -> Unit,
     val onCopy: (MessageEntity) -> Unit,
+    /** Открыть фото во встроенном просмотрщике (а не системным приложением). */
+    val onOpenMedia: (MessageEntity) -> Unit,
 )
 
 private val reactionChoices = listOf("👍", "❤️", "🔥", "😂", "😮", "😢")
@@ -128,7 +136,7 @@ fun MessageBubble(
                     }
 
                     if (isMedia) {
-                        MediaContent(session, message)
+                        MediaContent(session, message, actions)
                     } else {
                         androidx.compose.foundation.text.selection.SelectionContainer {
                             Text(message.text, style = MaterialTheme.typography.bodyMedium)
@@ -206,14 +214,14 @@ private fun ReactionsRow(reactionsJson: String) {
 }
 
 @Composable
-private fun MediaContent(session: AppSession, message: MessageEntity) {
+private fun MediaContent(session: AppSession, message: MessageEntity, actions: MessageActions) {
     val payload = remember(message.text) { runCatching { JSONObject(message.text) }.getOrNull() }
     val kind = payload?.optString("kind").orEmpty()
     val caption = payload?.optString("caption").orEmpty()
 
     Column {
         when {
-            kind == "image" -> InlineImage(session, message)
+            kind == "image" -> InlineImage(session, message, onOpen = { actions.onOpenMedia(message) })
             kind == "voice" -> VoiceRow(session, message, payload)
             kind == "video_note" -> OpenExternallyRow(session, message, Icons.Filled.PlayCircle, "Видеосообщение")
             kind == "video" -> OpenExternallyRow(session, message, Icons.Filled.PlayCircle, "Видео")
@@ -226,7 +234,7 @@ private fun MediaContent(session: AppSession, message: MessageEntity) {
 }
 
 @Composable
-private fun InlineImage(session: AppSession, message: MessageEntity) {
+private fun InlineImage(session: AppSession, message: MessageEntity, onOpen: () -> Unit) {
     var bitmap by remember(message.msgId) { mutableStateOf<ImageBitmap?>(null) }
     var failed by remember(message.msgId) { mutableStateOf(false) }
 
@@ -251,7 +259,7 @@ private fun InlineImage(session: AppSession, message: MessageEntity) {
             modifier = Modifier
                 .widthIn(max = 380.dp)
                 .clip(RoundedCornerShape(8.dp))
-                .clickable { openExternally(session, message) },
+                .clickable(onClick = onOpen),
         )
     } else {
         Box(
@@ -278,42 +286,90 @@ private fun VoiceRow(session: AppSession, message: MessageEntity, payload: JSONO
         }.orEmpty()
     }
     val duration = payload?.optDouble("duration", 0.0) ?: 0.0
-    val barColor = MaterialTheme.colorScheme.primary
+    val playback by aether.desktop.media.AudioPlayback.state.collectAsState()
+    val isCurrent = playback.id == message.msgId
+    val progress = if (isCurrent) playback.progress else 0f
+    val scope = rememberCoroutineScope()
+    var unsupported by remember(message.msgId) { mutableStateOf(false) }
+
+    val playedColor = MaterialTheme.colorScheme.primary
+    val restColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.30f)
+
+    fun togglePlayback() {
+        scope.launch(Dispatchers.IO) {
+            val file = session.repository.downloadMedia(message.text) ?: return@launch
+            val ok = aether.desktop.media.AudioPlayback.toggle(message.msgId, file)
+            if (!ok) {
+                unsupported = true
+                openExternally(session, message)
+            }
+        }
+    }
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
-        modifier = Modifier.clickable { openExternally(session, message) },
     ) {
         Icon(
-            Icons.Filled.PlayCircle,
-            contentDescription = "Воспроизвести",
+            if (isCurrent && playback.playing) Icons.Filled.PauseCircle else Icons.Filled.PlayCircle,
+            contentDescription = if (isCurrent && playback.playing) "Пауза" else "Воспроизвести",
             tint = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.size(36.dp),
+            modifier = Modifier.size(36.dp).clickable(onClick = ::togglePlayback),
         )
         if (waveform.isNotEmpty()) {
-            Canvas(modifier = Modifier.width(160.dp).height(24.dp)) {
+            // Клик по волне — перемотка, как в Telegram.
+            Canvas(
+                modifier = Modifier.width(160.dp).height(24.dp)
+                    .pointerInput(message.msgId) {
+                        detectTapGestures { offset ->
+                            val fraction = (offset.x / size.width).coerceIn(0f, 1f)
+                            if (isCurrent) {
+                                aether.desktop.media.AudioPlayback.seek(message.msgId, fraction)
+                            } else {
+                                togglePlayback()
+                            }
+                        }
+                    },
+            ) {
                 val barWidth = size.width / (waveform.size * 1.5f)
+                val playedUntil = size.width * progress
                 waveform.forEachIndexed { index, amp ->
                     val h = (amp / 31f).coerceAtLeast(0.12f) * size.height
+                    val x = index * barWidth * 1.5f
                     drawRoundRect(
-                        color = barColor,
-                        topLeft = androidx.compose.ui.geometry.Offset(
-                            index * barWidth * 1.5f,
-                            (size.height - h) / 2f,
-                        ),
+                        color = if (x <= playedUntil) playedColor else restColor,
+                        topLeft = androidx.compose.ui.geometry.Offset(x, (size.height - h) / 2f),
                         size = androidx.compose.ui.geometry.Size(barWidth, h),
                         cornerRadius = androidx.compose.ui.geometry.CornerRadius(barWidth / 2f),
                     )
                 }
             }
         } else {
-            Text("Голосовое сообщение", style = MaterialTheme.typography.bodyMedium)
-        }
-        if (duration > 0) {
             Text(
-                formatDuration(duration),
+                "Голосовое сообщение",
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.clickable(onClick = ::togglePlayback),
+            )
+        }
+        val shown = if (isCurrent && playback.durationMs > 0) {
+            formatDuration((playback.durationMs - playback.positionMs) / 1000.0)
+        } else if (duration > 0) {
+            formatDuration(duration)
+        } else {
+            ""
+        }
+        if (shown.isNotBlank()) {
+            Text(
+                shown,
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (unsupported) {
+            Text(
+                "формат не поддержан",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.error,
             )
         }
     }

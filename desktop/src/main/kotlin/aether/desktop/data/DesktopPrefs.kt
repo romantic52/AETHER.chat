@@ -112,7 +112,13 @@ class DesktopPrefs(baseDir: File = defaultDir()) {
     }
 
     companion object {
+        /**
+         * Профиль приложения. AETHER_PROFILE_DIR переопределяет путь — нужен
+         * для второго аккаунта на одной машине и для тестовых прогонов, чтобы
+         * они не затирали рабочую сессию.
+         */
         fun defaultDir(): File {
+            System.getenv("AETHER_PROFILE_DIR")?.takeIf { it.isNotBlank() }?.let { return File(it) }
             val appData = System.getenv("APPDATA") ?: (System.getProperty("user.home") + "\\AppData\\Roaming")
             return File(appData, "Aether")
         }

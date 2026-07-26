@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
@@ -29,6 +30,9 @@ import androidx.compose.ui.unit.dp
 fun HomeScreen(
     session: AppSession,
     typingUntil: SnapshotStateMap<String, Long>,
+    settings: aether.desktop.data.UiSettings,
+    theme: aether.desktop.data.UiSettings.ThemeMode,
+    onThemeChange: (aether.desktop.data.UiSettings.ThemeMode) -> Unit,
     onLogout: () -> Unit,
 ) {
     var selectedPeer by remember { mutableStateOf<String?>(null) }
@@ -39,7 +43,13 @@ fun HomeScreen(
     var showSessions by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var showSafetyFor by remember { mutableStateOf<String?>(null) }
+    var notificationsOn by remember { mutableStateOf(settings.notificationsEnabled) }
+    // Просмотрщик живёт на уровне окна: он должен перекрывать и список, и панель информации.
+    var viewerItems by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
+    var viewerIndex by remember { mutableStateOf<Int?>(null) }
+    var closeToTray by remember { mutableStateOf(settings.closeToTray) }
 
+    Box(modifier = Modifier.fillMaxSize()) {
     Row(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.width(320.dp).fillMaxHeight()) {
             ChatListPane(
@@ -69,8 +79,47 @@ fun HomeScreen(
                             text = { Text("Устройства и сессии") },
                             onClick = { menuOpen = false; showSessions = true },
                         )
+                        HorizontalDivider()
                         DropdownMenuItem(
-                            text = { Text("Выйти") },
+                            text = {
+                                Text(
+                                    when (theme) {
+                                        aether.desktop.data.UiSettings.ThemeMode.SYSTEM -> "Тема: как в системе"
+                                        aether.desktop.data.UiSettings.ThemeMode.LIGHT -> "Тема: светлая"
+                                        aether.desktop.data.UiSettings.ThemeMode.DARK -> "Тема: тёмная"
+                                    }
+                                )
+                            },
+                            onClick = {
+                                onThemeChange(
+                                    when (theme) {
+                                        aether.desktop.data.UiSettings.ThemeMode.SYSTEM ->
+                                            aether.desktop.data.UiSettings.ThemeMode.LIGHT
+                                        aether.desktop.data.UiSettings.ThemeMode.LIGHT ->
+                                            aether.desktop.data.UiSettings.ThemeMode.DARK
+                                        aether.desktop.data.UiSettings.ThemeMode.DARK ->
+                                            aether.desktop.data.UiSettings.ThemeMode.SYSTEM
+                                    }
+                                )
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (notificationsOn) "Уведомления: вкл" else "Уведомления: выкл") },
+                            onClick = {
+                                notificationsOn = !notificationsOn
+                                settings.notificationsEnabled = notificationsOn
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text(if (closeToTray) "Закрытие: сворачивать в трей" else "Закрытие: выходить") },
+                            onClick = {
+                                closeToTray = !closeToTray
+                                settings.closeToTray = closeToTray
+                            },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("Выйти из аккаунта") },
                             onClick = { menuOpen = false; onLogout() },
                         )
                     }
@@ -99,6 +148,10 @@ fun HomeScreen(
                     typingUntil = typingUntil[peer.lowercase()] ?: 0L,
                     onShowInfo = { showInfo = !showInfo },
                     onForwardRequest = { forwardMessage = it },
+                    onOpenViewer = { items, index ->
+                        viewerItems = items
+                        viewerIndex = index
+                    },
                 )
             }
         }
@@ -117,6 +170,16 @@ fun HomeScreen(
                     },
                 )
             }
+        }
+    }
+
+        viewerIndex?.let { start ->
+            MediaViewer(
+                session = session,
+                items = viewerItems,
+                startIndex = start,
+                onClose = { viewerIndex = null },
+            )
         }
     }
 
