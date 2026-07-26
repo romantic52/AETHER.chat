@@ -61,6 +61,8 @@ fn parse_bundle(v: &serde_json::Value) -> PrekeyBundle {
         ed25519_key_b64: opt_str(v, "ed25519_key_b64"),
         identity_sig_b64: opt_str(v, "identity_sig_b64"),
         one_time_key_sig_b64: opt_str(&v["one_time_key"], "sig_b64"),
+        master_key_b64: opt_str(v, "master_key_b64"),
+        device_sig_b64: opt_str(v, "device_sig_b64"),
     }
 }
 
@@ -75,6 +77,9 @@ pub struct PrekeyBundle {
     pub ed25519_key_b64: Option<String>,
     pub identity_sig_b64: Option<String>,
     pub one_time_key_sig_b64: Option<String>,
+    /// Cross-signing (P8): мастер-ключ аккаунта пира и подпись им этого устройства.
+    pub master_key_b64: Option<String>,
+    pub device_sig_b64: Option<String>,
 }
 
 /// Крипто-устройство аккаунта (multi-device): свой Olm-аккаунт на устройство.
@@ -84,6 +89,8 @@ pub struct DeviceInfo {
     pub identity_key_b64: String,
     pub ed25519_key_b64: Option<String>,
     pub identity_sig_b64: Option<String>,
+    pub master_key_b64: Option<String>,
+    pub device_sig_b64: Option<String>,
 }
 
 #[derive(uniffi::Object)]
@@ -382,6 +389,8 @@ impl ApiClient {
                 identity_key_b64: d["identity_key_b64"].as_str().unwrap_or_default().to_string(),
                 ed25519_key_b64: opt_str(d, "ed25519_key_b64"),
                 identity_sig_b64: opt_str(d, "identity_sig_b64"),
+                master_key_b64: opt_str(d, "master_key_b64"),
+                device_sig_b64: opt_str(d, "device_sig_b64"),
             })
             .collect())
     }
@@ -403,6 +412,7 @@ impl ApiClient {
 
     /// Публикация подписанного бандла (SEC HIGH-2): ed25519 + подпись identity +
     /// per-OTK подписи (JSON {key_id: sig_b64}, ключи совпадают с one_time_keys_json).
+    #[allow(clippy::too_many_arguments)]
     pub fn upload_keys_device_signed(
         &self,
         identity_key_b64: String,
@@ -411,6 +421,8 @@ impl ApiClient {
         one_time_keys_json: String,
         otk_signatures_json: String,
         device_id: String,
+        master_key_b64: String,
+        device_sig_b64: String,
     ) -> Result<(), CoreError> {
         let otks: serde_json::Value = serde_json::from_str(&one_time_keys_json).map_err(CoreError::bad)?;
         let sigs: serde_json::Value = serde_json::from_str(&otk_signatures_json).map_err(CoreError::bad)?;
@@ -421,6 +433,8 @@ impl ApiClient {
             "one_time_keys": otks,
             "otk_signatures": sigs,
             "device_id": device_id,
+            "master_key_b64": master_key_b64,
+            "device_sig_b64": device_sig_b64,
         }))
         .map(|_| ())
     }

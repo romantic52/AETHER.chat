@@ -56,14 +56,53 @@ OTK:      "AETHER-OTK-1|{user_id.lower()}|{device_id}|{curve25519_b64}|{otk_id}|
 даже если OTK на сервере ≥20 (иначе старые неподписанные OTK висели бы неделями);
 серверная чистка по смене NULL→ed25519 замещает пул целиком.
 
-## 3. Что осталось за пиром TOFU (принято осознанно)
+## 3. P8 — cross-signing: корень доверия на уровне аккаунта
 
-- Подмена ДО первого контакта — закрывается только сверкой цифр безопасности
-  (следующая итерация: перевести KeyVerificationView на olm-ключи, QR).
+Адверсариальное ревью P7 нашло дыру: подписи бандла доказывают только его
+**самосогласованность** (канон проверяется тем же ed25519, что лежит в бандле).
+Ничто не связывало ключ устройства с аккаунтом пира, а для НОВОГО `device_id`
+TOFU всегда давал «первый контакт» — значит, сервер мог добавить пиру фантомное
+устройство `evil-1` с самоподписанным бандлом и получать копию каждого
+сообщения (fanout шлёт копию каждому устройству из директории), а также спуфить
+входящие. То есть §1 закрывался только для уже запиненных устройств.
+
+**Решение (P8):** мастер-ключ Ed25519 уровня аккаунта подписывает каждое устройство.
+
+```
+master_seed  = SHA-512("AETHER-MASTER-1" || account_private_key)[0..32]
+device canon = "AETHER-DEVSIG-1|{user_id.lower()}|{device_id}|{curve25519}|{ed25519}"
+```
+
+Мастер выводится из **приватного ключа аккаунта** (тот самый box-ключ, что уже
+восстанавливается на каждом устройстве при логине из `encrypted_private_key_b64`):
+никакого нового хранилища, работает для существующих аккаунтов, сервер вывести
+его не может.
+
+- Публикация: `PUT /keys/upload` принимает `master_key_b64` + `device_sig_b64`;
+  сервер верифицирует, требует ОДИН мастер на все устройства аккаунта (409 при
+  расхождении) и не даёт откатиться к записи без cross-signing (надгробие
+  `signed_devices.cross_signed`).
+- Клиент пинит **МАСТЕР** (`master_pins` в ядре, `olmMasterPins` в web) и проверяет
+  им каждое устройство: на claim (исходящие) и на входящих — сверкой конверта с
+  директорией. Устройство без валидной подписи при запиненном мастере отвергается.
+- Смена мастера = переустановка аккаунта пира либо атака: тревога, явное принятие
+  сбрасывает все device-пины и сессии пира.
+- Сверка отпечатков переведена на мастер-ключи (`AetherSafety#2`): подтверждённый
+  мастер аутентифицирует все устройства, тогда как box-ключ к Double Ratchet
+  отношения не имел. Для необновлённых пиров — фолбэк на старый отпечаток.
+
+## 4. Что осталось (принято осознанно)
+
+- Подмена ДО первого контакта с аккаунтом (TOFU мастера) — закрывается сверкой
+  отпечатков; QR-сверка не сделана.
 - SEC MED-3 (rate-limit claim + fallback key) и MED-4 (мультисессии) — бэклог.
 - Каналы/группы — отдельная тема (box-TOFU есть, подписи ключей групп нет).
+- Web: гонка вкладок на `ratchet_`-блобе (last-writer-wins) — известная проблема
+  до P7, теперь затрагивает и пины; лечится Web Locks (бэклог).
+- Директория `/sessions/me` (СВОИ устройства) по-прежнему формируется сервером:
+  подсадка не проходит у собеседников, но сам владелец её в списке не увидит.
 
-## 4. Совместимость
+## 5. Совместимость
 
 - Легаси-бандлы (загружены до апдейта) проходят как неподписанные, TOFU по curve
   работает; после первой подписанной публикации устройства действует анти-даунгрейд.
@@ -75,21 +114,24 @@ OTK:      "AETHER-OTK-1|{user_id.lower()}|{device_id}|{curve25519_b64}|{otk_id}|
 
 | Слой | Файл | Что |
 |---|---|---|
-| Движок | `core/ratchet-core/src/lib.rs` | канон, `account_ed25519`, `account_generate_otks_signed`, `verify_identity`, `verify_prekey_bundle` + тесты |
-| UniFFI | `core/src/ratchet.rs` | `olmAccountEd25519`, `olmAccountGenerateOtksSigned` (`OlmPublishSigned`), `olmVerifyIdentity`, `olmVerifyPrekeyBundle` |
-| Store | `core/src/store.rs` | таблица `olm_pins`, `OlmPin`/`OlmPinStatus`, `olm_pin_get/check/accept/set_verified/delete` + тест TOFU-семантики |
-| API | `core/src/api.rs` | `PrekeyBundle`/`DeviceInfo` + поля подписи, `upload_keys_device_signed` |
-| WASM | `web/ratchet-wasm/src/lib.rs` | те же 4 экспорта; артефакт в `web/vendor/ratchet` |
-| Сервер | `server/main.py` | миграции (`crypto_devices.ed25519_key_b64/identity_sig_b64`, `one_time_keys.sig_b64`), `_verify_upload_signatures` (PyNaCl), анти-даунгрейд, расширенные upload/claim/devices |
-| iOS | `Core/CoreClient.swift` | подписанная публикация (`olm_signed_v1`), `verifyAndPinBundle`, двухфазный `sendDirect`, входящий гейт в `ratchetOpen`, `acceptNewOlmKey` |
-| iOS UI | `Core/Messaging.swift`, `Features/Chat/ChatView.swift` | `pendingOlmKeyChange`/`acceptNewOlmKey`, оранжевый баннер смены ключа |
-| Web | `web/app.js` | `olmEdPins`, подписанная публикация (`olm_signed_v1_${myId}`), верификация+пин ДО `create_outbound`, confirm-принятие нового ключа |
+| Движок | `core/ratchet-core/src/lib.rs` | каноны, `account_generate_otks_signed`, `verify_prekey_bundle`; P8: `master_public`, `sign_device`, `verify_device` + тесты (включая отказ фантомному устройству) |
+| UniFFI | `core/src/ratchet.rs` | `olmAccountGenerateOtksSigned` (`OlmPublishSigned`), `olmVerifyPrekeyBundle`/`olmVerifyIdentity`; P8: `olmMasterPublic`, `olmSignDevice`, `olmVerifyDevice` |
+| Store | `core/src/store.rs` | `olm_pins` (`OlmPin`/`OlmPinStatus`, get/check/accept/set_verified/delete), P8: `master_pins` (`MasterPin`, master_pin_get/check/accept/set_verified), `olm_session_delete` + тест TOFU-семантики |
+| API | `core/src/api.rs` | `PrekeyBundle`/`DeviceInfo` + поля подписей и мастера, `upload_keys_device_signed` |
+| WASM | `web/ratchet-wasm/src/lib.rs` | те же экспорты (7 новых); артефакт в `web/vendor/ratchet` |
+| Сервер | `server/main.py` | миграции (`crypto_devices.ed25519_key_b64/identity_sig_b64/master_key_b64/device_sig_b64`, `one_time_keys.sig_b64`, `signed_devices`), `_verify_upload_signatures` (PyNaCl, оба канона), анти-даунгрейд + надгробие, один мастер на аккаунт, `claim` под `FOR UPDATE`, анти-вор гейт в `kick_device` |
+| iOS | `Core/CoreClient.swift` | подписанная публикация с мастер-подписью, `verifyDeviceOwnership`/`verifyAndPinBundle`, `KeyTrustAlert`, двухфазный `sendDirect`, входящие гейты в `ratchetOpen`, `acceptNewOlmKey` (свежий claim / сброс доверия при смене мастера) |
+| iOS UI | `Core/Messaging.swift`, `Features/Chat/ChatView.swift`, `Features/Lock/KeyVerificationView.swift` | баннер смены ключа, отпечаток `AetherSafety#2` по мастер-ключам |
+| Web | `web/app.js`, `index.html`, `style.css` | `olmEdPins`/`olmMasterPins`, подписанная+cross-signed публикация, `verifyBundleSignature`/`verifyDeviceOwnership`, двухфазный fanout, баннер и принятие ключа (в т.ч. на входящих) |
 
 ## Инварианты (не ломать)
 
-1. Канон подписей менять только с bump'ом версии (`AETHER-IDKEY-2`...) и поддержкой
-   старой на верификации. Канон продублирован в `server/main.py` — менять синхронно.
-2. Перепин — только `olm_pin_accept` (явное действие пользователя). Тихих перепинов нет.
+1. Каноны подписей менять только с bump'ом версии (`AETHER-IDKEY-2`, `AETHER-DEVSIG-2`…)
+   и поддержкой старой на верификации. Каноны продублированы в `server/main.py` —
+   менять синхронно (есть кросс-тест WASM↔PyNaCl, см. историю в скратчпаде).
+2. Перепин — только `olm_pin_accept`/`master_pin_accept` (явное действие пользователя).
+   Тихих перепинов нет; в пин уходит только ПРОВЕРЕННЫЙ ключ.
 3. Гейт исходящих — ДО `olm_create_outbound`; гейт входящих — ДО расшифровки.
+   Мастер-проверка — до обеих (устройство обязано принадлежать аккаунту).
 4. `peer_key` пинов = соглашение `sessionKey` (`peer` / `peer::device`) — не расходить.
 5. Анти-стриппинг: пин с ed25519 + бандл без подписи = отказ, а не «мягкий» проход.

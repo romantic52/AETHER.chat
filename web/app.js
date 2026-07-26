@@ -462,6 +462,11 @@ let olmEdPins = Object.create(null);
 // Непринятые смены ключа (deviceKey -> {peerId, identity}): баннер в чате.
 // Живут в памяти вкладки — после перезагрузки тревога всплывёт заново.
 let pendingKeyChanges = Object.create(null);
+// TOFU-пины МАСТЕР-ключей аккаунтов (cross-signing, P8): peerId -> master_b64.
+// Корень доверия: им проверяются все устройства пира, поэтому подсадка
+// устройства сервером не проходит даже на «первом контакте» с device_id.
+let olmMasterPins = Object.create(null);
+let pendingMasterChanges = Object.create(null);   // peerId -> новый мастер
 // Multi-device: этот браузер — отдельное криптоустройство аккаунта.
 // 'primary' — только если аккаунт ещё нигде не имел Olm-ключей (легаси-совместимость).
 let myDeviceId = '';
@@ -572,7 +577,8 @@ async function saveRatchetState(updateServerBackup = false) {
         account_identity: olmIdentityB64,
         sessions: olmSessions,
         identity_pins: olmIdentityPins,
-        identity_ed_pins: olmEdPins
+        identity_ed_pins: olmEdPins,
+        master_pins: olmMasterPins
     }, myPin, getSalt(myId));
     localStorage.setItem(`ratchet_${myId}`, encrypted);
 
@@ -636,6 +642,8 @@ async function prepareRatchetState(password) {
         ? Object.assign(Object.create(null), localState.identity_pins) : Object.create(null);
     olmEdPins = sameAccount && localState.identity_ed_pins && typeof localState.identity_ed_pins === 'object'
         ? Object.assign(Object.create(null), localState.identity_ed_pins) : Object.create(null);
+    olmMasterPins = sameAccount && localState.master_pins && typeof localState.master_pins === 'object'
+        ? Object.assign(Object.create(null), localState.master_pins) : Object.create(null);
 
     await ensureRatchetKeys();
 }
@@ -669,6 +677,12 @@ async function ensureRatchetKeys() {
     const oneTimeKeys = JSON.parse(publish.one_time_keys_json);
     const otkSignatures = JSON.parse(publish.otk_signatures_json);
 
+    // Cross-signing (P8): подписываем запись устройства мастер-ключом аккаунта,
+    // выведенным из приватника — он есть на каждом устройстве после логина.
+    const masterKeyB64 = api.master_public(myKeys.secretB64);
+    const deviceSigB64 = api.sign_device(myKeys.secretB64, myId, myDeviceId,
+                                         olmIdentityB64, publish.ed25519_key_b64);
+
     const uploadRes = await fetch(`${serverUrl}/keys/upload`, {
         method: 'PUT',
         headers: authHeaders({ 'Content-Type': 'application/json' }),
@@ -678,7 +692,9 @@ async function ensureRatchetKeys() {
             identity_sig_b64: publish.identity_sig_b64,
             one_time_keys: oneTimeKeys,
             otk_signatures: otkSignatures,
-            device_id: myDeviceId
+            device_id: myDeviceId,
+            master_key_b64: masterKeyB64,
+            device_sig_b64: deviceSigB64
         })
     });
     if (!uploadRes.ok) throw new Error('Не удалось опубликовать prekeys');
@@ -694,18 +710,33 @@ function pendingKeysForPeer(peerId) {
     return Object.keys(pendingKeyChanges).filter(k => k === id || k.startsWith(`${id}::`));
 }
 
+function hasPendingKeyAlert(peerId) {
+    if (!peerId) return false;
+    return pendingMasterChanges[String(peerId).toLowerCase()] !== undefined
+        || pendingKeysForPeer(peerId).length > 0;
+}
+
 function renderKeyChangeBar() {
     const bar = document.getElementById('key-change-bar');
     if (!bar) return;
-    bar.classList.toggle('hidden', pendingKeysForPeer(selectedPeer).length === 0);
+    bar.classList.toggle('hidden', !hasPendingKeyAlert(selectedPeer));
 }
 
 /// Явное принятие нового ключа: снимаем пины и мёртвые сессии этого устройства.
 /// Отклонённое входящее prekey-сообщение вскроется само на следующем поллинге,
 /// исходящие пойдут через свежий claim.
 async function acceptPendingKeyChanges() {
-    const keys = pendingKeysForPeer(selectedPeer);
-    if (!keys.length) return;
+    if (!hasPendingKeyAlert(selectedPeer)) return;
+    const peer = String(selectedPeer).toLowerCase();
+    // Смена мастера обесценивает всё производное доверие к пиру: снимаем и
+    // device-пины, и сессии — они переустановятся с проверкой подписи.
+    let keys = pendingKeysForPeer(selectedPeer);
+    if (pendingMasterChanges[peer] !== undefined) {
+        olmMasterPins[peer] = pendingMasterChanges[peer];
+        delete pendingMasterChanges[peer];
+        keys = Object.keys(olmIdentityPins).filter(k => k === peer || k.startsWith(`${peer}::`))
+            .concat(keys.filter(k => !(k === peer || k.startsWith(`${peer}::`))));
+    }
     for (const key of keys) {
         delete olmIdentityPins[key];
         delete olmEdPins[key];
@@ -716,6 +747,30 @@ async function acceptPendingKeyChanges() {
     renderKeyChangeBar();
     showStatus('Новый ключ принят — сообщения синхронизируются', 'success');
     pollInbox().catch(() => {});
+}
+
+/// Cross-signing (P8): устройство должно быть подписано мастер-ключом аккаунта
+/// пира, а сам мастер — совпасть с запиненным. Подписи бандла (P7) доказывают
+/// лишь самосогласованность записи, поэтому без этой проверки сервер мог бы
+/// подсадить пиру фантомное устройство и читать копию каждого сообщения.
+function verifyDeviceOwnership(api, peerId, deviceId, curve, ed, master, deviceSig) {
+    const peer = String(peerId).toLowerCase();
+    const pinnedMaster = olmMasterPins[peer];
+    if (!master || !deviceSig || !ed) {
+        // Легаси-устройство без cross-signing: терпим, пока мастер не запинен.
+        if (pinnedMaster) {
+            throw new Error('Устройство собеседника не подписано его аккаунтом — возможна подсадка устройства сервером');
+        }
+        return;
+    }
+    if (pinnedMaster && pinnedMaster !== master) {
+        pendingMasterChanges[peer] = master;
+        renderKeyChangeBar();
+        throw new Error('Мастер-ключ аккаунта собеседника изменился — сверьте цифры безопасности или примите новый ключ');
+    }
+    // Бросает, если подпись устройства не сходится с мастером (канон AETHER-DEVSIG-1).
+    api.verify_device(master, peer, deviceId, curve, ed, deviceSig);
+    if (!pinnedMaster) olmMasterPins[peer] = master;   // TOFU корня доверия
 }
 
 /// Проверка подписи prekey-бандла (SEC HIGH-2). Возвращает ВЕРИФИЦИРОВАННЫЙ
@@ -759,6 +814,8 @@ async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
             // сессии — подменённый сервером бандл не порождает ни сессии,
             // ни зря сожжённого локального состояния.
             const verifiedEd = verifyBundleSignature(api, peerId, deviceId, bundle, key);
+            verifyDeviceOwnership(api, peerId, deviceId, bundle.identity_key_b64, verifiedEd,
+                                  bundle.master_key_b64, bundle.device_sig_b64);
             const pinned = olmIdentityPins[key];
             const changed = (pinned && pinned !== bundle.identity_key_b64)
                 || (olmEdPins[key] && verifiedEd && olmEdPins[key] !== verifiedEd);
@@ -821,6 +878,24 @@ async function openRatchetEnvelope(peerId, envelope) {
             senderDevice = match ? match.device_id : 'primary';
         }
         const key = deviceKey(peerId, senderDevice);
+        // Cross-signing (P8): если мастер пира запинен, устройство-отправитель обязано
+        // быть в его директории и подписано этим мастером. Иначе сервер спуфил бы
+        // авторство новым device_id — для него TOFU дал бы «первый контакт».
+        const pinnedMaster = olmMasterPins[String(peerId).toLowerCase()];
+        if (pinnedMaster) {
+            let devs = await getPeerDevices(peerId);
+            let dev = devs.find(d => d.device_id === senderDevice);
+            if (!dev) {
+                devs = await getPeerDevices(peerId, true);
+                dev = devs.find(d => d.device_id === senderDevice);
+            }
+            if (!dev || dev.identity_key_b64 !== identity || dev.master_key_b64 !== pinnedMaster
+                || !dev.ed25519_key_b64 || !dev.device_sig_b64) {
+                throw new Error('Устройство отправителя не подписано его аккаунтом — возможна подсадка устройства сервером');
+            }
+            api.verify_device(pinnedMaster, String(peerId).toLowerCase(), senderDevice,
+                              identity, dev.ed25519_key_b64, dev.device_sig_b64);
+        }
         const pinned = olmIdentityPins[key];
         if (pinned && pinned !== identity) {
             // Тревога TOFU: сообщение не вскрываем и не ack'аем, но запоминаем —
@@ -1695,7 +1770,9 @@ function keysFromSecretKeyB64(secretKeyB64) {
     return {
         secretKey: kp.secretKey,
         publicKey: kp.publicKey,
-        publicB64: base64UrlEncode(kp.publicKey)
+        publicB64: base64UrlEncode(kp.publicKey),
+        // Приватник аккаунта нужен для мастер-подписи устройств (cross-signing, P8).
+        secretB64: base64UrlEncode(kp.secretKey)
     };
 }
 

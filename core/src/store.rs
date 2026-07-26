@@ -62,6 +62,19 @@ pub struct OlmPin {
     pub changed_ts: Option<i64>,
 }
 
+/// TOFU-пин мастер-ключа аккаунта пира (cross-signing, P8). Один на пользователя:
+/// все его устройства проверяются этим ключом, поэтому добавление устройства
+/// владельцем не требует нового доверия, а подсадка сервером — не проходит.
+#[derive(uniffi::Record, Clone)]
+pub struct MasterPin {
+    pub peer_id: String,
+    pub master_key_b64: String,
+    pub verified: bool,
+    pub first_seen: i64,
+    pub prev_master_key_b64: Option<String>,
+    pub changed_ts: Option<i64>,
+}
+
 /// Итог TOFU-проверки olm-identity.
 #[derive(uniffi::Enum, Clone, PartialEq, Eq, Debug)]
 pub enum OlmPinStatus {
@@ -130,6 +143,14 @@ CREATE TABLE IF NOT EXISTS olm_sessions (
     peer_id TEXT PRIMARY KEY,
     session_json TEXT NOT NULL,
     updated_ts INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS master_pins (
+    peer_id TEXT PRIMARY KEY,
+    master_key_b64 TEXT NOT NULL,
+    verified INTEGER NOT NULL DEFAULT 0,
+    first_seen INTEGER NOT NULL DEFAULT 0,
+    prev_master_key_b64 TEXT,
+    changed_ts INTEGER
 );
 CREATE TABLE IF NOT EXISTS olm_pins (
     peer_key TEXT PRIMARY KEY,
@@ -538,6 +559,87 @@ impl CoreStore {
         Ok(())
     }
 
+    // ---- TOFU-пины мастер-ключа аккаунта (cross-signing, P8) ----
+
+    pub fn master_pin_get(&self, peer_id: String) -> Result<Option<MasterPin>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        Ok(c.query_row(
+            "SELECT peer_id, master_key_b64, verified, first_seen, prev_master_key_b64, changed_ts
+             FROM master_pins WHERE peer_id=?1",
+            params![peer_id.to_lowercase()],
+            |row| Ok(MasterPin {
+                peer_id: row.get(0)?,
+                master_key_b64: row.get(1)?,
+                verified: row.get::<_, i64>(2)? != 0,
+                first_seen: row.get(3)?,
+                prev_master_key_b64: row.get(4)?,
+                changed_ts: row.get(5)?,
+            }),
+        ).optional()?)
+    }
+
+    /// TOFU-гейт мастер-ключа. Mismatch пин НЕ трогает — принять новый мастер
+    /// можно только явным master_pin_accept (смена пароля/восстановление аккаунта
+    /// пира тоже приводит сюда: событие, которое пользователь должен подтвердить).
+    pub fn master_pin_check(
+        &self,
+        peer_id: String,
+        master_key_b64: String,
+        now_ts: i64,
+    ) -> Result<OlmPinStatus, CoreError> {
+        let key = peer_id.to_lowercase();
+        let existing = self.master_pin_get(key.clone())?;
+        let c = self.conn.lock().unwrap();
+        match existing {
+            None => {
+                c.execute(
+                    "INSERT INTO master_pins (peer_id, master_key_b64, verified, first_seen)
+                     VALUES (?1, ?2, 0, ?3)",
+                    params![key, master_key_b64, now_ts],
+                )?;
+                Ok(OlmPinStatus::FirstUse)
+            }
+            Some(pin) if pin.master_key_b64 == master_key_b64 => Ok(OlmPinStatus::Match),
+            Some(_) => Ok(OlmPinStatus::Mismatch),
+        }
+    }
+
+    pub fn master_pin_accept(
+        &self,
+        peer_id: String,
+        master_key_b64: String,
+        now_ts: i64,
+    ) -> Result<(), CoreError> {
+        let key = peer_id.to_lowercase();
+        let existing = self.master_pin_get(key.clone())?;
+        let c = self.conn.lock().unwrap();
+        match existing {
+            Some(old) => {
+                c.execute(
+                    "UPDATE master_pins SET master_key_b64=?2, verified=0,
+                            prev_master_key_b64=?3, changed_ts=?4 WHERE peer_id=?1",
+                    params![key, master_key_b64, old.master_key_b64, now_ts],
+                )?;
+            }
+            None => {
+                c.execute(
+                    "INSERT INTO master_pins (peer_id, master_key_b64, verified, first_seen)
+                     VALUES (?1, ?2, 0, ?3)",
+                    params![key, master_key_b64, now_ts],
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn master_pin_set_verified(&self, peer_id: String, verified: bool) -> Result<(), CoreError> {
+        self.conn.lock().unwrap().execute(
+            "UPDATE master_pins SET verified=?2 WHERE peer_id=?1",
+            params![peer_id.to_lowercase(), verified as i64],
+        )?;
+        Ok(())
+    }
+
     // ---- TOFU-пины olm-identity (Double Ratchet, SEC HIGH-2) ----
 
     pub fn olm_pin_get(&self, peer_key: String) -> Result<Option<OlmPin>, CoreError> {
@@ -672,6 +774,16 @@ impl CoreStore {
         Ok(c.query_row("SELECT session_json FROM olm_sessions WHERE peer_id=?1",
                        params![peer_id.to_lowercase()], |r| r.get(0)).optional()?)
     }
+    /// Забыть сессию (принятие нового ключа пира: старая сессия мертва, новая
+    /// установится свежим prekey-обменом).
+    pub fn olm_session_delete(&self, peer_id: String) -> Result<(), CoreError> {
+        self.conn.lock().unwrap().execute(
+            "DELETE FROM olm_sessions WHERE peer_id=?1",
+            params![peer_id.to_lowercase()],
+        )?;
+        Ok(())
+    }
+
     pub fn olm_session_set(&self, peer_id: String, session_json: String) -> Result<(), CoreError> {
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
