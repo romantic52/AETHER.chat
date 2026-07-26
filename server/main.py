@@ -1232,12 +1232,17 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                    -- Смена ЛЮБОГО ключа = фактически новое устройство в этом слоте:
                    -- 12-часовой анти-вор гейт kick_device отсчитывается заново,
                    -- иначе захват чужого слота давал бы право выкидывать сразу.
+                   -- ЗАПОЛНЕНИЕ ранее пустого поля сменой НЕ считается: иначе первая
+                   -- же публикация после апдейта (NULL → ed25519/master) обнулила бы
+                   -- возраст у всех устройств и заблокировала kick на 12 часов.
                    created_at = CASE WHEN crypto_devices.identity_key_b64
                                           IS DISTINCT FROM EXCLUDED.identity_key_b64
-                                       OR crypto_devices.ed25519_key_b64
-                                          IS DISTINCT FROM EXCLUDED.ed25519_key_b64
-                                       OR crypto_devices.master_key_b64
-                                          IS DISTINCT FROM EXCLUDED.master_key_b64
+                                       OR (crypto_devices.ed25519_key_b64 IS NOT NULL
+                                           AND crypto_devices.ed25519_key_b64
+                                               IS DISTINCT FROM EXCLUDED.ed25519_key_b64)
+                                       OR (crypto_devices.master_key_b64 IS NOT NULL
+                                           AND crypto_devices.master_key_b64
+                                               IS DISTINCT FROM EXCLUDED.master_key_b64)
                                      THEN EXCLUDED.created_at
                                      ELSE crypto_devices.created_at END""",
             (current_user, device_id, body.identity_key_b64,

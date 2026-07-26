@@ -297,7 +297,6 @@ pub fn verify_device(
     ed_b64: &str,
     device_sig_b64: &str,
 ) -> Result<()> {
-    use ed25519_dalek::Verifier as _;
     let master_bytes: [u8; 32] = decode_b64(master_key_b64)?
         .try_into()
         .map_err(|_| err("мастер-ключ: ожидалось 32 байта"))?;
@@ -305,8 +304,15 @@ pub fn verify_device(
         .try_into()
         .map_err(|_| err("подпись устройства: ожидалось 64 байта"))?;
     let master = ed25519_dalek::VerifyingKey::from_bytes(&master_bytes).map_err(err)?;
+    // Ключи малого порядка отвергаем явно: для них подпись куётся без знания
+    // секрета. libsodium на сервере так и делает — расхождение реализаций
+    // означало бы, что клиент примет корень доверия, который сервер не принял.
+    if master.is_weak() {
+        return Err(err("мастер-ключ малого порядка — недопустим как корень доверия"));
+    }
     master
-        .verify(
+        // verify_strict (а не verify): отвергает неканонические кодировки точек.
+        .verify_strict(
             device_canon(user_id, device_id, curve_b64, ed_b64).as_bytes(),
             &ed25519_dalek::Signature::from_bytes(&sig_bytes),
         )
@@ -314,6 +320,14 @@ pub fn verify_device(
             "olm: устройство не подписано мастер-ключом аккаунта — возможна подсадка устройства сервером"
                 .to_owned()
         })
+}
+
+/// Канонизировать base64-ключ: decode_b64 намеренно толерантен (принимает оба
+/// алфавита и padding), поэтому один и тот же ключ приходит в разных формах.
+/// Пины и отпечатки сравниваются как СТРОКИ — без нормализации сервер мог бы
+/// переписать кодировку и «сменить» ключ, не сломав ни одной подписи.
+pub fn canonical_key_b64(key_b64: &str) -> Result<String> {
+    Ok(URL_SAFE_NO_PAD.encode(decode_b64(key_b64)?))
 }
 
 pub fn create_outbound(

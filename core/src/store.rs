@@ -588,6 +588,9 @@ impl CoreStore {
         now_ts: i64,
     ) -> Result<OlmPinStatus, CoreError> {
         let key = peer_id.to_lowercase();
+        // Сравниваем канонические формы: иначе сервер переписал бы кодировку
+        // того же ключа и «сменил» мастер, не сломав ни одной подписи.
+        let master_key_b64 = canon_key(&master_key_b64)?;
         let existing = self.master_pin_get(key.clone())?;
         let c = self.conn.lock().unwrap();
         match existing {
@@ -611,6 +614,7 @@ impl CoreStore {
         now_ts: i64,
     ) -> Result<(), CoreError> {
         let key = peer_id.to_lowercase();
+        let master_key_b64 = canon_key(&master_key_b64)?;
         let existing = self.master_pin_get(key.clone())?;
         let c = self.conn.lock().unwrap();
         match existing {
@@ -674,6 +678,8 @@ impl CoreStore {
         now_ts: i64,
     ) -> Result<OlmPinStatus, CoreError> {
         let key = peer_key.to_lowercase();
+        let curve25519_b64 = canon_key(&curve25519_b64)?;
+        let ed25519_b64 = ed25519_b64.map(|k| canon_key(&k)).transpose()?;
         let existing = self.olm_pin_get(key.clone())?;
         let c = self.conn.lock().unwrap();
         match existing {
@@ -714,12 +720,19 @@ impl CoreStore {
         now_ts: i64,
     ) -> Result<(), CoreError> {
         let key = peer_key.to_lowercase();
+        let curve25519_b64 = canon_key(&curve25519_b64)?;
+        let ed25519_b64 = ed25519_b64.map(|k| canon_key(&k)).transpose()?;
         let existing = self.olm_pin_get(key.clone())?;
         let c = self.conn.lock().unwrap();
         match existing {
             Some(old) => {
+                // COALESCE: принятие НЕ понижает доверие. Стереть проверенный
+                // ed25519 в NULL значило бы разоружить анти-стриппинг (инвариант 5),
+                // а такой путь достижим через «залипшую» тревогу о неподписанном
+                // устройстве, которое уже успело стать cross-signed.
                 c.execute(
-                    "UPDATE olm_pins SET curve25519_b64=?2, ed25519_b64=?3, verified=0,
+                    "UPDATE olm_pins SET curve25519_b64=?2,
+                            ed25519_b64=COALESCE(?3, ed25519_b64), verified=0,
                             prev_curve25519_b64=?4, prev_ed25519_b64=?5, changed_ts=?6
                      WHERE peer_key=?1",
                     params![key, curve25519_b64, ed25519_b64,
@@ -821,6 +834,13 @@ impl CoreStore {
     }
 }
 
+/// Канонизировать base64-ключ перед сравнением/записью в пин. Декодер намеренно
+/// толерантен (оба алфавита, padding), поэтому один и тот же ключ приходит в
+/// разных формах — а пины сравниваются строками.
+fn canon_key(key_b64: &str) -> Result<String, CoreError> {
+    aether_ratchet_core::canonical_key_b64(key_b64).map_err(|m| CoreError::Crypto { msg: m })
+}
+
 /// b64url-ключ (32 байта) → hex для PRAGMA key.
 fn hex_key(key_b64: &str) -> Result<String, CoreError> {
     let bytes = crate::crypto::decode_b64(key_b64)?;
@@ -885,24 +905,24 @@ mod tests {
     fn olm_pin_tofu_semantics() {
         let s = store();
         // Первый контакт (входящий, только curve) — TOFU.
-        assert_eq!(s.olm_pin_check("Bob::ios-1".into(), "curveA".into(), None, 10).unwrap(), OlmPinStatus::FirstUse);
+        assert_eq!(s.olm_pin_check("Bob::ios-1".into(), "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".into(), None, 10).unwrap(), OlmPinStatus::FirstUse);
         // Повтор — Match; регистр peer_key не важен.
-        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveA".into(), None, 11).unwrap(), OlmPinStatus::Match);
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".into(), None, 11).unwrap(), OlmPinStatus::Match);
         // Claim принёс ed25519 — дозаполнение без тревоги.
-        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveA".into(), Some("edA".into()), 12).unwrap(), OlmPinStatus::Match);
-        assert_eq!(s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap().ed25519_b64.as_deref(), Some("edA"));
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".into(), Some("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM".into()), 12).unwrap(), OlmPinStatus::Match);
+        assert_eq!(s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap().ed25519_b64.as_deref(), Some("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"));
         // Смена curve или ed — Mismatch, пин не тронут.
-        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveB".into(), None, 13).unwrap(), OlmPinStatus::Mismatch);
-        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "curveA".into(), Some("edB".into()), 14).unwrap(), OlmPinStatus::Mismatch);
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI".into(), None, 13).unwrap(), OlmPinStatus::Mismatch);
+        assert_eq!(s.olm_pin_check("bob::ios-1".into(), "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE".into(), Some("BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ".into()), 14).unwrap(), OlmPinStatus::Mismatch);
         let pin = s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap();
-        assert_eq!(pin.curve25519_b64, "curveA");
+        assert_eq!(pin.curve25519_b64, "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE");
         // Явное принятие нового ключа: старый уходит в prev_*, verified сброшен.
         s.olm_pin_set_verified("bob::ios-1".into(), true).unwrap();
-        s.olm_pin_accept("bob::ios-1".into(), "curveB".into(), Some("edB".into()), 15).unwrap();
+        s.olm_pin_accept("bob::ios-1".into(), "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI".into(), Some("BAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQ".into()), 15).unwrap();
         let pin = s.olm_pin_get("bob::ios-1".into()).unwrap().unwrap();
-        assert_eq!(pin.curve25519_b64, "curveB");
-        assert_eq!(pin.prev_curve25519_b64.as_deref(), Some("curveA"));
-        assert_eq!(pin.prev_ed25519_b64.as_deref(), Some("edA"));
+        assert_eq!(pin.curve25519_b64, "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI");
+        assert_eq!(pin.prev_curve25519_b64.as_deref(), Some("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"));
+        assert_eq!(pin.prev_ed25519_b64.as_deref(), Some("AwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwM"));
         assert!(!pin.verified);
         assert_eq!(pin.changed_ts, Some(15));
     }
@@ -911,13 +931,13 @@ mod tests {
     fn peer_trust_reset_clears_devices_but_not_other_peers() {
         let s = store();
         // Пир с легаси-primary (голый peer_id) и обычным устройством.
-        s.olm_pin_check("bob".into(), "c1".into(), None, 1).unwrap();
-        s.olm_pin_check("bob::ios-1".into(), "c2".into(), None, 1).unwrap();
-        s.olm_pin_check("bobby::ios-9".into(), "c3".into(), None, 1).unwrap();   // другой пир
+        s.olm_pin_check("bob".into(), "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU".into(), None, 1).unwrap();
+        s.olm_pin_check("bob::ios-1".into(), "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY".into(), None, 1).unwrap();
+        s.olm_pin_check("bobby::ios-9".into(), "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc".into(), None, 1).unwrap();   // другой пир
         s.olm_session_set("bob".into(), "s1".into()).unwrap();
         s.olm_session_set("bob::ios-1".into(), "s2".into()).unwrap();
         s.olm_session_set("bobby::ios-9".into(), "s3".into()).unwrap();
-        s.master_pin_check("bob".into(), "M1".into(), 1).unwrap();
+        s.master_pin_check("bob".into(), "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg".into(), 1).unwrap();
 
         s.peer_trust_reset("Bob".into()).unwrap();
 
@@ -936,8 +956,8 @@ mod tests {
         // '_' разрешён в user_id и является подстановочным символом LIKE:
         // без экранирования сброс "bob_1" сносил бы доверие постороннему "bobx1".
         let s = store();
-        s.olm_pin_check("bob_1::ios".into(), "c1".into(), None, 1).unwrap();
-        s.olm_pin_check("bobx1::ios".into(), "c2".into(), None, 1).unwrap();
+        s.olm_pin_check("bob_1::ios".into(), "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU".into(), None, 1).unwrap();
+        s.olm_pin_check("bobx1::ios".into(), "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY".into(), None, 1).unwrap();
         s.olm_session_set("bobx1::ios".into(), "s2".into()).unwrap();
 
         s.peer_trust_reset("bob_1".into()).unwrap();

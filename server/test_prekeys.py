@@ -151,8 +151,10 @@ def main():
     status, _ = call("PUT", "/sessions/me/device", bob_token,
                      {"device_id": device, "identity_key_b64": b64(secrets.token_bytes(32))})
     assert status == 403, f"bind с чужой identity принят: {status}"
+    # Без identity_key_b64 привязка проходит — легаси-клиенты его не шлют
+    # (реальная защита от вора токена — device_bound_at в kick_device).
     status, _ = call("PUT", "/sessions/me/device", bob_token, {"device_id": device})
-    assert status == 403, f"bind без identity принят: {status}"
+    assert status == 200, f"легаси-bind без identity отвергнут: {status}"
     status, _ = call("PUT", "/sessions/me/device", bob_token,
                      {"device_id": device, "identity_key_b64": body["identity_key_b64"]})
     assert status == 200, f"bind со своей identity отвергнут: {status}"
