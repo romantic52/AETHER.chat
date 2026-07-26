@@ -758,12 +758,25 @@ impl CoreStore {
     /// устройств — чистит по префиксу ключа "peer" / "peer::device".
     pub fn peer_trust_reset(&self, peer_id: String) -> Result<(), CoreError> {
         let peer = peer_id.to_lowercase();
-        let prefix = format!("{peer}::%");
+        // В user_id разрешён '_', а в LIKE это подстановочный символ: без
+        // экранирования сброс доверия к "bob_1" сносил бы пины постороннего "bobX1".
+        let escaped: String = peer
+            .chars()
+            .flat_map(|ch| match ch {
+                '\\' | '%' | '_' => vec!['\\', ch],
+                ch => vec![ch],
+            })
+            .collect();
+        let prefix = format!("{escaped}::%");
         let c = self.conn.lock().unwrap();
-        c.execute("DELETE FROM olm_pins WHERE peer_key=?1 OR peer_key LIKE ?2",
-                  params![peer, prefix])?;
-        c.execute("DELETE FROM olm_sessions WHERE peer_id=?1 OR peer_id LIKE ?2",
-                  params![peer, prefix])?;
+        c.execute(
+            r"DELETE FROM olm_pins WHERE peer_key=?1 OR peer_key LIKE ?2 ESCAPE '\'",
+            params![peer, prefix],
+        )?;
+        c.execute(
+            r"DELETE FROM olm_sessions WHERE peer_id=?1 OR peer_id LIKE ?2 ESCAPE '\'",
+            params![peer, prefix],
+        )?;
         Ok(())
     }
 
@@ -916,6 +929,22 @@ mod tests {
         assert!(s.olm_pin_get("bobby::ios-9".into()).unwrap().is_some());
         assert_eq!(s.olm_session_get("bobby::ios-9".into()).unwrap().as_deref(), Some("s3"));
         assert!(s.master_pin_get("bob".into()).unwrap().is_some());
+    }
+
+    #[test]
+    fn peer_trust_reset_escapes_like_wildcards() {
+        // '_' разрешён в user_id и является подстановочным символом LIKE:
+        // без экранирования сброс "bob_1" сносил бы доверие постороннему "bobx1".
+        let s = store();
+        s.olm_pin_check("bob_1::ios".into(), "c1".into(), None, 1).unwrap();
+        s.olm_pin_check("bobx1::ios".into(), "c2".into(), None, 1).unwrap();
+        s.olm_session_set("bobx1::ios".into(), "s2".into()).unwrap();
+
+        s.peer_trust_reset("bob_1".into()).unwrap();
+
+        assert!(s.olm_pin_get("bob_1::ios".into()).unwrap().is_none());
+        assert!(s.olm_pin_get("bobx1::ios".into()).unwrap().is_some(), "чужой пир не тронут");
+        assert_eq!(s.olm_session_get("bobx1::ios".into()).unwrap().as_deref(), Some("s2"));
     }
 
     #[test]
