@@ -96,11 +96,20 @@ fun ChatPane(
     var chat by remember(peerId) { mutableStateOf<ChatEntity?>(null) }
     var presence by remember(peerId) { mutableStateOf("") }
     var canPost by remember(peerId) { mutableStateOf(true) }
-    var input by remember(peerId) { mutableStateOf("") }
+    // Текст поля живёт в черновиках: переход в другой чат и перезапуск не должны
+    // стирать недописанное.
+    var input by remember(peerId) { mutableStateOf(aether.desktop.data.Drafts.get(peerId)) }
+    LaunchedEffect(peerId, input) {
+        delay(400)
+        aether.desktop.data.Drafts.set(peerId, input)
+    }
     var replyTo by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
     var editing by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
     val scope = rememberCoroutineScope()
     val listState = remember(peerId) { LazyListState() }
+    // Курсор сразу в поле ввода при открытии чата — как в Telegram, где можно
+    // начать печатать не целясь мышью.
+    val composerFocus = remember { FocusRequester() }
     var lastTypingSentAt by remember(peerId) { mutableStateOf(0L) }
     // «печатает…» гаснет сам: без тика состояние висело до следующей перекомпозиции.
     var now by remember { mutableStateOf(System.currentTimeMillis()) }
@@ -151,6 +160,10 @@ fun ChatPane(
     LaunchedEffect(peerId, messages.isNotEmpty()) {
         if (messages.isNotEmpty()) listState.scrollToItem((messages.size - 1).coerceAtLeast(0))
     }
+    LaunchedEffect(peerId) {
+        androidx.compose.runtime.withFrameNanos { }
+        runCatching { composerFocus.requestFocus() }
+    }
 
     fun send() {
         val text = input.trim()
@@ -158,6 +171,7 @@ fun ChatPane(
         val currentEditing = editing
         val currentReply = replyTo
         input = ""
+        aether.desktop.data.Drafts.clear(peerId)
         replyTo = null
         editing = null
         scope.launch {
@@ -175,15 +189,18 @@ fun ChatPane(
         }
     }
 
-    /** Общий путь отправки файлов: пикер, перетаскивание, вставка из буфера. */
-    fun sendFiles(files: List<File>, asFile: Boolean) {
+    // Что показать в предпросмотре вложений: файлы и режим по умолчанию.
+    var pendingAttach by remember(peerId) { mutableStateOf<Pair<List<File>, Boolean>?>(null) }
+
+    /** Общий путь отправки вложений: пикер, перетаскивание, вставка из буфера. */
+    fun sendWithCaption(files: List<File>, caption: String, asFile: Boolean) {
         val real = files.filter { it.isFile && it.length() > 0L }
         if (real.isEmpty()) return
         // Шифрование и заливка файла — не на UI-потоке, иначе окно замирает
         // на всё время отправки.
         scope.launch(Dispatchers.IO) {
-            val error = if (asFile) session.repository.sendFiles(peerId, real, null)
-            else session.repository.sendMedia(peerId, real, null)
+            val error = if (asFile) session.repository.sendFiles(peerId, real, caption.ifBlank { null })
+            else session.repository.sendMedia(peerId, real, caption.ifBlank { null })
             if (error == null) session.store.preloadMessages(peerId)
         }
     }
@@ -192,7 +209,8 @@ fun ChatPane(
         val dialog = FileDialog(null as java.awt.Frame?, "Выбор файла", FileDialog.LOAD)
         dialog.isMultipleMode = true
         dialog.isVisible = true
-        sendFiles(dialog.files?.toList().orEmpty(), asFile)
+        val chosen = dialog.files?.toList().orEmpty().filter { it.isFile && it.length() > 0L }
+        if (chosen.isNotEmpty()) pendingAttach = chosen to asFile
     }
 
     /** Ctrl+V: скриншот или файлы из буфера уходят как вложение (как в Telegram). */
@@ -205,7 +223,7 @@ fun ChatPane(
                 contents.getTransferData(java.awt.datatransfer.DataFlavor.javaFileListFlavor) as List<File>
             }.getOrNull().orEmpty()
             if (files.isNotEmpty()) {
-                sendFiles(files, asFile = false)
+                pendingAttach = files to files.none { isImageFile(it) }
                 return true
             }
         }
@@ -224,7 +242,7 @@ fun ChatPane(
             }
             val target = File.createTempFile("aether_paste", ".png")
             javax.imageio.ImageIO.write(buffered, "png", target)
-            sendFiles(listOf(target), asFile = false)
+            pendingAttach = listOf(target) to false
             return true
         }
         return false
@@ -418,10 +436,10 @@ fun ChatPane(
                                 }.getOrNull().orEmpty()
                                 if (files.isEmpty()) return false
                                 // Картинки уходят как фото, остальное — документами.
-                                val images = files.filter { isImageFile(it) }
-                                val documents = files - images.toSet()
-                                if (images.isNotEmpty()) sendFiles(images, asFile = false)
-                                if (documents.isNotEmpty()) sendFiles(documents, asFile = true)
+                                // Перетаскивание тоже проходит через предпросмотр:
+                                // случайный сброс мимо не должен уходить собеседнику.
+                                // Картинок нет — значит это документы.
+                                pendingAttach = files to files.none { isImageFile(it) }
                                 return true
                             }
                         }
@@ -595,6 +613,7 @@ fun ChatPane(
                         modifier = Modifier
                             .weight(1f)
                             .heightIn(max = 140.dp)
+                            .focusRequester(composerFocus)
                             .onPreviewKeyEvent { event ->
                                 if (event.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
                                 when {
@@ -663,6 +682,17 @@ fun ChatPane(
         }
     }
 
+    pendingAttach?.let { (files, asFile) ->
+        AttachDialog(
+            files = files,
+            asFileInitial = asFile,
+            onDismiss = { pendingAttach = null },
+            onSend = { chosen, caption, sendAsFile ->
+                pendingAttach = null
+                sendWithCaption(chosen, caption, sendAsFile)
+            },
+        )
+    }
 }
 
 /** Панель массовых действий над выделенными сообщениями. */

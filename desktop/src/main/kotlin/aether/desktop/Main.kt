@@ -26,6 +26,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.SnapshotStateMap
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.input.key.isCtrlPressed
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.type
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.ApplicationScope
 import androidx.compose.ui.window.Notification
@@ -153,6 +156,24 @@ fun main() {
             title = if (unreadTotal > 0) "Æther ($unreadTotal)" else "Æther",
             icon = AppIcon.window(),
             state = windowState,
+            // Оконные сокращения Telegram Desktop: Ctrl+W прячет окно в трей,
+            // Ctrl+Q завершает приложение целиком.
+            onKeyEvent = { event ->
+                if (event.type != androidx.compose.ui.input.key.KeyEventType.KeyDown) {
+                    false
+                } else when {
+                    event.isCtrlPressed && event.key == androidx.compose.ui.input.key.Key.W -> {
+                        windowVisible = false
+                        true
+                    }
+                    event.isCtrlPressed && event.key == androidx.compose.ui.input.key.Key.Q -> {
+                        session?.close()
+                        exitApplication()
+                        true
+                    }
+                    else -> false
+                }
+            },
         ) {
             LaunchedEffect(window) {
                 window.addWindowFocusListener(object : java.awt.event.WindowFocusListener {
