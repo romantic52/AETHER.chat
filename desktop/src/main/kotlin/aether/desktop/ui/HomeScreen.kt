@@ -112,6 +112,7 @@ fun HomeScreen(
                     session = session,
                     peerId = peer,
                     typingUntil = typingUntil[peer.lowercase()] ?: 0L,
+                    settings = settings,
                     onShowInfo = { showInfo = !showInfo },
                     onForwardRequest = { forwardMessages = it },
                     onOpenViewer = { items, index ->
