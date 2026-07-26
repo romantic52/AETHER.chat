@@ -81,6 +81,14 @@ class MessageRepository(
 
     private class RatchetSessionUnavailableException(message: String) : IllegalStateException(message)
 
+    /**
+     * У устройства собеседника ещё нет опубликованных ключей (первый запуск,
+     * только что привязанное устройство). Это ВРЕМЕННО: outbox повторит.
+     * Раньше 404 от claim считался постоянной ошибкой и убивал сообщение.
+     */
+    class PeerKeysUnavailableException(peerId: String, deviceId: String) :
+        IllegalStateException("У устройства $deviceId ($peerId) пока нет ключей")
+
     private val groupKeys = java.util.concurrent.ConcurrentHashMap<String, GroupKey>()
     private val groupKeysMutex = Mutex()
     @Volatile private var groupKeysFetchedAt = 0L
@@ -251,7 +259,9 @@ class MessageRepository(
             if (!force && System.currentTimeMillis() - at < 60_000) return cached
         }
         val devices = api.listDevices(myId, id)
-        peerDevicesCache[id] = devices to System.currentTimeMillis()
+        // Пустой список НЕ кэшируем: собеседник мог ещё не опубликовать ключи
+        // (первый запуск), и минута кэша превратилась бы в минуту недоставки.
+        if (devices.isNotEmpty()) peerDevicesCache[id] = devices to System.currentTimeMillis()
         return devices
     }
 
@@ -292,7 +302,11 @@ class MessageRepository(
         val key = sessionKeyOf(id, deviceId)
         var session = olmSession(key)
         if (session == null) {
-            val bundle = api.claimOlmKeysDevice(myId, id, deviceId)
+            val bundle = try {
+                api.claimOlmKeysDevice(myId, id, deviceId)
+            } catch (e: RelayApi.HttpError) {
+                if (e.code == 404) throw PeerKeysUnavailableException(id, deviceId) else throw e
+            }
             olmTrustStore.checkForSending(key, bundle.identityKeyB64)
             session = uniffi.sm_core.olmCreateOutbound(
                 olmAccountLocked(),
@@ -358,11 +372,13 @@ class MessageRepository(
             warmUiCache()
         }
         scope.launch {
-            runCatching { ensureOlmKeys() }
             // Привязка сессии к крипто-устройству: адресный «выкинуть» на экране
             // «Сессии и безопасность». Здесь, а не в login — сюда сходятся оба пути
             // входа (пароль и восстановление по токену), а device_id уже отрезолвлен.
+            // Идёт ПЕРЕД публикацией ключей: сервер разрешает менять identity
+            // слота только сессии, привязанной к этому device_id.
             runCatching { api.bindSessionDevice(myId, myDeviceId()) }
+            runCatching { ensureOlmKeys() }
             while (true) {
                 syncInbox()
                 delay(10_000)

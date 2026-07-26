@@ -1178,15 +1178,27 @@ def _validate_ratchet_envelope(envelope: dict) -> None:
 @app.put("/keys/upload")
 @limiter.limit("30/minute")
 def upload_keys(body: UploadKeysRequest, request: Request,
+                authorization: str = Header(None),
                 current_user: str = Depends(get_current_user)) -> dict:
     _validate_key_b64(body.identity_key_b64, "identity_key_b64")
     device_id = body.device_id
+    token = authorization.split(" ", 1)[1].strip() if authorization else ""
     with db_conn() as cur:
         cur.execute(
             "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (current_user, device_id))
         previous = cur.fetchone()
         if previous and previous["identity_key_b64"] != body.identity_key_b64:
+            # Тихая перезапись чужого слота = подмена ключа для всех, кто шлёт на
+            # это устройство. Менять identity можно только своей сессией, уже
+            # привязанной к этому device_id (bind_session_device / pairing).
+            cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
+            session_row = cur.fetchone() if token else None
+            session_device = session_row["device_id"] if session_row else None
+            if session_device and session_device != device_id:
+                raise HTTPException(
+                    403,
+                    "Сессия привязана к другому устройству: сменить его ключ нельзя.")
             # OTKs are bound to the identity that generated them. A rotated
             # account must not leave stale OTKs for the next claimant.
             cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
