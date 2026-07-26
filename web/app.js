@@ -744,7 +744,9 @@ async function safetyFingerprint(mine, theirs, version) {
 async function showSafetyNumber(peerId) {
     const api = await loadRatchetApi();
     const peer = String(peerId || '').toLowerCase();
-    const peerMaster = olmMasterPins[peer] || pendingMasterChanges[peer];
+    // При непринятой смене сверяем НОВЫЙ мастер: иначе экран показывал бы старый
+    // ключ под подписью «сверяется новый».
+    const peerMaster = pendingMasterChanges[peer] || olmMasterPins[peer];
     const modal = document.getElementById('safety-modal');
     const hint = document.getElementById('safety-hint');
     if (!modal) return;

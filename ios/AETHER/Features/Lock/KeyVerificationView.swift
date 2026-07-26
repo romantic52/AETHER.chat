@@ -21,6 +21,8 @@ struct KeyVerificationView: View {
     // а значит и Double Ratchet. Box-ключи остаются фолбэком для необновлённых пиров.
     @State private var masterPin: MasterPin?
     @State private var myMaster = ""
+    /// Непринятый мастер пира: во время тревоги сверяем ЕГО, а не старый.
+    @State private var pendingMaster: String?
 
     // 64 «словарных» эмодзи — легко назвать вслух по телефону.
     private static let emojiTable: [String] = [
@@ -33,16 +35,20 @@ struct KeyVerificationView: View {
     /// Сверяем мастер-ключи, если они есть у обеих сторон: подтверждённый мастер
     /// аутентифицирует ВСЕ устройства пира (cross-signing), тогда как box-ключ
     /// к Double Ratchet отношения не имеет. Версия канона входит в хеш.
-    private var usingMaster: Bool { masterPin != nil && !myMaster.isEmpty }
+    private var usingMaster: Bool { (masterPin != nil || pendingMaster != nil) && !myMaster.isEmpty }
 
     private var isVerified: Bool {
-        usingMaster ? (masterPin?.verified ?? false) : (pin?.verified ?? false)
+        // Пока смена мастера не принята, «подтверждено» показывать нельзя:
+        // подтверждение относилось к прежнему корню доверия.
+        if pendingMaster != nil { return false }
+        return usingMaster ? (masterPin?.verified ?? false) : (pin?.verified ?? false)
     }
 
     private var fingerprint: (emoji: [String], code: String)? {
         let version = usingMaster ? "AetherSafety#2" : "AetherSafety#1"
         let mine = usingMaster ? myMaster : myKey
-        let theirs = usingMaster ? (masterPin?.masterKeyB64 ?? "") : (pin?.publicKeyB64 ?? "")
+        let theirs = usingMaster ? (pendingMaster ?? masterPin?.masterKeyB64 ?? "")
+                                 : (pin?.publicKeyB64 ?? "")
         guard !mine.isEmpty, !theirs.isEmpty else { return nil }
         // Симметрия: сортируем ключи, чтобы отпечаток совпадал у обеих сторон.
         let combined = ([mine, theirs].sorted() + [version]).joined(separator: "|")
@@ -182,6 +188,7 @@ struct KeyVerificationView: View {
         pin = try? await session.core.keyPin(peerId)
         myKey = await session.core.myPublicKeyB64()
         masterPin = await session.core.masterPin(peerId)
+        pendingMaster = await session.core.pendingMasterKey(for: peerId)
         myMaster = await session.core.myMasterKeyB64() ?? ""
         loading = false
     }
