@@ -753,6 +753,20 @@ impl CoreStore {
         Ok(())
     }
 
+    /// Снять ВСЁ производное доверие к пиру: device-пины и Olm-сессии всех его
+    /// устройств (принятие нового мастер-ключа). Не требует сети и списка
+    /// устройств — чистит по префиксу ключа "peer" / "peer::device".
+    pub fn peer_trust_reset(&self, peer_id: String) -> Result<(), CoreError> {
+        let peer = peer_id.to_lowercase();
+        let prefix = format!("{peer}::%");
+        let c = self.conn.lock().unwrap();
+        c.execute("DELETE FROM olm_pins WHERE peer_key=?1 OR peer_key LIKE ?2",
+                  params![peer, prefix])?;
+        c.execute("DELETE FROM olm_sessions WHERE peer_id=?1 OR peer_id LIKE ?2",
+                  params![peer, prefix])?;
+        Ok(())
+    }
+
     // ---- Meta (курсор inbox и пр.) ----
 
     pub fn meta_get(&self, key: String) -> Result<Option<String>, CoreError> {
@@ -878,6 +892,30 @@ mod tests {
         assert_eq!(pin.prev_ed25519_b64.as_deref(), Some("edA"));
         assert!(!pin.verified);
         assert_eq!(pin.changed_ts, Some(15));
+    }
+
+    #[test]
+    fn peer_trust_reset_clears_devices_but_not_other_peers() {
+        let s = store();
+        // Пир с легаси-primary (голый peer_id) и обычным устройством.
+        s.olm_pin_check("bob".into(), "c1".into(), None, 1).unwrap();
+        s.olm_pin_check("bob::ios-1".into(), "c2".into(), None, 1).unwrap();
+        s.olm_pin_check("bobby::ios-9".into(), "c3".into(), None, 1).unwrap();   // другой пир
+        s.olm_session_set("bob".into(), "s1".into()).unwrap();
+        s.olm_session_set("bob::ios-1".into(), "s2".into()).unwrap();
+        s.olm_session_set("bobby::ios-9".into(), "s3".into()).unwrap();
+        s.master_pin_check("bob".into(), "M1".into(), 1).unwrap();
+
+        s.peer_trust_reset("Bob".into()).unwrap();
+
+        assert!(s.olm_pin_get("bob".into()).unwrap().is_none());
+        assert!(s.olm_pin_get("bob::ios-1".into()).unwrap().is_none());
+        assert!(s.olm_session_get("bob".into()).unwrap().is_none());
+        assert!(s.olm_session_get("bob::ios-1".into()).unwrap().is_none());
+        // Похожий по префиксу пир не задет, мастер-пин остаётся (его принимают отдельно).
+        assert!(s.olm_pin_get("bobby::ios-9".into()).unwrap().is_some());
+        assert_eq!(s.olm_session_get("bobby::ios-9".into()).unwrap().as_deref(), Some("s3"));
+        assert!(s.master_pin_get("bob".into()).unwrap().is_some());
     }
 
     #[test]

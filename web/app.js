@@ -664,7 +664,9 @@ async function ensureRatchetKeys() {
     // Подписанные бандлы (SEC HIGH-2): публикация всегда с ed25519 + подписями.
     // Один раз после апдейта форсим перепубликацию, чтобы заместить на сервере
     // неподписанные OTK, даже если их там ещё много.
-    const signedFlagKey = `olm_signed_v1_${myId}`;
+    // Версия флага бумпается при КАЖДОМ изменении формата публикации, иначе
+    // устройства, пережившие предыдущую версию, останутся без новых полей.
+    const signedFlagKey = `olm_published_v2_${myId}`;
     const signedPublished = localStorage.getItem(signedFlagKey) === '1';
     if (serverCount >= 20 && signedPublished && serverIdentity === olmIdentityB64) {
         peerDevicesCache = Object.create(null);
@@ -701,6 +703,57 @@ async function ensureRatchetKeys() {
     localStorage.setItem(signedFlagKey, '1');
     peerDevicesCache = Object.create(null);
     await saveRatchetState(true);
+}
+
+// 64 «словарных» эмодзи — те же и в том же порядке, что в iOS
+// (Features/Lock/KeyVerificationView.swift), иначе отпечатки не сойдутся.
+const SAFETY_EMOJI = [
+    "🐶","🐱","🦊","🐻","🐼","🐨","🦁","🐯","🐮","🐷","🐸","🐵","🐔","🐧","🐦","🦆",
+    "🦅","🦉","🐺","🐗","🐴","🦄","🐝","🐛","🦋","🐌","🐞","🐜","🕷","🦂","🐢","🐍",
+    "🦎","🐙","🦑","🦐","🦀","🐡","🐠","🐟","🐬","🐳","🐋","🦈","🐊","🐅","🐆","🦓",
+    "🦍","🐘","🦏","🐪","🦒","🐃","🐂","🐄","🐎","🐖","🐏","🐑","🐐","🦌","🐕","🐈",
+];
+
+/// Отпечаток пары ключей: SHA-256 от отсортированной пары + версия канона.
+/// Симметричен у обеих сторон. Канон совпадает с iOS KeyVerificationView.
+async function safetyFingerprint(mine, theirs, version) {
+    const combined = [mine, theirs].sort().concat([version]).join('|');
+    const digest = new Uint8Array(await crypto.subtle.digest(
+        'SHA-256', new TextEncoder().encode(combined)));
+    const emoji = Array.from(digest.slice(0, 12), b => SAFETY_EMOJI[b % SAFETY_EMOJI.length]);
+    const groups = [];
+    for (let i = 12; i < 24; i += 2) {
+        groups.push(String(((digest[i] << 8) | digest[i + 1]) % 100000).padStart(5, '0'));
+    }
+    return { emoji: emoji.join(' '), code: groups.join(' ') };
+}
+
+async function showSafetyNumber(peerId) {
+    const api = await loadRatchetApi();
+    const peer = String(peerId || '').toLowerCase();
+    const peerMaster = olmMasterPins[peer] || pendingMasterChanges[peer];
+    const modal = document.getElementById('safety-modal');
+    const hint = document.getElementById('safety-hint');
+    if (!modal) return;
+    let fp = null;
+    if (peerMaster && myKeys) {
+        fp = await safetyFingerprint(api.master_public(myKeys.secretB64), peerMaster, 'AetherSafety#2');
+        hint.textContent = pendingMasterChanges[peer]
+            ? 'Сверяется НОВЫЙ ключ аккаунта собеседника — принимайте его только если отпечатки совпали.'
+            : 'Сверяется ключ аккаунта собеседника: им подписаны все его устройства.';
+    } else {
+        const peerProfile = profileCache[peer];
+        const peerBox = peerProfile && peerProfile.public_key_b64;
+        if (!peerBox || !myKeys) {
+            showStatus('Нет данных о ключе собеседника', 'error');
+            return;
+        }
+        fp = await safetyFingerprint(myKeys.publicB64, peerBox, 'AetherSafety#1');
+        hint.textContent = 'У собеседника ещё нет ключа аккаунта — сверяется старый ключ (обновление приложения переведёт сверку на новый).';
+    }
+    document.getElementById('safety-emoji').textContent = fp.emoji;
+    document.getElementById('safety-code').textContent = fp.code;
+    modal.classList.remove('hidden');
 }
 
 /// Ключи непринятых смен для текущего открытого чата.
@@ -757,19 +810,21 @@ function verifyDeviceOwnership(api, peerId, deviceId, curve, ed, master, deviceS
     const peer = String(peerId).toLowerCase();
     const pinnedMaster = olmMasterPins[peer];
     if (!master || !deviceSig || !ed) {
-        // Легаси-устройство без cross-signing: терпим, пока мастер не запинен.
-        if (pinnedMaster) {
-            throw new Error('Устройство собеседника не подписано его аккаунтом — возможна подсадка устройства сервером');
+        // Сервер публикует подписанный бандл только вместе с мастер-подписью,
+        // поэтому «ed есть, мастера нет» — это стриппинг полей, а не старый пир.
+        if (pinnedMaster || ed) {
+            throw new Error('Устройство собеседника не подписано его аккаунтом — возможна подсадка устройства или подмена ключей сервером');
         }
-        return;
+        return;   // полностью легаси-запись (до P7/P8): TOFU только по curve
     }
+    // Сначала доказательство, потом доверие: пин ставится только после того,
+    // как мастер действительно подписал ЭТУ запись устройства.
+    api.verify_device(master, peer, deviceId, curve, ed, deviceSig);
     if (pinnedMaster && pinnedMaster !== master) {
         pendingMasterChanges[peer] = master;
         renderKeyChangeBar();
         throw new Error('Мастер-ключ аккаунта собеседника изменился — сверьте цифры безопасности или примите новый ключ');
     }
-    // Бросает, если подпись устройства не сходится с мастером (канон AETHER-DEVSIG-1).
-    api.verify_device(master, peer, deviceId, curve, ed, deviceSig);
     if (!pinnedMaster) olmMasterPins[peer] = master;   // TOFU корня доверия
 }
 
@@ -881,20 +936,22 @@ async function openRatchetEnvelope(peerId, envelope) {
         // Cross-signing (P8): если мастер пира запинен, устройство-отправитель обязано
         // быть в его директории и подписано этим мастером. Иначе сервер спуфил бы
         // авторство новым device_id — для него TOFU дал бы «первый контакт».
-        const pinnedMaster = olmMasterPins[String(peerId).toLowerCase()];
-        if (pinnedMaster) {
-            let devs = await getPeerDevices(peerId);
-            let dev = devs.find(d => d.device_id === senderDevice);
-            if (!dev) {
-                devs = await getPeerDevices(peerId, true);
-                dev = devs.find(d => d.device_id === senderDevice);
-            }
-            if (!dev || dev.identity_key_b64 !== identity || dev.master_key_b64 !== pinnedMaster
-                || !dev.ed25519_key_b64 || !dev.device_sig_b64) {
-                throw new Error('Устройство отправителя не подписано его аккаунтом — возможна подсадка устройства сервером');
-            }
-            api.verify_device(pinnedMaster, String(peerId).toLowerCase(), senderDevice,
-                              identity, dev.ed25519_key_b64, dev.device_sig_b64);
+        // Мастер пинится ЗДЕСЬ ЖЕ при первом контакте — иначе в чате, начатом пиром
+        // (сессия пришла входящим prekey, claim мы не делали), cross-signing не
+        // включался бы никогда.
+        const peerLower = String(peerId).toLowerCase();
+        const pinnedMaster = olmMasterPins[peerLower];
+        let devs = await getPeerDevices(peerId);
+        let dev = devs.find(d => d.device_id === senderDevice);
+        if (!dev) {
+            devs = await getPeerDevices(peerId, true);
+            dev = devs.find(d => d.device_id === senderDevice);
+        }
+        if (dev && dev.identity_key_b64 === identity) {
+            verifyDeviceOwnership(api, peerLower, senderDevice, identity,
+                                  dev.ed25519_key_b64, dev.master_key_b64, dev.device_sig_b64);
+        } else if (pinnedMaster) {
+            throw new Error('Устройство отправителя отсутствует в директории его аккаунта — возможна подсадка устройства сервером');
         }
         const pinned = olmIdentityPins[key];
         if (pinned && pinned !== identity) {
@@ -3391,7 +3448,10 @@ async function bindSessionDevice() {
         await fetch(`${serverUrl}/sessions/me/device`, {
             method: 'PUT',
             headers: authHeaders({ 'Content-Type': 'application/json' }),
-            body: JSON.stringify({ device_id: myDeviceId || 'primary' })
+            // Olm-identity доказывает владение устройством: сервер сверяет её
+            // с директорией, чтобы вор токена не объявил свою сессию чужим устройством.
+            body: JSON.stringify({ device_id: myDeviceId || 'primary',
+                                   identity_key_b64: olmIdentityB64 })
         });
     } catch (_) {}
 }
@@ -6132,6 +6192,18 @@ function pinMessage(peerId, msgId) {
 }
 
 (function initKeyChangeUI() {
+    const verifyBtn = document.getElementById('key-change-verify');
+    if (verifyBtn) {
+        verifyBtn.addEventListener('click', () => {
+            showSafetyNumber(selectedPeer).catch(e => showStatus(`Отпечаток: ${e.message}`, 'error'));
+        });
+    }
+    const closeSafety = document.getElementById('close-safety-btn');
+    if (closeSafety) {
+        closeSafety.addEventListener('click', () => {
+            document.getElementById('safety-modal').classList.add('hidden');
+        });
+    }
     const acceptBtn = document.getElementById('key-change-accept');
     if (acceptBtn) {
         acceptBtn.addEventListener('click', () => {

@@ -249,6 +249,7 @@
                             <b><i class="fas fa-shield-halved"></i> Ключ шифрования собеседника изменился</b>
                             <span>Смена устройства или переустановка приложения — либо попытка подмены. Сверьте цифры безопасности по другому каналу.</span>
                         </div>
+                        <button id="key-change-verify" class="tg-btn-secondary">Сверить отпечаток</button>
                         <button id="key-change-accept" class="tg-btn-primary">Принять новый ключ</button>
                     </div>
                     <div id="pinned-bar" class="tg-pinned-bar hidden">
@@ -322,6 +323,26 @@
     </div>
     
     <!-- Create Group/Channel Modal -->
+    <!-- Сверка отпечатка ключей (тот же канон, что на iOS: AetherSafety#2 по
+         мастер-ключам аккаунтов, фолбэк #1 по box-ключам). -->
+    <div id="safety-modal" class="tg-modal hidden">
+        <div class="tg-modal-content" style="max-width: 420px;">
+            <div class="tg-modal-header">
+                <h2>Проверка ключа</h2>
+                <button class="tg-btn-icon" id="close-safety-btn">&times;</button>
+            </div>
+            <div class="tg-modal-body">
+                <p id="safety-hint" style="font-size:13px;color:var(--text-secondary);margin-bottom:14px;"></p>
+                <div id="safety-emoji" style="font-size:28px;letter-spacing:6px;line-height:1.6;text-align:center;word-break:break-word;"></div>
+                <div id="safety-code" style="font-family:ui-monospace,monospace;font-size:17px;letter-spacing:1px;text-align:center;margin-top:14px;"></div>
+                <p style="font-size:12px;color:var(--text-secondary);margin-top:16px;">
+                    Сравните эти символы и цифры с экраном собеседника по другому каналу —
+                    голосом или вживую. Совпали — переписка точно без посредников.
+                </p>
+            </div>
+        </div>
+    </div>
+
     <div id="create-group-modal" class="tg-modal hidden">
         <div class="tg-modal-content">
             <div class="tg-modal-header">

@@ -600,20 +600,26 @@ struct UserProfileView: View {
     // MARK: - Проверка ключа (TOFU)
 
     @State private var keyPin: KeyPin?
+    /// P8: корень доверия — мастер-ключ аккаунта; статус берём с него, если он есть.
+    @State private var masterPin: MasterPin?
     @State private var showKeyVerification = false
+
+    private var keyVerified: Bool {
+        masterPin.map { $0.verified } ?? (keyPin?.verified ?? false)
+    }
 
     private var keyVerificationRow: some View {
         Button { showKeyVerification = true } label: {
             HStack(spacing: 12) {
-                Image(systemName: (keyPin?.verified ?? false) ? "checkmark.shield.fill" : "shield.lefthalf.filled")
+                Image(systemName: keyVerified ? "checkmark.shield.fill" : "shield.lefthalf.filled")
                     .font(.system(size: 20))
-                    .foregroundStyle((keyPin?.verified ?? false) ? palette.readTick : palette.accent)
+                    .foregroundStyle(keyVerified ? palette.readTick : palette.accent)
                     .frame(width: 36, height: 36)
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Проверка ключа шифрования")
                         .font(.system(size: 15, weight: .medium))
                         .foregroundStyle(palette.textPrimary)
-                    Text((keyPin?.verified ?? false) ? "Подтверждён" : "Сравни отпечаток с собеседником")
+                    Text(keyVerified ? "Подтверждён" : "Сравни отпечаток с собеседником")
                         .font(.caption)
                         .foregroundStyle(palette.textSecondary)
                 }
@@ -627,9 +633,15 @@ struct UserProfileView: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .task { keyPin = try? await session.core.keyPin(userId) }
+        .task {
+            keyPin = try? await session.core.keyPin(userId)
+            masterPin = await session.core.masterPin(userId)
+        }
         .fullScreenCover(isPresented: $showKeyVerification, onDismiss: {
-            Task { keyPin = try? await session.core.keyPin(userId) }
+            Task {
+                keyPin = try? await session.core.keyPin(userId)
+                masterPin = await session.core.masterPin(userId)
+            }
         }) {
             KeyVerificationView(peerId: userId, peerName: profile?.displayName ?? userId)
                 .environmentObject(session)
