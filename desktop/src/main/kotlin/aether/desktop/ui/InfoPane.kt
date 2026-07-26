@@ -4,17 +4,22 @@ import aether.desktop.AppSession
 import aether.desktop.api.RelayApi
 import aether.desktop.data.BlockStore
 import aether.desktop.data.ChatEntity
+import aether.desktop.data.MessageEntity
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material3.HorizontalDivider
@@ -26,6 +31,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -33,6 +39,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -46,6 +53,8 @@ fun InfoPane(
     onClose: () -> Unit,
     onShowSafetyNumbers: () -> Unit,
     onChatDeleted: () -> Unit,
+    /** Открыть просмотрщик на выбранном снимке; без него сетка «Медиа» просто некликабельна. */
+    onOpenMedia: ((List<MessageEntity>, Int) -> Unit)? = null,
 ) {
     var chat by remember(peerId) { mutableStateOf<ChatEntity?>(null) }
     var profile by remember(peerId) { mutableStateOf<RelayApi.UserProfile?>(null) }
@@ -53,6 +62,9 @@ fun InfoPane(
     val scope = rememberCoroutineScope()
 
     LaunchedEffect(peerId) {
+        // Разделу «Медиа» нужна история чата: панель могут открыть раньше, чем
+        // лента успеет её подтянуть.
+        session.store.preloadMessages(peerId)
         chat = session.store.getChat(peerId)
         val type = chat?.type ?: 0
         if (type == 0 && !peerId.equals(session.myId, ignoreCase = true)) {
@@ -143,6 +155,8 @@ fun InfoPane(
             }
         }
 
+        MediaSection(session, peerId, onOpenMedia)
+
         if ((current?.type ?: 0) in 1..2) {
             Spacer(modifier = Modifier.height(4.dp))
             Text(
@@ -182,6 +196,59 @@ fun InfoPane(
                     if (current?.type == 2) "Покинуть канал" else "Покинуть группу",
                     color = MaterialTheme.colorScheme.error,
                 )
+            }
+        }
+    }
+}
+
+/** Количество снимков в разделе «Медиа» и ширина его сетки в ячейках. */
+private const val MEDIA_PREVIEW_COUNT = 12
+private const val MEDIA_COLUMNS = 4
+
+/** Раздел «Медиа»: последние снимки чата сеткой, клик открывает просмотрщик. */
+@Composable
+private fun MediaSection(
+    session: AppSession,
+    peerId: String,
+    onOpenMedia: ((List<MessageEntity>, Int) -> Unit)?,
+) {
+    val messages by remember(peerId) { session.store.getMessagesForPeer(peerId) }.collectAsState()
+    val media = remember(messages) { viewableMedia(messages) }
+    if (media.isEmpty()) return
+    // В сетке — свежие сверху, а в просмотрщик отдаём всю подборку целиком,
+    // чтобы стрелки листали не только показанные здесь снимки.
+    val recent = remember(media) { media.takeLast(MEDIA_PREVIEW_COUNT).reversed() }
+
+    Spacer(modifier = Modifier.height(8.dp))
+    Text(
+        "Медиа · ${media.size}",
+        style = MaterialTheme.typography.labelLarge,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+    Spacer(modifier = Modifier.height(6.dp))
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        recent.chunked(MEDIA_COLUMNS).forEach { row ->
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                row.forEach { message ->
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(6.dp))
+                            .clickable(enabled = onOpenMedia != null) {
+                                val position = media.indexOfFirst { it.msgId == message.msgId }
+                                onOpenMedia?.invoke(media, position.coerceAtLeast(0))
+                            },
+                    ) {
+                        MediaThumbnail(session, message, modifier = Modifier.fillMaxSize())
+                    }
+                }
+                // Неполный последний ряд добираем пустотой, иначе его снимки
+                // растянулись бы на всю ширину панели.
+                repeat(MEDIA_COLUMNS - row.size) { Spacer(modifier = Modifier.weight(1f)) }
             }
         }
     }
