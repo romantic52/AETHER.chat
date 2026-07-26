@@ -131,6 +131,30 @@ fun ChatListPane(
             )
         }
 
+        // Обрыв WebSocket раньше выглядел как затишье в чатах: сообщения просто
+        // переставали приходить, и понять причину было неоткуда.
+        val online by session.realtime.connected.collectAsState()
+        androidx.compose.animation.AnimatedVisibility(visible = !online) {
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = androidx.compose.foundation.layout.Arrangement.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp),
+                ) {
+                    androidx.compose.material3.CircularProgressIndicator(
+                        strokeWidth = 2.dp,
+                        modifier = Modifier.size(14.dp),
+                    )
+                    Text(
+                        "Соединение…",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(start = 8.dp),
+                    )
+                }
+            }
+        }
+
         if (trimmedQuery.length >= 2) {
             LazyColumn(modifier = Modifier.weight(1f)) {
                 if (localMatches.isNotEmpty()) {

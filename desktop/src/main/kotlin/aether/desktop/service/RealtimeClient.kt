@@ -18,6 +18,10 @@ class RealtimeClient(
 ) {
     private val url: String
     private val timer = Timer("aether-ws-reconnect", true)
+    // Состояние связи наружу: без него пропавший WebSocket выглядел как «тихо,
+    // никто не пишет», и человек не понимал, почему сообщения не приходят.
+    private val _connected = kotlinx.coroutines.flow.MutableStateFlow(false)
+    val connected: kotlinx.coroutines.flow.StateFlow<Boolean> = _connected
     @Volatile private var closed = false
     @Volatile private var wsClient: uniffi.sm_core.WsClient? = null
     @Volatile private var connectionGeneration = 0
@@ -44,6 +48,7 @@ class RealtimeClient(
 
     fun close() {
         closed = true
+        _connected.value = false
         timer.cancel()
         runCatching { wsClient?.disconnect() }
         wsClient = null
@@ -67,10 +72,13 @@ class RealtimeClient(
 
     private fun listener(generation: Int) = object : uniffi.sm_core.WsListener {
         override fun onOpen() {
-            if (generation == connectionGeneration) reconnectAttempt = 0
+            if (generation != connectionGeneration) return
+            reconnectAttempt = 0
+            _connected.value = true
         }
 
         override fun onClose() {
+            if (generation == connectionGeneration) _connected.value = false
             scheduleReconnect(generation)
         }
 
