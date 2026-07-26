@@ -11,6 +11,10 @@ import Foundation
 /// нельзя отличить «подмена ключей» от «мусор в одном бандле».
 struct KeyTrustAlert: Error {
     let message: String
+    /// true — тревога касается ОДНОГО устройства пира (например, оно ещё не
+    /// обновилось и не подписано аккаунтом): его пропускаем, остальным шлём.
+    /// false — тревога об аккаунте целиком (подмена ключей): отправка отменяется.
+    var skipDevice: Bool = false
 }
 
 actor CoreClient {
@@ -446,14 +450,25 @@ actor CoreClient {
     private func verifyDeviceOwnership(peer: String, deviceId: String, curve: String,
                                        ed: String?, master: String?, deviceSig: String?) throws {
         let pinnedMaster = ((try? store.masterPinGet(peerId: peer)) ?? nil)?.masterKeyB64
+        // Знание об ЭТОМ устройстве, а не об аккаунте: иначе у пира со смешанным
+        // набором (обновлённый веб + необновлённый телефон) старое устройство
+        // отвергалось бы навсегда, а с ним — и вся переписка.
+        let devicePin = ((try? store.olmPinGet(peerKey: sessionKey(peer, deviceId))) ?? nil)
         guard let master, let deviceSig, let ed else {
-            // Устройство без cross-signing. Сервер публикует подписанный бандл
-            // только вместе с мастер-подписью, поэтому «ed есть, мастера нет» —
-            // это стриппинг полей, а не необновлённый пир.
-            if pinnedMaster != nil || ed != nil {
-                throw KeyTrustAlert(message: "устройство собеседника не подписано его аккаунтом — возможна подсадка устройства или подмена ключей сервером")
+            // Сервер публикует подписанный бандл только вместе с мастер-подписью,
+            // поэтому «ed есть, мастера нет» — стриппинг полей, а не старый клиент.
+            if devicePin?.ed25519B64 != nil || ed != nil {
+                throw KeyTrustAlert(message: "устройство собеседника не подписано его аккаунтом — возможна подмена ключей сервером")
             }
-            return   // полностью легаси-запись (до P7/P8): TOFU только по curve
+            if pinnedMaster != nil && devicePin == nil {
+                // Аккаунт уже публикует подписи, а это устройство мы видим впервые
+                // и оно без подписи — форма подсадки. Пропускаем его, не роняя
+                // отправку остальным (легитимный случай: пир ещё не обновил клиент).
+                throw KeyTrustAlert(
+                    message: "устройство собеседника не подписано его аккаунтом — попросите его обновить приложение",
+                    skipDevice: true)
+            }
+            return   // знакомое легаси-устройство (до P7/P8): TOFU только по curve
         }
         // Сначала доказательство, потом доверие: пин ставится ТОЛЬКО после того,
         // как мастер действительно подписал эту запись устройства.
@@ -542,6 +557,11 @@ actor CoreClient {
         if pendingKeyChanges[peerKey] != nil {
             let (peer, device) = splitSessionKey(peerKey)
             let bundle = try api.claimKeysDevice(userId: peer, deviceId: device)
+            // Принятие смены ключа устройства НЕ отменяет cross-signing: устройство
+            // всё так же обязано принадлежать аккаунту пира.
+            try verifyDeviceOwnership(peer: peer, deviceId: device, curve: bundle.identityKeyB64,
+                                      ed: bundle.ed25519KeyB64, master: bundle.masterKeyB64,
+                                      deviceSig: bundle.deviceSigB64)
             let ed = try verifiedEd25519(peer: peer, deviceId: device, bundle: bundle)
             let session = try olmCreateOutbound(accountPickle: olmAccount(),
                                                 theirIdentityB64: bundle.identityKeyB64,
@@ -604,6 +624,11 @@ actor CoreClient {
                                                    theirOneTimeKeyB64: bundle.oneTimeKeyB64)
                 sessions.append((dev, pickle))
             } catch let alert as KeyTrustAlert {
+                if alert.skipDevice {
+                    // Проблема одного устройства: остальным доставляем.
+                    if firstError == nil { firstError = CoreError.Crypto(msg: alert.message) }
+                    continue
+                }
                 // Тревога доверия ключам — стоп всей отправке, ни одна копия не ушла.
                 throw CoreError.Crypto(msg: alert.message)
             } catch {
@@ -688,24 +713,23 @@ actor CoreClient {
         // и подписано его мастер-ключом. Мастер пинится ЗДЕСЬ ЖЕ при первом контакте —
         // иначе в чате, начатый пиром (сессия пришла входящим prekey, claim мы не
         // делали), cross-signing не включался бы никогда.
-        let pinnedMaster = ((try? store.masterPinGet(peerId: peer)) ?? nil)?.masterKeyB64
         var devices = (try? peerDevices(peer)) ?? []
         if !devices.contains(where: { $0.deviceId == senderDevice }) {
             devices = (try? peerDevices(peer, force: true)) ?? devices
         }
-        if let entry = devices.first(where: { $0.deviceId == senderDevice }),
-           entry.identityKeyB64 == senderIdentity {
-            do {
-                try verifyDeviceOwnership(peer: peer, deviceId: senderDevice,
-                                          curve: senderIdentity, ed: entry.ed25519KeyB64,
-                                          master: entry.masterKeyB64, deviceSig: entry.deviceSigB64)
-            } catch let alert as KeyTrustAlert {
-                throw CoreError.Crypto(msg: "ratchet: \(alert.message)")
-            }
-        } else if pinnedMaster != nil {
-            // Мастер пира известен, но устройства нет в директории (или identity
-            // не совпал) — ровно так выглядит спуфинг авторства сервером.
-            throw CoreError.Crypto(msg: "ratchet: устройство отправителя отсутствует в директории его аккаунта — возможна подсадка устройства сервером")
+        guard let entry = devices.first(where: { $0.deviceId == senderDevice }),
+              entry.identityKeyB64 == senderIdentity else {
+            // Fail-closed: недоступная или «пустая» директория — это и обычный
+            // сетевой сбой (сообщение вернётся следующим поллингом), и способ
+            // сервера навсегда не давать гейту вооружиться. Молча доверять нельзя.
+            throw CoreError.Crypto(msg: "ratchet: устройство отправителя не подтверждено директорией его аккаунта — повторим позже")
+        }
+        do {
+            try verifyDeviceOwnership(peer: peer, deviceId: senderDevice,
+                                      curve: senderIdentity, ed: entry.ed25519KeyB64,
+                                      master: entry.masterKeyB64, deviceSig: entry.deviceSigB64)
+        } catch let alert as KeyTrustAlert {
+            throw CoreError.Crypto(msg: "ratchet: \(alert.message)")
         }
         let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
                                               ed25519B64: nil, nowTs: nowTs())

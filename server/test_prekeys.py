@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Смок-тест prekey-директории: подписанные бандлы (P7) и cross-signing (P8).
 
-Запуск против живого сервера (по умолчанию прод):
+Запуск (адрес обязателен — тест создаёт постоянные аккаунты и ключи, поэтому
+прод по умолчанию не берём):
     AETHER_URL=http://127.0.0.1:8000 python3 server/test_prekeys.py
 
 Нужен PyNaCl (он и так требуется серверу). Проверяет:
@@ -22,7 +23,10 @@ import urllib.request
 
 from nacl.signing import SigningKey
 
-BASE = os.environ.get("AETHER_URL", "https://YOUR-SERVER-HOST.nip.io")
+BASE = os.environ.get("AETHER_URL", "").rstrip("/")
+if not BASE:
+    raise SystemExit("Задайте AETHER_URL (например http://127.0.0.1:8000). "
+                     "Тест регистрирует аккаунты и публикует ключи — в прод только осознанно.")
 
 
 def b64(raw: bytes) -> str:
@@ -113,6 +117,16 @@ def main():
     assert status == 400, f"битая подпись OTK принята: {status}"
     print("битые подписи (identity/OTK/устройство): отвергнуты")
 
+    # 2b. Подписанный бандл обязан быть cross-signed, и наоборот.
+    status, _ = call("PUT", "/keys/upload", bob_token, signed_bundle(bob, device))
+    assert status == 400, f"подписанный бандл без мастера принят: {status}"
+    lone_master = signed_bundle(bob, "test-lonely", master=master)
+    for field in ("ed25519_key_b64", "identity_sig_b64", "otk_signatures"):
+        lone_master.pop(field)
+    status, _ = call("PUT", "/keys/upload", bob_token, lone_master)
+    assert status == 400, f"cross-signing без подписанного бандла принят: {status}"
+    print("связка подписей и cross-signing: обе односторонние публикации отвергнуты")
+
     # 3. Анти-даунгрейд: неподписанная публикация того же устройства.
     status, _ = call("PUT", "/keys/upload", bob_token, {
         "identity_key_b64": b64(secrets.token_bytes(32)),
@@ -121,6 +135,28 @@ def main():
     })
     assert status == 400, f"анти-даунгрейд не сработал: {status}"
     print("анти-даунгрейд: неподписанная публикация отвергнута")
+
+    # 3b. Легаси-путь жив: неподписанная публикация НОВОГО устройства проходит
+    # (старые клиенты без ratchet должны продолжать работать).
+    legacy_device = "legacy-" + secrets.token_hex(3)
+    status, _ = call("PUT", "/keys/upload", bob_token, {
+        "identity_key_b64": b64(secrets.token_bytes(32)),
+        "one_time_keys": {secrets.token_hex(4): b64(secrets.token_bytes(32))},
+        "device_id": legacy_device,
+    })
+    assert status == 200, f"легаси-публикация нового устройства отвергнута: {status}"
+    print("легаси-путь: неподписанная публикация нового устройства принята")
+
+    # 3c. Привязка сессии требует Olm-identity устройства.
+    status, _ = call("PUT", "/sessions/me/device", bob_token,
+                     {"device_id": device, "identity_key_b64": b64(secrets.token_bytes(32))})
+    assert status == 403, f"bind с чужой identity принят: {status}"
+    status, _ = call("PUT", "/sessions/me/device", bob_token, {"device_id": device})
+    assert status == 403, f"bind без identity принят: {status}"
+    status, _ = call("PUT", "/sessions/me/device", bob_token,
+                     {"device_id": device, "identity_key_b64": body["identity_key_b64"]})
+    assert status == 200, f"bind со своей identity отвергнут: {status}"
+    print("bind сессии: чужая/пустая identity отвергнуты, своя принята")
 
     # 4. Один мастер на аккаунт: второе устройство с чужим мастером.
     other_master = SigningKey.generate()

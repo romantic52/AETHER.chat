@@ -1167,8 +1167,10 @@ def upload_keys(body: UploadKeysRequest, request: Request,
             other = cur.fetchone()
             if other and other["master_key_b64"] != body.master_key_b64:
                 raise HTTPException(409, "Master key mismatch with existing devices")
-        if previous and (previous["identity_key_b64"] != body.identity_key_b64
-                         or (previous.get("ed25519_key_b64") or None) != body.ed25519_key_b64):
+        identity_rotated = previous is not None and (
+            previous["identity_key_b64"] != body.identity_key_b64
+            or (previous.get("ed25519_key_b64") or None) != body.ed25519_key_b64)
+        if identity_rotated:
             # OTKs are bound to the identity that generated them. A rotated
             # account must not leave stale OTKs for the next claimant.
             cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
@@ -1183,7 +1185,14 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                    ed25519_key_b64 = EXCLUDED.ed25519_key_b64,
                    identity_sig_b64 = EXCLUDED.identity_sig_b64,
                    master_key_b64 = EXCLUDED.master_key_b64,
-                   device_sig_b64 = EXCLUDED.device_sig_b64""",
+                   device_sig_b64 = EXCLUDED.device_sig_b64,
+                   -- Смена ключей = фактически новое устройство в этом слоте:
+                   -- 12-часовой анти-вор гейт kick_device отсчитывается заново,
+                   -- иначе захват чужого слота давал бы право выкидывать сразу.
+                   created_at = CASE WHEN crypto_devices.identity_key_b64
+                                          <> EXCLUDED.identity_key_b64
+                                     THEN EXCLUDED.created_at
+                                     ELSE crypto_devices.created_at END""",
             (current_user, device_id, body.identity_key_b64,
              body.ed25519_key_b64, body.identity_sig_b64,
              body.master_key_b64, body.device_sig_b64, _utc_now()))
