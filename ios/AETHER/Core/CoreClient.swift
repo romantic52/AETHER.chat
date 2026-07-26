@@ -346,14 +346,18 @@ actor CoreClient {
         deviceId == "primary" ? peerId : "\(peerId)::\(deviceId)"
     }
 
-    private var deviceCache: [String: (devices: [DeviceInfo], at: Date)] = [:]
+    private var deviceCache: [String: (devices: [DeviceInfo], at: Date, forcedAt: Date)] = [:]
     private func peerDevices(_ peerId: String, force: Bool = false) throws -> [DeviceInfo] {
         let id = peerId.lowercased()
-        if !force, let cached = deviceCache[id], Date().timeIntervalSince(cached.at) < 60 {
-            return cached.devices
+        if let cached = deviceCache[id] {
+            // Форс-рефетч гасим отдельным окном: иначе каждое застрявшее сообщение
+            // на каждом поллинге било бы по директории заново.
+            let fresh = Date().timeIntervalSince(force ? cached.forcedAt : cached.at) < 60
+            if fresh { return cached.devices }
         }
         let devices = try api.listDevices(userId: id)
-        deviceCache[id] = (devices, Date())
+        let forcedAt = force ? Date() : (deviceCache[id]?.forcedAt ?? .distantPast)
+        deviceCache[id] = (devices, Date(), forcedAt)
         return devices
     }
 
@@ -406,6 +410,9 @@ actor CoreClient {
     private var pendingInboundKeys: [String: String] = [:]
     /// Непринятая смена МАСТЕР-ключа аккаунта пира (P8): peerId → новый мастер.
     private var pendingMasterChanges: [String: String] = [:]
+    /// Устройства пира без cross-signing, которые мы отказались принять
+    /// автоматически: peerKey → curve-identity. Пользователь решает явно.
+    private var pendingUnsignedDevices: [String: String] = [:]
 
     private func nowTs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
@@ -464,6 +471,9 @@ actor CoreClient {
                 // Аккаунт уже публикует подписи, а это устройство мы видим впервые
                 // и оно без подписи — форма подсадки. Пропускаем его, не роняя
                 // отправку остальным (легитимный случай: пир ещё не обновил клиент).
+                // Тревогу делаем выводимой: пользователь увидит баннер и сможет
+                // осознанно довериться устройству.
+                pendingUnsignedDevices[sessionKey(peer, deviceId)] = curve
                 throw KeyTrustAlert(
                     message: "устройство собеседника не подписано его аккаунтом — попросите его обновить приложение",
                     skipDevice: true)
@@ -529,6 +539,24 @@ actor CoreClient {
         if pendingMasterChanges[id] != nil { return id }
         return pendingKeyChanges.keys.first(where: matches)
             ?? pendingInboundKeys.keys.first(where: matches)
+            ?? pendingUnsignedDevices.keys.first(where: matches)
+    }
+
+    /// Вид ожидающей тревоги — тексты и последствия у них разные.
+    enum KeyAlertKind {
+        case masterChanged       // сменился ключ аккаунта: всё доверие к пиру обнуляется
+        case deviceKeyChanged    // сменился ключ одного устройства
+        case deviceUnsigned      // устройство не подписано аккаунтом (старый клиент пира)
+    }
+
+    func pendingKeyAlertKind(for peerId: String) -> KeyAlertKind? {
+        let id = peerId.lowercased()
+        let matches: (String) -> Bool = { $0 == id || $0.hasPrefix("\(id)::") }
+        if pendingMasterChanges[id] != nil { return .masterChanged }
+        if pendingKeyChanges.keys.contains(where: matches)
+            || pendingInboundKeys.keys.contains(where: matches) { return .deviceKeyChanged }
+        if pendingUnsignedDevices.keys.contains(where: matches) { return .deviceUnsigned }
+        return nil
     }
 
     /// Явно принять новый ключ устройства пира. Для исходящих бандл берётся СВЕЖИМ
@@ -549,8 +577,10 @@ actor CoreClient {
             try store.masterPinAccept(peerId: peerKey, masterKeyB64: master, nowTs: nowTs())
             pendingMasterChanges.removeValue(forKey: peerKey)
             let prefix = "\(peerKey)::"
-            pendingKeyChanges = pendingKeyChanges.filter { $0.key != peerKey && !$0.key.hasPrefix(prefix) }
-            pendingInboundKeys = pendingInboundKeys.filter { $0.key != peerKey && !$0.key.hasPrefix(prefix) }
+            let mine: (String) -> Bool = { $0 != peerKey && !$0.hasPrefix(prefix) }
+            pendingKeyChanges = pendingKeyChanges.filter { mine($0.key) }
+            pendingInboundKeys = pendingInboundKeys.filter { mine($0.key) }
+            pendingUnsignedDevices = pendingUnsignedDevices.filter { mine($0.key) }
             deviceCache.removeValue(forKey: peerKey)
             return
         }
@@ -571,9 +601,19 @@ actor CoreClient {
             try store.olmSessionSet(peerId: peerKey, sessionJson: session)
             pendingKeyChanges.removeValue(forKey: peerKey)
         } else if let curve = pendingInboundKeys[peerKey] {
+            // ed25519 не затираем: если устройство раньше публиковало подписи,
+            // анти-стриппинг должен остаться вооружённым и после принятия.
+            let keepEd = ((try? store.olmPinGet(peerKey: peerKey)) ?? nil)?.ed25519B64
+            try store.olmPinAccept(peerKey: peerKey, curve25519B64: curve,
+                                   ed25519B64: keepEd, nowTs: nowTs())
+            pendingInboundKeys.removeValue(forKey: peerKey)
+        } else if let curve = pendingUnsignedDevices[peerKey] {
+            // Пользователь осознанно доверяет устройству без cross-signing
+            // (обычно: пир ещё не обновил приложение). Пин по curve, без ed25519 —
+            // как у легаси-устройства; появятся подписи — заработает анти-стриппинг.
             try store.olmPinAccept(peerKey: peerKey, curve25519B64: curve,
                                    ed25519B64: nil, nowTs: nowTs())
-            pendingInboundKeys.removeValue(forKey: peerKey)
+            pendingUnsignedDevices.removeValue(forKey: peerKey)
         } else {
             throw CoreError.BadInput(msg: "нет ожидающей смены ключа")
         }
@@ -597,9 +637,16 @@ actor CoreClient {
     /// статическим box. box остаётся лишь для обёртки групповых ключей.
     func sendDirect(to peerId: String, wirePayload: String, clientId: String? = nil) throws -> String {
         let id = peerId.lowercased()
-        // Multi-device fanout: своя Olm-сессия и копия конверта каждому
-        // устройству получателя. Пустой список = легаси-путь на primary.
-        var devices = (try? peerDevices(id)) ?? []
+        // Multi-device fanout: своя Olm-сессия и копия конверта каждому устройству
+        // получателя. Различаем «директория пуста» (легаси-аккаунт без устройств)
+        // и «директория недоступна» — во втором случае молчаливый откат на primary
+        // тихо терял бы копии для остальных устройств.
+        var devices: [DeviceInfo]
+        do {
+            devices = try peerDevices(id)
+        } catch {
+            throw error
+        }
         if devices.isEmpty {
             devices = [DeviceInfo(deviceId: "primary", identityKeyB64: "",
                                   ed25519KeyB64: nil, identitySigB64: nil,
@@ -625,7 +672,8 @@ actor CoreClient {
                 sessions.append((dev, pickle))
             } catch let alert as KeyTrustAlert {
                 if alert.skipDevice {
-                    // Проблема одного устройства: остальным доставляем.
+                    // Проблема одного устройства: остальным доставляем (тревога уже
+                    // зарегистрирована в verifyDeviceOwnership и видна в баннере).
                     if firstError == nil { firstError = CoreError.Crypto(msg: alert.message) }
                     continue
                 }
@@ -709,33 +757,42 @@ actor CoreClient {
         guard !senderIdentity.isEmpty else {
             throw CoreError.Crypto(msg: "ratchet: конверт без olm_identity")
         }
-        // Cross-signing (P8): устройство-отправитель должно быть в директории пира
-        // и подписано его мастер-ключом. Мастер пинится ЗДЕСЬ ЖЕ при первом контакте —
-        // иначе в чате, начатый пиром (сессия пришла входящим prekey, claim мы не
-        // делали), cross-signing не включался бы никогда.
-        var devices = (try? peerDevices(peer)) ?? []
-        if !devices.contains(where: { $0.deviceId == senderDevice }) {
-            devices = (try? peerDevices(peer, force: true)) ?? devices
-        }
-        guard let entry = devices.first(where: { $0.deviceId == senderDevice }),
-              entry.identityKeyB64 == senderIdentity else {
-            // Fail-closed: недоступная или «пустая» директория — это и обычный
-            // сетевой сбой (сообщение вернётся следующим поллингом), и способ
-            // сервера навсегда не давать гейту вооружиться. Молча доверять нельзя.
-            throw CoreError.Crypto(msg: "ratchet: устройство отправителя не подтверждено директорией его аккаунта — повторим позже")
-        }
-        do {
-            try verifyDeviceOwnership(peer: peer, deviceId: senderDevice,
-                                      curve: senderIdentity, ed: entry.ed25519KeyB64,
-                                      master: entry.masterKeyB64, deviceSig: entry.deviceSigB64)
-        } catch let alert as KeyTrustAlert {
-            throw CoreError.Crypto(msg: "ratchet: \(alert.message)")
-        }
-        let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
-                                              ed25519B64: nil, nowTs: nowTs())
-        if pinStatus == .mismatch {
-            pendingInboundKeys[key] = senderIdentity
-            throw CoreError.Crypto(msg: "ratchet: olm-ключ отправителя не совпадает с запиненным — возможна подмена")
+        // Пин первичен: если это устройство мы уже знаем и его olm-identity совпадает
+        // с конвертом, доверие уже установлено — директория тут ничего не доказывает,
+        // а поход в сеть только ломал бы приём (пир мог выкинуть/переустановить
+        // устройство, и его прошлые сообщения стали бы невскрываемыми навсегда).
+        let devicePin = ((try? store.olmPinGet(peerKey: key)) ?? nil)
+        if devicePin?.curve25519B64 != senderIdentity {
+            // Устройство незнакомо или ключ разошёлся — вот теперь нужна директория:
+            // cross-signing (P8) и TOFU. Мастер пинится ЗДЕСЬ ЖЕ при первом контакте,
+            // иначе в чате, начатом пиром, защита не включалась бы никогда.
+            var devices = (try? peerDevices(peer)) ?? []
+            if !devices.contains(where: { $0.deviceId == senderDevice }) {
+                devices = (try? peerDevices(peer, force: true)) ?? devices
+            }
+            guard let entry = devices.first(where: { $0.deviceId == senderDevice }),
+                  entry.identityKeyB64 == senderIdentity else {
+                // Fail-closed: и обычный сетевой сбой (повторим поллингом), и способ
+                // сервера не дать гейту вооружиться. Молча доверять нельзя.
+                throw CoreError.Crypto(msg: "ratchet: устройство отправителя не подтверждено директорией его аккаунта — повторим позже")
+            }
+            do {
+                try verifyDeviceOwnership(peer: peer, deviceId: senderDevice,
+                                          curve: senderIdentity, ed: entry.ed25519KeyB64,
+                                          master: entry.masterKeyB64, deviceSig: entry.deviceSigB64)
+            } catch let alert as KeyTrustAlert {
+                // Тревога уже зарегистрирована в verifyDeviceOwnership (баннер в чате
+                // даёт явный выход) — здесь только прекращаем разбор конверта.
+                throw CoreError.Crypto(msg: "ratchet: \(alert.message)")
+            }
+            // В пин уходит ПРОВЕРЕННЫЙ мастером ed25519 (а не nil): иначе анти-стриппинг
+            // не вооружался бы для чатов, начатых пиром.
+            let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
+                                                  ed25519B64: entry.ed25519KeyB64, nowTs: nowTs())
+            if pinStatus == .mismatch {
+                pendingInboundKeys[key] = senderIdentity
+                throw CoreError.Crypto(msg: "ratchet: olm-ключ отправителя не совпадает с запиненным — возможна подмена")
+            }
         }
 
         // Есть сессия — пробуем ею. prekey (type 0) при живой сессии — обычное дело

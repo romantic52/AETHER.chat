@@ -354,11 +354,24 @@ final class Messaging: ObservableObject {
                 ackIds.append(item.id)
                 if didChange { changed = true }
                 if !stuck, let created = item.createdAt { cursor = created }
+                await clearRetries(item.id)
             case .duplicate:
                 ackIds.append(item.id)
                 if !stuck, let created = item.createdAt { cursor = created }
+                await clearRetries(item.id)
             case .undecryptable:
-                stuck = true
+                // Карантин: сообщение, которое не вскрывается раз за разом (пир
+                // выкинул устройство, ключ сменился и не принят), иначе навсегда
+                // затыкает инбокс — на вебе окно выдачи, на iOS курсор since.
+                if await bumpRetries(item.id) >= Self.maxDecryptRetries {
+                    ackIds.append(item.id)
+                    if !stuck, let created = item.createdAt { cursor = created }
+                    await clearRetries(item.id)
+                    await saveUndecryptablePlaceholder(item)
+                    changed = true
+                } else {
+                    stuck = true
+                }
             }
         }
 
@@ -375,6 +388,37 @@ final class Messaging: ObservableObject {
         /// Конверт не вскрылся (например, ключ группы ещё не подгружен) — не ack,
         /// повторим на следующем поллинге.
         case undecryptable
+    }
+
+    /// Сколько раз пробуем вскрыть конверт, прежде чем убрать его из очереди.
+    /// Ключ группы или принятие нового ключа успевают подъехать за это время.
+    private static let maxDecryptRetries = 8
+
+    private func retriesKey(_ id: String) -> String { "undecryptable_\(id)" }
+
+    private func bumpRetries(_ id: String) async -> Int {
+        let key = retriesKey(id)
+        let next = (Int(await core.metaGet(key) ?? "0") ?? 0) + 1
+        await core.metaSet(key, String(next))
+        return next
+    }
+
+    private func clearRetries(_ id: String) async {
+        if await core.metaGet(retriesKey(id)) != nil {
+            await core.metaSet(retriesKey(id), "0")
+        }
+    }
+
+    /// Плашка вместо навсегда нерасшифрованного сообщения: пользователь видит, что
+    /// сообщение было и почему не открылось, а очередь инбокса едет дальше.
+    private func saveUndecryptablePlaceholder(_ item: InboxItem) async {
+        let peerId = item.senderId.lowercased()
+        let text = "Сообщение не удалось расшифровать: не подтверждено устройство отправителя."
+        let stored = ChatMessage(id: item.id, peerId: peerId, outgoing: false,
+                                 senderId: peerId, payloadJson: Wire.text(text),
+                                 status: 1, ts: parseTs(item.createdAt), reactions: [:],
+                                 edited: false, deleted: false, payload: Wire.parse(Wire.text(text)))
+        await save(stored, incUnread: activePeer != peerId, isGroup: false)
     }
 
     private func handleIncoming(_ item: InboxItem) async -> IncomingResult {
@@ -710,6 +754,12 @@ final class Messaging: ObservableObject {
     /// Непринятая смена olm-ключа собеседника (peerKey) — баннер в чате.
     func pendingOlmKeyChange(for peerId: String) async -> String? {
         await core.pendingKeyChange(for: peerId)
+    }
+
+    /// Вид тревоги: у смены ключа аккаунта и неподписанного устройства
+    /// разные последствия, поэтому и тексты в баннере разные.
+    func pendingOlmAlertKind(for peerId: String) async -> CoreClient.KeyAlertKind? {
+        await core.pendingKeyAlertKind(for: peerId)
     }
 
     /// Явное принятие нового ключа; отклонённые входящие вскроются следующим
