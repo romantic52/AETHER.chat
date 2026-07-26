@@ -337,6 +337,9 @@ final class Messaging: ObservableObject {
     private func performInboxPoll() async {
         let since = await core.metaGet("inbox_since")
         guard let items = try? await core.fetchInbox(since: since), !items.isEmpty else { return }
+        // Сервер отдаёт не больше 200 за раз — если пришло ровно окно, догребаем
+        // остаток сразу, а не по 200 за цикл поллинга.
+        if items.count >= 200 { pollAgain = true }
 
         var ackIds: [String] = []
         var cursor = since
@@ -360,10 +363,10 @@ final class Messaging: ObservableObject {
                 if !stuck, let created = item.createdAt { cursor = created }
                 await clearRetries(item.id)
             case .undecryptable:
-                // Карантин: сообщение, которое не вскрывается раз за разом (пир
-                // выкинул устройство, ключ сменился и не принят), иначе навсегда
-                // затыкает инбокс — на вебе окно выдачи, на iOS курсор since.
-                if await bumpRetries(item.id) >= Self.maxDecryptRetries {
+                // Карантин: сообщение, которое не вскрывается ДОЛГО (пир выкинул
+                // устройство, ключ сменился и не принят), иначе навсегда затыкает
+                // инбокс — на вебе окно выдачи, на iOS курсор since.
+                if await shouldQuarantine(item) {
                     ackIds.append(item.id)
                     if !stuck, let created = item.createdAt { cursor = created }
                     await clearRetries(item.id)
@@ -371,6 +374,10 @@ final class Messaging: ObservableObject {
                     changed = true
                 } else {
                     stuck = true
+                    // Баннер тревоги должен подняться СЕЙЧАС, а не после карантина:
+                    // иначе кнопка «Принять новый ключ» появляется, когда принимать
+                    // уже нечего.
+                    changed = true
                 }
             }
         }
@@ -390,17 +397,32 @@ final class Messaging: ObservableObject {
         case undecryptable
     }
 
-    /// Сколько раз пробуем вскрыть конверт, прежде чем убрать его из очереди.
-    /// Ключ группы или принятие нового ключа успевают подъехать за это время.
-    private static let maxDecryptRetries = 8
+    /// Сколько ждём, прежде чем убрать конверт из очереди. Считаем ВРЕМЯ, а не
+    /// попытки: поллинг событийный (WS-триггер на каждое сообщение), и счётчик
+    /// попыток выгорал бы за секунды — быстрее, чем человек нажмёт «Принять ключ».
+    private static let quarantineAfter: TimeInterval = 24 * 3600
 
     private func retriesKey(_ id: String) -> String { "undecryptable_\(id)" }
 
-    private func bumpRetries(_ id: String) async -> Int {
-        let key = retriesKey(id)
-        let next = (Int(await core.metaGet(key) ?? "0") ?? 0) + 1
-        await core.metaSet(key, String(next))
-        return next
+    /// Пора ли убирать конверт из очереди. НЕ карантиним, пока по этому чату висит
+    /// непринятая тревога (иначе кнопка в баннере теряет смысл) и пока это групповое
+    /// сообщение без ключа группы — там ключ просто ещё не подъехал.
+    private func shouldQuarantine(_ item: InboxItem) async -> Bool {
+        let myId = myId.lowercased()
+        let isGroup = item.recipientId.lowercased() != myId
+        if isGroup, await core.groupKey(item.recipientId.lowercased()) == nil {
+            await groups.load()   // гонка загрузки ключей, а не «ядовитое» сообщение
+            return false
+        }
+        if await core.pendingKeyChange(for: item.senderId.lowercased()) != nil { return false }
+
+        let key = retriesKey(item.id)
+        let now = Date().timeIntervalSince1970
+        guard let firstRaw = await core.metaGet(key), let first = Double(firstRaw), first > 0 else {
+            await core.metaSet(key, String(now))   // засекаем первую неудачу
+            return false
+        }
+        return now - first >= Self.quarantineAfter
     }
 
     private func clearRetries(_ id: String) async {
@@ -412,13 +434,17 @@ final class Messaging: ObservableObject {
     /// Плашка вместо навсегда нерасшифрованного сообщения: пользователь видит, что
     /// сообщение было и почему не открылось, а очередь инбокса едет дальше.
     private func saveUndecryptablePlaceholder(_ item: InboxItem) async {
-        let peerId = item.senderId.lowercased()
+        // Групповой конверт адресован на group_id — иначе плашка уезжала бы
+        // в фантомный личный чат с отправителем и плодила там непрочитанное.
+        let myId = myId.lowercased()
+        let isGroup = item.recipientId.lowercased() != myId
+        let peerId = isGroup ? item.recipientId.lowercased() : item.senderId.lowercased()
         let text = "Сообщение не удалось расшифровать: не подтверждено устройство отправителя."
         let stored = ChatMessage(id: item.id, peerId: peerId, outgoing: false,
-                                 senderId: peerId, payloadJson: Wire.text(text),
+                                 senderId: item.senderId.lowercased(), payloadJson: Wire.text(text),
                                  status: 1, ts: parseTs(item.createdAt), reactions: [:],
                                  edited: false, deleted: false, payload: Wire.parse(Wire.text(text)))
-        await save(stored, incUnread: activePeer != peerId, isGroup: false)
+        await save(stored, incUnread: activePeer != peerId, isGroup: isGroup)
     }
 
     private func handleIncoming(_ item: InboxItem) async -> IncomingResult {

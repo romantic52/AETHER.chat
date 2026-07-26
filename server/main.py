@@ -846,6 +846,15 @@ def _hours_since(iso_ts: Optional[str]) -> Optional[float]:
         return None
 
 
+def _kick_age_hours(device_age: Optional[float], bind_age: Optional[float]) -> Optional[float]:
+    """Возраст для анти-вор гейта: МЕНЬШИЙ из «сколько живёт устройство» и «сколько
+    эта сессия к нему привязана». Публичный identity_key доказательством владения
+    быть не может, а выждать 12 часов после захвата слота вор незаметно не сможет."""
+    if device_age is not None and bind_age is not None:
+        return min(device_age, bind_age)
+    return bind_age if device_age is None else device_age
+
+
 def _device_age_hours(cur, user_id: str, device_id: Optional[str]) -> Optional[float]:
     if not device_id:
         return None
@@ -874,10 +883,12 @@ def list_sessions(authorization: str = Header(None),
         devices = {r["device_id"]: {"device_id": r["device_id"], "device_created_at": r["created_at"],
                                     "sessions": 0, "current": False} for r in cur.fetchall()}
         cur.execute(
-            "SELECT token, device_id, created_at FROM sessions WHERE LOWER(user_id) = LOWER(%s)",
+            "SELECT token, device_id, created_at, device_bound_at FROM sessions "
+            "WHERE LOWER(user_id) = LOWER(%s)",
             (current_user,))
         unbound = 0
         my_device = None
+        my_bound_at = None
         for s in cur.fetchall():
             dev = s["device_id"]
             if dev in devices:
@@ -885,9 +896,13 @@ def list_sessions(authorization: str = Header(None),
                 if s["token"] == token:
                     devices[dev]["current"] = True
                     my_device = dev
+                    my_bound_at = s.get("device_bound_at")
             else:
                 unbound += 1
-        my_age = _device_age_hours(cur, current_user, my_device)
+        # Та же формула, что в kick_device: иначе UI показывал бы активную кнопку,
+        # а DELETE отвечал бы 403.
+        my_age = _kick_age_hours(_device_age_hours(cur, current_user, my_device),
+                                 _hours_since(my_bound_at))
     can_kick = my_age is not None and my_age >= KICK_MIN_DEVICE_AGE_HOURS
     return {"devices": list(devices.values()), "unbound_sessions": unbound,
             "can_kick": can_kick, "kick_min_hours": KICK_MIN_DEVICE_AGE_HOURS}
@@ -909,15 +924,8 @@ async def kick_device(device_id: str, authorization: str = Header(None),
         # себя», снося настоящему устройству сессии, prekeys и Olm-идентичность.
         # Штатный выход из аккаунта — POST /logout, он крипто-материал не трогает.
         #
-        # Возраст берём МЕНЬШИЙ из «сколько живёт устройство» и «сколько эта сессия
-        # к нему привязана»: публичный identity_key доказательством владения быть не
-        # может, а вот выждать 12 часов после захвата слота вор не сможет незаметно.
-        age = _device_age_hours(cur, current_user, my_device)
-        bind_age = _hours_since(me["device_bound_at"] if me else None)
-        if age is not None and bind_age is not None:
-            age = min(age, bind_age)
-        elif bind_age is not None:
-            age = bind_age
+        age = _kick_age_hours(_device_age_hours(cur, current_user, my_device),
+                              _hours_since(me["device_bound_at"] if me else None))
         if age is None or age < KICK_MIN_DEVICE_AGE_HOURS:
             raise HTTPException(
                 403,
