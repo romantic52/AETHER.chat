@@ -136,6 +136,15 @@ actor CoreClient {
             selectStore(for: id)
             peerKeyCache.removeAll(keepingCapacity: true)
             myOlmIdentity = ""   // у нового аккаунта свой Olm-аккаунт в его store
+            // Всё, что привязано к прежнему аккаунту, обнуляем: иначе ключи
+            // публиковались бы и инбокс читался бы под чужим device_id, а тревоги
+            // доверия «переезжали» бы на другого пользователя.
+            cachedDeviceId = ""
+            deviceCache.removeAll(keepingCapacity: true)
+            pendingKeyChanges.removeAll()
+            pendingInboundKeys.removeAll()
+            pendingMasterChanges.removeAll()
+            pendingUnsignedDevices.removeAll()
         }
         self.myId = id
         self.myPublicKey = publicKey
@@ -178,8 +187,10 @@ actor CoreClient {
         setIdentity(id: session.userId, publicKey: session.publicKeyB64, privateKey: priv)
         // Привязка сессии к устройству — чтобы её можно было выкинуть адресно.
         // Olm-identity доказывает владение устройством (сервер сверяет с директорией).
-        try? api.bindSessionDeviceProof(deviceId: myDeviceId(),
-                                        identityKeyB64: myOlmIdentityKey())
+        if let device = try? requireDeviceId() {
+            try? api.bindSessionDeviceProof(deviceId: device,
+                                            identityKeyB64: myOlmIdentityKey())
+        }
         return (session, priv)
     }
 
@@ -324,20 +335,32 @@ actor CoreClient {
             cachedDeviceId = stored
             return stored
         }
+        // Директория НЕДОСТУПНА (сеть/сервер) — это не то же самое, что «устройств
+        // нет». Молча зафиксировать 'primary' значило бы захватить слот чужого
+        // устройства и затереть его ключи. Ждём следующей попытки.
+        guard let devices = try? api.listDevices(userId: myId) else { return "" }
         var resolved = "primary"
-        if let devices = try? api.listDevices(userId: myId) {
-            if devices.isEmpty {
-                resolved = "primary"
-            } else if let identity = try? myOlmIdentityKey(),
-                      let mine = devices.first(where: { $0.identityKeyB64 == identity }) {
-                resolved = mine.deviceId
-            } else {
-                resolved = "ios-" + UUID().uuidString.prefix(10).lowercased()
-            }
+        if devices.isEmpty {
+            resolved = "primary"
+        } else if let identity = try? myOlmIdentityKey(),
+                  let mine = devices.first(where: { $0.identityKeyB64 == identity }) {
+            resolved = mine.deviceId
+        } else {
+            resolved = "ios-" + UUID().uuidString.prefix(10).lowercased()
         }
         cachedDeviceId = resolved
         try? store.metaSet(key: "device_id", value: resolved)
         return resolved
+    }
+
+    /// device_id или ошибка: пустой означает «директория была недоступна».
+    /// Работать под неизвестным устройством нельзя — повторим позже.
+    private func requireDeviceId() throws -> String {
+        let id = myDeviceId()
+        guard !id.isEmpty else {
+            throw CoreError.Network(msg: "устройство не определено: директория недоступна")
+        }
+        return id
     }
 
     /// Ключ Olm-сессии в сторадже: primary живёт под старым ключом peerId
@@ -369,7 +392,7 @@ actor CoreClient {
     func ensureOlmKeys() {
         do {
             let acct = try olmAccount()
-            let device = myDeviceId()
+            let device = try requireDeviceId()
             let count = (try? api.keysCountDevice(deviceId: device)) ?? 0
             // Форс-перепубликация один раз после апдейта: подписанный и cross-signed
             // бандл должен заместить старые OTK на сервере, даже если их ≥20.
@@ -624,7 +647,7 @@ actor CoreClient {
     /// Ratchet-конверт 1:1: {ratchet, olm_identity, sender_device, type, body_b64}.
     private func ratchetEnvelope(type: UInt32, body: String) throws -> String {
         let obj: [String: Any] = ["ratchet": "1", "olm_identity": try myOlmIdentityKey(),
-                                  "sender_device": myDeviceId(),
+                                  "sender_device": try requireDeviceId(),
                                   "type": Int(type), "body_b64": body]
         let data = try JSONSerialization.data(withJSONObject: obj)
         return String(decoding: data, as: UTF8.self)
@@ -715,20 +738,31 @@ actor CoreClient {
     // MARK: - Приём
 
     func fetchInbox(since: String?) throws -> [InboxItem] {
-        try api.fetchInboxDevice(since: since, deviceId: myDeviceId())
+        try api.fetchInboxDevice(since: since, deviceId: requireDeviceId())
     }
 
-    func ack(_ ids: [String]) throws { try api.ackMessagesDevice(messageIds: ids, deviceId: myDeviceId()) }
+    func ack(_ ids: [String]) throws {
+        try api.ackMessagesDevice(messageIds: ids, deviceId: requireDeviceId())
+    }
 
     /// Вскрыть конверт входящего. 1:1 — Double Ratchet (Olm); группы — общий
     /// симметричный ключ из локального стораджа (crypto_box-обёртка).
     func open(item: InboxItem) throws -> Opened {
         let env = item.envelope
+        let obj = (env.data(using: .utf8)).flatMap {
+            try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
+        }
         // Ratchet-конверт 1:1?
-        if let data = env.data(using: .utf8),
-           let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           (obj["ratchet"] as? String) == "1" {
+        if let obj, (obj["ratchet"] as? String) == "1" {
             return try ratchetOpen(item: item, obj: obj)
+        }
+        // 1:1 ТОЛЬКО через Double Ratchet: статический box-конверт для личного
+        // чата — это даунгрейд, который обходит подписи P7 и cross-signing P8
+        // (в нём нет ни olm_identity, ни sender_device). Web такое отвергает —
+        // расхождение сделало бы iOS слабым звеном.
+        let isGroupEnvelope = obj.map { $0["is_group"] != nil } ?? false
+        if !isGroupEnvelope && item.recipientId.lowercased() == myId.lowercased() {
+            throw CoreError.Crypto(msg: "личное сообщение без Double Ratchet отвергнуто (даунгрейд)")
         }
         // Групповое: адресуется на recipient_id = group_id.
         let groupKey = (try? store.getGroupKey(groupId: item.recipientId.lowercased())) ?? nil

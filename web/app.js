@@ -847,6 +847,7 @@ function renderKeyChangeBar() {
 async function acceptPendingKeyChanges() {
     if (!hasPendingKeyAlert(selectedPeer)) return;
     const peer = String(selectedPeer).toLowerCase();
+    const kind = pendingAlertKind(selectedPeer);
     // Смена мастера обесценивает всё производное доверие к пиру: снимаем и
     // device-пины, и сессии — они переустановятся с проверкой подписи.
     let keys = pendingKeysForPeer(selectedPeer);
@@ -856,12 +857,21 @@ async function acceptPendingKeyChanges() {
         keys = Object.keys(olmIdentityPins).filter(k => k === peer || k.startsWith(`${peer}::`))
             .concat(keys.filter(k => !(k === peer || k.startsWith(`${peer}::`))));
     }
-    // Неподписанное устройство принимаем по TOFU: пин по curve, без ed25519 —
-    // как у легаси-устройства (появятся подписи — заработает анти-стриппинг).
-    for (const key of pendingUnsignedForPeer(selectedPeer)) {
-        const entry = pendingUnsignedDevices[key];
-        if (entry && entry.identity) olmIdentityPins[key] = entry.identity;
-        delete pendingUnsignedDevices[key];
+    // Доверяем ТОЛЬКО той тревоге, которую описывает баннер: иначе нажатие
+    // «Принять новый ключ» молча доверяло бы ещё и неподписанным устройствам,
+    // о которых пользователю ничего не сказали.
+    if (kind === 'unsigned') {
+        // Пин по curve, без ed25519 — как у легаси-устройства (появятся подписи,
+        // заработает анти-стриппинг).
+        for (const key of pendingUnsignedForPeer(selectedPeer)) {
+            const entry = pendingUnsignedDevices[key];
+            if (entry && entry.identity) olmIdentityPins[key] = entry.identity;
+            delete pendingUnsignedDevices[key];
+        }
+        await saveRatchetState();
+        renderKeyChangeBar();
+        showStatus('Устройство отмечено доверенным', 'success');
+        return;
     }
     for (const key of keys) {
         delete olmIdentityPins[key];
@@ -892,7 +902,9 @@ function verifyDeviceOwnership(api, peerId, deviceId, curve, ed, master, deviceS
         // Сервер публикует подписанный бандл только вместе с мастер-подписью,
         // поэтому «ed есть, мастера нет» — это стриппинг полей, а не старый пир.
         if (olmEdPins[key] || ed) {
-            throw new Error('Устройство собеседника не подписано его аккаунтом — возможна подмена ключей сервером');
+            const e = new Error('Устройство собеседника не подписано его аккаунтом — возможна подмена ключей сервером');
+            e.keyTrust = true;
+            throw e;
         }
         if (pinnedMaster && !knownDevice) {
             // Аккаунт уже публикует подписи, а это устройство мы видим впервые и
@@ -913,7 +925,9 @@ function verifyDeviceOwnership(api, peerId, deviceId, curve, ed, master, deviceS
     if (pinnedMaster && pinnedMaster !== master) {
         pendingMasterChanges[peer] = master;
         renderKeyChangeBar();
-        throw new Error('Мастер-ключ аккаунта собеседника изменился — сверьте цифры безопасности или примите новый ключ');
+        const e = new Error('Мастер-ключ аккаунта собеседника изменился — сверьте цифры безопасности или примите новый ключ');
+        e.keyTrust = true;
+        throw e;
     }
     if (!pinnedMaster) olmMasterPins[peer] = master;   // TOFU корня доверия
 }
@@ -929,9 +943,11 @@ function verifyBundleSignature(api, peerId, deviceId, bundle, key) {
     const otkSig = typeof otk.sig_b64 === 'string' ? otk.sig_b64 : '';
     if (!bundleEd && !idSig && !otkSig && !olmEdPins[key]) return '';   // легаси: TOFU по curve
     if (!(bundleEd && idSig && otkSig)) {
-        throw new Error(olmEdPins[key]
+        const stripError = new Error(olmEdPins[key]
             ? 'Prekey-бандл без подписи, хотя устройство её публиковало — возможна подмена сервером'
             : 'Неполный подписанный prekey-бандл — возможна подмена сервером');
+        stripError.keyTrust = true;
+        throw stripError;
     }
     // Бросает при неверной подписи (канон ядра AETHER-IDKEY-1/AETHER-OTK-1).
     api.verify_prekey_bundle(peerId, deviceId, bundle.identity_key_b64,
@@ -973,7 +989,9 @@ async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
                     // принять ключ позже, после сверки.
                     pendingKeyChanges[key] = { peerId, identity: bundle.identity_key_b64 };
                     renderKeyChangeBar();
-                    throw new Error('Identity-ключ собеседника изменился — отправка отменена');
+                    const e = new Error('Identity-ключ собеседника изменился — отправка отменена');
+                    e.keyTrust = true;
+                    throw e;
                 }
                 delete olmEdPins[key];
                 delete pendingKeyChanges[key];
@@ -2403,11 +2421,13 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                             envelope: await ratchetEnvelopeForDevice(targetPeer, dev.device_id, wireJson)
                         });
                     } catch (error) {
-                        // Проблема одного устройства (не подписано аккаунтом) —
-                        // остальным доставляем; тревога об аккаунте роняет отправку.
-                        if (!error || !error.skipDevice) throw error;
+                        // Ронять отправку целиком имеет право только тревога ДОВЕРИЯ
+                        // ключам (подмена/смена ключа). Сетевой сбой, 404/409 «нет
+                        // prekeys» и битый бандл — проблема ОДНОГО устройства:
+                        // остальным доставляем, как это делает iOS.
+                        if (error && error.keyTrust && !error.skipDevice) throw error;
                         skipped = error;
-                        console.warn('Пропущено устройство', dev.device_id, error.message);
+                        console.warn('Пропущено устройство', dev.device_id, error && error.message);
                     }
                 }
                 if (!prepared.length) throw skipped || new Error('У получателя нет пригодных устройств');
