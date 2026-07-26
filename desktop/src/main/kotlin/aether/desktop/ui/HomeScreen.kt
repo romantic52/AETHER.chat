@@ -43,12 +43,10 @@ fun HomeScreen(
     var showSessions by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var showSafetyFor by remember { mutableStateOf<String?>(null) }
-    var notificationsOn by remember { mutableStateOf(settings.notificationsEnabled) }
-    var soundsOn by remember { mutableStateOf(settings.soundsEnabled) }
+    var showSettings by remember { mutableStateOf(false) }
     // Просмотрщик живёт на уровне окна: он должен перекрывать и список, и панель информации.
     var viewerItems by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
-    var closeToTray by remember { mutableStateOf(settings.closeToTray) }
 
     Box(modifier = Modifier.fillMaxSize()) {
     Row(modifier = Modifier.fillMaxSize()) {
@@ -82,49 +80,8 @@ fun HomeScreen(
                         )
                         HorizontalDivider()
                         DropdownMenuItem(
-                            text = {
-                                Text(
-                                    when (theme) {
-                                        aether.desktop.data.UiSettings.ThemeMode.SYSTEM -> "Тема: как в системе"
-                                        aether.desktop.data.UiSettings.ThemeMode.LIGHT -> "Тема: светлая"
-                                        aether.desktop.data.UiSettings.ThemeMode.DARK -> "Тема: тёмная"
-                                    }
-                                )
-                            },
-                            onClick = {
-                                onThemeChange(
-                                    when (theme) {
-                                        aether.desktop.data.UiSettings.ThemeMode.SYSTEM ->
-                                            aether.desktop.data.UiSettings.ThemeMode.LIGHT
-                                        aether.desktop.data.UiSettings.ThemeMode.LIGHT ->
-                                            aether.desktop.data.UiSettings.ThemeMode.DARK
-                                        aether.desktop.data.UiSettings.ThemeMode.DARK ->
-                                            aether.desktop.data.UiSettings.ThemeMode.SYSTEM
-                                    }
-                                )
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (notificationsOn) "Уведомления: вкл" else "Уведомления: выкл") },
-                            onClick = {
-                                notificationsOn = !notificationsOn
-                                settings.notificationsEnabled = notificationsOn
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (soundsOn) "Звуки: вкл" else "Звуки: выкл") },
-                            onClick = {
-                                soundsOn = !soundsOn
-                                settings.soundsEnabled = soundsOn
-                                aether.desktop.media.UiSounds.enabled = soundsOn
-                            },
-                        )
-                        DropdownMenuItem(
-                            text = { Text(if (closeToTray) "Закрытие: сворачивать в трей" else "Закрытие: выходить") },
-                            onClick = {
-                                closeToTray = !closeToTray
-                                settings.closeToTray = closeToTray
-                            },
+                            text = { Text("Настройки") },
+                            onClick = { menuOpen = false; showSettings = true },
                         )
                         HorizontalDivider()
                         DropdownMenuItem(
@@ -229,6 +186,16 @@ fun HomeScreen(
 
     if (showProfile) {
         ProfileDialog(session = session, onDismiss = { showProfile = false })
+    }
+
+    if (showSettings) {
+        SettingsDialog(
+            session = session,
+            settings = settings,
+            theme = theme,
+            onThemeChange = onThemeChange,
+            onDismiss = { showSettings = false },
+        )
     }
 
     showSafetyFor?.let { peerId ->
