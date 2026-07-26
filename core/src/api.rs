@@ -499,6 +499,21 @@ impl ApiClient {
     // --- Контроль сессий / 2FA / wipe. Формы ответов гибкие → JSON-строки. ---
 
     /// Привязать текущую сессию к своему крипто-устройству (адресный выход).
+    /// identity_key_b64 — доказательство владения устройством (сервер сверяет его
+    /// с записью crypto_devices): вор одного лишь токена не сможет объявить свою
+    /// сессию чужим устройством и выкинуть настоящее.
+    pub fn bind_session_device_proof(
+        &self,
+        device_id: String,
+        identity_key_b64: String,
+    ) -> Result<(), CoreError> {
+        self.put("/sessions/me/device", serde_json::json!({
+            "device_id": device_id,
+            "identity_key_b64": identity_key_b64,
+        }))
+        .map(|_| ())
+    }
+
     pub fn bind_session_device(&self, device_id: String) -> Result<(), CoreError> {
         self.put("/sessions/me/device", serde_json::json!({ "device_id": device_id })).map(|_| ())
     }

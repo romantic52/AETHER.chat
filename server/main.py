@@ -347,13 +347,13 @@ def init_db() -> None:
             """
         )
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='users' AND column_name='status_emoji')""")
+                       WHERE table_schema = current_schema() AND table_name='users' AND column_name='status_emoji')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN status_emoji TEXT")
 
         # Olm identity-ключ (curve25519) для Double Ratchet — публичный, отдаётся в prekey-bundle.
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='users' AND column_name='olm_identity_key')""")
+                       WHERE table_schema = current_schema() AND table_name='users' AND column_name='olm_identity_key')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN olm_identity_key TEXT")
 
@@ -363,7 +363,7 @@ def init_db() -> None:
                          ("avatar_file_id", "TEXT")]:
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name='groups' AND column_name=%s)""", (col,))
+                   WHERE table_schema = current_schema() AND table_name='groups' AND column_name=%s)""", (col,))
             if not cur.fetchone()[0]:
                 cur.execute(f"ALTER TABLE groups ADD COLUMN {col} {ddl}")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_username ON groups(LOWER(username))")
@@ -375,7 +375,7 @@ def init_db() -> None:
         cur.execute("""
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name='messages' AND column_name='ciphertext'
+                WHERE table_schema = current_schema() AND table_name='messages' AND column_name='ciphertext'
             )
         """)
         if cur.fetchone()[0]:
@@ -385,7 +385,7 @@ def init_db() -> None:
         cur.execute("""
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name='messages' AND column_name='delivered'
+                WHERE table_schema = current_schema() AND table_name='messages' AND column_name='delivered'
             )
         """)
         if not cur.fetchone()[0]:
@@ -398,7 +398,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='password_hash'
+                WHERE table_schema = current_schema() AND table_name='users' AND column_name='password_hash'
             )
             """
         )
@@ -410,7 +410,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='encrypted_private_key_b64'
+                WHERE table_schema = current_schema() AND table_name='users' AND column_name='encrypted_private_key_b64'
             )
             """
         )
@@ -422,7 +422,7 @@ def init_db() -> None:
         # never receives the account plaintext or password-derived key.
         cur.execute(
             """SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                               WHERE table_name='users' AND column_name='encrypted_olm_account_b64')"""
+                               WHERE table_schema = current_schema() AND table_name='users' AND column_name='encrypted_olm_account_b64')"""
         )
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN encrypted_olm_account_b64 TEXT")
@@ -440,7 +440,7 @@ def init_db() -> None:
             )"""
         )
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='one_time_keys' AND column_name='device_id')""")
+                       WHERE table_schema = current_schema() AND table_name='one_time_keys' AND column_name='device_id')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE one_time_keys ADD COLUMN device_id TEXT NOT NULL DEFAULT 'primary'")
             cur.execute("ALTER TABLE one_time_keys DROP CONSTRAINT one_time_keys_pkey")
@@ -448,13 +448,13 @@ def init_db() -> None:
         # ACK'и — per-device: иначе подтверждение с одного устройства прятало бы
         # групповые сообщения от остальных устройств того же аккаунта.
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='message_receipts' AND column_name='device_id')""")
+                       WHERE table_schema = current_schema() AND table_name='message_receipts' AND column_name='device_id')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE message_receipts ADD COLUMN device_id TEXT NOT NULL DEFAULT 'primary'")
             cur.execute("ALTER TABLE message_receipts DROP CONSTRAINT message_receipts_pkey")
             cur.execute("ALTER TABLE message_receipts ADD PRIMARY KEY (message_id, user_id, device_id)")
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='messages' AND column_name='recipient_device_id')""")
+                       WHERE table_schema = current_schema() AND table_name='messages' AND column_name='recipient_device_id')""")
         if not cur.fetchone()[0]:
             # NULL = адресовано аккаунту целиком (группы, legacy-клиенты).
             cur.execute("ALTER TABLE messages ADD COLUMN recipient_device_id TEXT")
@@ -474,7 +474,7 @@ def init_db() -> None:
                            ("one_time_keys", "sig_b64")):
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name=%s AND column_name=%s)""", (table, col))
+                   WHERE table_schema = current_schema() AND table_name=%s AND column_name=%s)""", (table, col))
             if not cur.fetchone()[0]:
                 cur.execute(f"ALTER TABLE {table} ADD COLUMN {col} TEXT")
         # Надгробие анти-даунгрейда: переживает удаление устройства. Без него
@@ -489,7 +489,7 @@ def init_db() -> None:
             )"""
         )
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='signed_devices' AND column_name='cross_signed')""")
+                       WHERE table_schema = current_schema() AND table_name='signed_devices' AND column_name='cross_signed')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE signed_devices ADD COLUMN cross_signed INTEGER NOT NULL DEFAULT 0")
 
@@ -497,14 +497,14 @@ def init_db() -> None:
         # сообщает device_id после логина) — чтобы можно было выкинуть
         # конкретное устройство. 2FA: TOTP-секрет на аккаунт.
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                       WHERE table_name='sessions' AND column_name='device_id')""")
+                       WHERE table_schema = current_schema() AND table_name='sessions' AND column_name='device_id')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
         for col, ddl in [("totp_secret", "TEXT"),
                          ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")]:
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
-                   WHERE table_name='users' AND column_name=%s)""", (col,))
+                   WHERE table_schema = current_schema() AND table_name='users' AND column_name=%s)""", (col,))
             if not cur.fetchone()[0]:
                 cur.execute(f"ALTER TABLE users ADD COLUMN {col} {ddl}")
             
@@ -513,7 +513,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='username'
+                WHERE table_schema = current_schema() AND table_name='users' AND column_name='username'
             )
             """
         )
@@ -529,7 +529,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='last_active'
+                WHERE table_schema = current_schema() AND table_name='users' AND column_name='last_active'
             )
             """
         )
@@ -542,7 +542,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='avatar_file_id'
+                WHERE table_schema = current_schema() AND table_name='users' AND column_name='avatar_file_id'
             )
             """
         )
@@ -554,7 +554,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='users' AND column_name='bio'
+                WHERE table_schema = current_schema() AND table_name='users' AND column_name='bio'
             )
             """
         )
@@ -566,7 +566,7 @@ def init_db() -> None:
             """
             SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns 
-                WHERE table_name='sessions' AND column_name='expires_at'
+                WHERE table_schema = current_schema() AND table_name='sessions' AND column_name='expires_at'
             )
             """
         )
@@ -582,7 +582,7 @@ def init_db() -> None:
         cur.execute(
             """SELECT EXISTS (
                 SELECT 1 FROM information_schema.columns
-                WHERE table_name='groups' AND column_name='linked_group_id'
+                WHERE table_schema = current_schema() AND table_name='groups' AND column_name='linked_group_id'
             )"""
         )
         if not cur.fetchone()[0]:
@@ -783,6 +783,9 @@ async def logout(authorization: str = Header(None), current_user: str = Depends(
 
 class BindDeviceRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+    # Доказательство владения устройством: его Olm-identity лежит в шифрованной
+    # базе клиента, у вора одного лишь токена его нет (см. bind_session_device).
+    identity_key_b64: Optional[str] = Field(default=None, min_length=16, max_length=128)
 
 
 class TotpCodeRequest(BaseModel):
@@ -797,9 +800,19 @@ class WipeRequest(BaseModel):
 def bind_session_device(body: BindDeviceRequest, authorization: str = Header(None),
                         current_user: str = Depends(get_current_user)) -> dict:
     """Клиент после логина сообщает своё крипто-устройство: сессия становится
-    выкидываемой адресно (экран «Сессии»)."""
+    выкидываемой адресно (экран «Сессии»).
+
+    Привязка к УЖЕ существующему устройству требует его Olm-identity: иначе вор
+    с одним лишь токеном объявлял бы свою сессию чужим устройством и выкидывал
+    настоящее (вместе с его prekeys и Olm-идентичностью)."""
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
+        cur.execute(
+            "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, body.device_id))
+        row = cur.fetchone()
+        if row and row["identity_key_b64"] != body.identity_key_b64:
+            raise HTTPException(403, "Device identity mismatch")
         cur.execute("UPDATE sessions SET device_id = %s WHERE token = %s", (body.device_id, token))
     return {"ok": True}
 
@@ -1068,18 +1081,19 @@ def _verify_upload_signatures(user_id: str, body: "UploadKeysRequest") -> None:
     # Cross-signing (P8): подпись записи устройства мастер-ключом аккаунта. Именно
     # она мешает подсадить пиру фантомное устройство с самоподписанным бандлом —
     # решающая проверка снова у получателя, который пинит мастер-ключ.
-    if body.master_key_b64 or body.device_sig_b64:
-        if not (body.master_key_b64 and body.device_sig_b64):
-            raise HTTPException(400, "Cross-signing requires master_key_b64 and device_sig_b64")
-        _validate_key_b64(body.master_key_b64, "master_key_b64")
-        _validate_sig_b64(body.device_sig_b64, "device_sig_b64")
-        master = VerifyKey(_decode_b64url(body.master_key_b64, "master_key_b64"))
-        dev_canon = (f"AETHER-DEVSIG-1|{user_id.lower()}|{body.device_id}|"
-                     f"{body.identity_key_b64}|{body.ed25519_key_b64}")
-        try:
-            master.verify(dev_canon.encode(), _decode_b64url(body.device_sig_b64, "device_sig_b64"))
-        except BadSignatureError:
-            raise HTTPException(400, "device signature invalid")
+    # Подписанный бандл ОБЯЗАН быть cross-signed: иначе клиент не смог бы отличить
+    # «пир ещё не обновился» от «сервер вырезал мастер-поля» (стриппинг).
+    if not (body.master_key_b64 and body.device_sig_b64):
+        raise HTTPException(400, "Signed upload requires master_key_b64 and device_sig_b64")
+    _validate_key_b64(body.master_key_b64, "master_key_b64")
+    _validate_sig_b64(body.device_sig_b64, "device_sig_b64")
+    master = VerifyKey(_decode_b64url(body.master_key_b64, "master_key_b64"))
+    dev_canon = (f"AETHER-DEVSIG-1|{user_id.lower()}|{body.device_id}|"
+                 f"{body.identity_key_b64}|{body.ed25519_key_b64}")
+    try:
+        master.verify(dev_canon.encode(), _decode_b64url(body.device_sig_b64, "device_sig_b64"))
+    except BadSignatureError:
+        raise HTTPException(400, "device signature invalid")
 
 
 def _validate_ratchet_envelope(envelope: dict) -> None:
@@ -1110,14 +1124,18 @@ def upload_keys(body: UploadKeysRequest, request: Request,
     _validate_key_b64(body.identity_key_b64, "identity_key_b64")
     device_id = body.device_id
     signed = body.ed25519_key_b64 is not None or body.identity_sig_b64 is not None
+    cross_signed = body.master_key_b64 is not None or body.device_sig_b64 is not None
+    if cross_signed and not signed:
+        # Мастер подписывает канон, включающий ed25519 устройства: без подписанного
+        # бандла такая подпись бессмысленна и раньше принималась без проверки.
+        raise HTTPException(400, "Cross-signing requires a signed bundle")
     if signed:
         # Подписанный бандл — оба поля обязательны и подписи должны сходиться.
         if not (body.ed25519_key_b64 and body.identity_sig_b64):
             raise HTTPException(400, "Signed upload requires ed25519_key_b64 and identity_sig_b64")
         _validate_key_b64(body.ed25519_key_b64, "ed25519_key_b64")
         _validate_sig_b64(body.identity_sig_b64, "identity_sig_b64")
-        _verify_upload_signatures(current_user, body)
-    cross_signed = body.master_key_b64 is not None
+        _verify_upload_signatures(current_user, body)   # включая подпись устройства
     with db_conn() as cur:
         cur.execute(
             "SELECT identity_key_b64, ed25519_key_b64, master_key_b64 FROM crypto_devices "
@@ -1174,8 +1192,9 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                 """INSERT INTO signed_devices (user_id, device_id, first_signed_at, cross_signed)
                    VALUES (LOWER(%s), %s, %s, %s)
                    ON CONFLICT (user_id, device_id) DO UPDATE
-                   SET cross_signed = signed_devices.cross_signed OR EXCLUDED.cross_signed""",
-                (current_user, device_id, _utc_now(), cross_signed))
+                   SET cross_signed = GREATEST(signed_devices.cross_signed,
+                                               EXCLUDED.cross_signed)""",
+                (current_user, device_id, _utc_now(), 1 if cross_signed else 0))
         if device_id == "primary":
             # Legacy-клиенты и старый claim читают identity из users — держим в синхроне.
             cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
