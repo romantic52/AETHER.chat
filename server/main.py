@@ -346,6 +346,26 @@ def init_db() -> None:
             );
             """
         )
+        # Привязка нового устройства по одноразовому QR («как в Telegram»).
+        # Сервер видит только шифртекст bundle (аккаунтный ключ завёрнут
+        # crypto_box на эфемерный паблик нового устройства) и удаляет его
+        # сразу после выдачи. secret хранится ТОЛЬКО как sha256-хэш.
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS pairings (
+                pairing_id TEXT PRIMARY KEY,
+                secret_hash TEXT NOT NULL,
+                eph_pub_b64 TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                user_id TEXT,
+                new_device_id TEXT,
+                session_token TEXT,
+                encrypted_bundle_b64 TEXT,
+                created_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            );
+            """
+        )
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
                        WHERE table_name='users' AND column_name='status_emoji')""")
         if not cur.fetchone()[0]:
@@ -853,6 +873,144 @@ async def kick_device(device_id: str, authorization: str = Header(None),
     for t in revoked:
         await manager.close_for_token(t)
     return {"ok": True, "revoked_sessions": len(revoked)}
+
+
+# --- Привязка нового устройства по одноразовому QR (pairing) ---
+#
+# Флоу: десктоп зовёт POST /pairing/start (без auth) и показывает QR
+# aether://pair?v=1&pid=<pairing_id>&sec=<secret>&pub=<eph_pub_b64>&host=<server>.
+# Телефон сканирует, показывает явный экран подтверждения и зовёт
+# POST /pairing/approve с bundle: аккаунтный приватник, завёрнутый
+# crypto_box(eph_phone → eph_desktop). Десктоп забирает результат по
+# GET /pairing/{pid}/status — РОВНО один раз, после чего токен и bundle
+# затираются. Пароль пользователя в протоколе не участвует.
+
+PAIRING_TTL_SECONDS = 120
+
+
+def _hash_pairing_secret(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+class PairingStartRequest(BaseModel):
+    eph_pub_b64: str = Field(min_length=32, max_length=128)
+
+
+class PairingApproveRequest(BaseModel):
+    pairing_id: str = Field(min_length=8, max_length=64)
+    pairing_secret: str = Field(min_length=16, max_length=128)
+    encrypted_bundle_b64: str = Field(min_length=1, max_length=200_000)
+    platform: str = Field(default="desktop", min_length=2, max_length=16, pattern=r"^[a-z0-9]+$")
+
+
+@app.post("/pairing/start")
+@limiter.limit("10/minute")
+def pairing_start(body: PairingStartRequest, request: Request) -> dict:
+    """Новое устройство просит пару (pairing_id, secret) для QR. Без auth —
+    аккаунта у него ещё нет. В БД хранится только хэш секрета."""
+    now = datetime.now(timezone.utc)
+    pairing_id = str(uuid.uuid4())
+    pairing_secret = secrets.token_urlsafe(32)
+    with db_conn() as cur:
+        # Чистка истёкших записей — дёшево делать здесь, отдельный воркер не нужен.
+        cur.execute("DELETE FROM pairings WHERE expires_at < %s", (now.isoformat(),))
+        cur.execute(
+            """INSERT INTO pairings
+               (pairing_id, secret_hash, eph_pub_b64, status, created_at, expires_at)
+               VALUES (%s, %s, %s, 'pending', %s, %s)""",
+            (pairing_id, _hash_pairing_secret(pairing_secret), body.eph_pub_b64,
+             now.isoformat(), (now + timedelta(seconds=PAIRING_TTL_SECONDS)).isoformat()),
+        )
+    return {"pairing_id": pairing_id, "pairing_secret": pairing_secret,
+            "expires_in": PAIRING_TTL_SECONDS}
+
+
+def _load_pairing(cur, pairing_id: str, pairing_secret: str) -> dict:
+    """Достаёт запись, сверяя секрет constant-time; истёкший pending гасит."""
+    cur.execute("SELECT * FROM pairings WHERE pairing_id = %s", (pairing_id,))
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "pairing_not_found")
+    if not hmac.compare_digest(row["secret_hash"], _hash_pairing_secret(pairing_secret)):
+        raise HTTPException(403, "pairing_secret_invalid")
+    result = dict(row)
+    if result["status"] == "pending":
+        try:
+            expired = datetime.now(timezone.utc) > datetime.fromisoformat(result["expires_at"])
+        except (ValueError, TypeError):
+            expired = True
+        if expired:
+            cur.execute("UPDATE pairings SET status = 'expired', session_token = NULL, "
+                        "encrypted_bundle_b64 = NULL WHERE pairing_id = %s", (pairing_id,))
+            result["status"] = "expired"
+    return result
+
+
+@app.post("/pairing/approve")
+@limiter.limit("10/minute")
+async def pairing_approve(body: PairingApproveRequest, request: Request,
+                          current_user: str = Depends(get_current_user)) -> dict:
+    """Телефон подтверждает вход: сервер сам выдаёт new_device_id и создаёт
+    сессию для нового устройства. Подтверждение с доверенного устройства
+    заменяет TOTP. Bundle для сервера — непрозрачный шифртекст."""
+    now = _utc_now()
+    user = current_user.lower()
+    with db_conn() as cur:
+        row = _load_pairing(cur, body.pairing_id, body.pairing_secret)
+        if row["status"] == "expired":
+            raise HTTPException(410, "pairing_expired")
+        if row["status"] != "pending":
+            # Одноразовость: повторный approve того же QR невозможен.
+            raise HTTPException(409, "pairing_already_used")
+        new_device_id = f"{body.platform}-{secrets.token_hex(4)}"
+        token = secrets.token_hex(32)
+        cur.execute(
+            """INSERT INTO sessions (token, user_id, created_at, expires_at, device_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (token, user, now, _session_expires(), new_device_id),
+        )
+        cur.execute(
+            """UPDATE pairings SET status = 'approved', user_id = %s, new_device_id = %s,
+               session_token = %s, encrypted_bundle_b64 = %s WHERE pairing_id = %s""",
+            (user, new_device_id, token, body.encrypted_bundle_b64, body.pairing_id),
+        )
+    # Плашка «Выполнен вход с нового устройства» на остальных устройствах.
+    await manager.send_personal_message(
+        {"type": "device_added", "device_id": new_device_id, "platform": body.platform},
+        user,
+    )
+    return {"ok": True, "device_id": new_device_id}
+
+
+@app.get("/pairing/{pairing_id}/status")
+@limiter.limit("120/minute")
+async def pairing_status(pairing_id: str, request: Request, sec: str = "") -> dict:
+    """Long-poll нового устройства (до 25 с). approved отдаётся РОВНО один раз:
+    токен и bundle затираются сразу (status='claimed')."""
+    deadline = time.monotonic() + 25
+    while True:
+        with db_conn() as cur:
+            row = _load_pairing(cur, pairing_id, sec)
+            status = row["status"]
+            if status == "approved":
+                payload = {
+                    "status": "approved",
+                    "user_id": row["user_id"],
+                    "device_id": row["new_device_id"],
+                    "session_token": row["session_token"],
+                    "encrypted_bundle_b64": row["encrypted_bundle_b64"],
+                }
+                cur.execute(
+                    """UPDATE pairings SET status = 'claimed', session_token = NULL,
+                       encrypted_bundle_b64 = NULL WHERE pairing_id = %s""",
+                    (pairing_id,),
+                )
+                return payload
+        if status in ("expired", "claimed"):
+            return {"status": status}
+        if time.monotonic() >= deadline:
+            return {"status": status}
+        await asyncio.sleep(1.0)
 
 
 # --- 2FA (TOTP) ---
