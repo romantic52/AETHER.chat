@@ -89,10 +89,12 @@ box-ключей, темы, RU/EN.
 
 ## 7. Известные недостатки (бэклог)
 
-- ~~SEC HIGH-2~~ **ЗАКРЫТ (P7):** prekey-бандлы подписаны Ed25519 (канон
-  `AETHER-IDKEY-1`/`AETHER-OTK-1`), TOFU-пин olm-identity в ядре (`olm_pins`),
-  анти-даунгрейд на сервере. См. `P7_SIGNED_PREKEYS_DESIGN.md`. Осталось:
-  перевести экран сверки (KeyVerificationView) с box-ключей на olm + QR.
+- ~~SEC HIGH-2~~ **ЗАКРЫТ (P7+P8):** prekey-бандлы подписаны Ed25519 (каноны
+  `AETHER-IDKEY-1`/`AETHER-OTK-1`), TOFU-пин olm-identity (`olm_pins`), а устройства
+  подписаны мастер-ключом аккаунта (`AETHER-DEVSIG-1`, мастер выводится из приватного
+  ключа аккаунта; пиры пинят мастер в `master_pins`) — сервер не может подсадить пиру
+  фантомное устройство. Сверка отпечатков переведена на мастер (`AetherSafety#2`).
+  См. `P7_SIGNED_PREKEYS_DESIGN.md`. Осталось: QR-сверка.
 - **SEC MED-3:** claim без rate-limit → исчерпание чужих OTK (DoS). Нужен fallback-key +
   лимит. (vodozemac умеет `generate_fallback_key`.)
 - **SEC MED-4:** одна Olm-сессия на пира, входящий prekey её затирает → форс-сброс.

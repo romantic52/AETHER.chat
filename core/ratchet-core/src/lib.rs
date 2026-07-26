@@ -12,6 +12,10 @@ pub type Result<T> = std::result::Result<T, String>;
 /// Версионные префиксы канона подписей prekey-бандла. Менять только с bump'ом версии.
 pub const IDENTITY_SIG_VERSION: &str = "AETHER-IDKEY-1";
 pub const OTK_SIG_VERSION: &str = "AETHER-OTK-1";
+/// Канон подписи записи устройства мастер-ключом аккаунта (cross-signing, P8).
+pub const DEVICE_SIG_VERSION: &str = "AETHER-DEVSIG-1";
+/// Домен вывода мастер-ключа из приватного ключа аккаунта.
+const MASTER_DERIVE_DOMAIN: &str = "AETHER-MASTER-1";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Publish {
@@ -226,6 +230,92 @@ pub fn verify_prekey_bundle(
     )
 }
 
+// ---- Мастер-ключ аккаунта: cross-signing устройств (P8) ----
+//
+// Подписи prekey-бандла (выше) доказывают лишь самосогласованность записи: их
+// проверяет тот же ed25519, что лежит в самой записи. Поэтому сервер мог добавить
+// пиру ФАНТОМНОЕ устройство с самоподписанным бандлом — для нового device_id TOFU
+// всегда даёт «первый контакт», и отправитель молча слал бы копию серверу.
+//
+// Мастер-ключ выводится из приватного ключа аккаунта (он уже есть на каждом
+// устройстве после логина: восстанавливается из encrypted_private_key_b64), поэтому
+// не требует нового хранилища и работает для существующих аккаунтов. Пиры пинят
+// МАСТЕР — добавление устройства владельцем проверяется подписью, а не доверием.
+
+fn master_signing_key(account_secret_b64: &str) -> Result<ed25519_dalek::SigningKey> {
+    use sha2::{Digest, Sha512};
+    let secret = decode_b64(account_secret_b64)?;
+    if secret.len() != 32 {
+        return Err(err("мастер-ключ: приватный ключ аккаунта должен быть 32 байта"));
+    }
+    let mut hasher = Sha512::new();
+    hasher.update(MASTER_DERIVE_DOMAIN.as_bytes());
+    hasher.update(b"|");
+    hasher.update(&secret);
+    let digest = hasher.finalize();
+    let mut seed = [0u8; 32];
+    seed.copy_from_slice(&digest[..32]);
+    Ok(ed25519_dalek::SigningKey::from_bytes(&seed))
+}
+
+fn device_canon(user_id: &str, device_id: &str, curve_b64: &str, ed_b64: &str) -> String {
+    format!(
+        "{DEVICE_SIG_VERSION}|{}|{}|{}|{}",
+        user_id.to_lowercase(),
+        device_id,
+        curve_b64,
+        ed_b64
+    )
+}
+
+/// Публичный мастер-ключ аккаунта (его пинят собеседники).
+pub fn master_public(account_secret_b64: &str) -> Result<String> {
+    let key = master_signing_key(account_secret_b64)?;
+    Ok(URL_SAFE_NO_PAD.encode(key.verifying_key().to_bytes()))
+}
+
+/// Подписать запись своего устройства мастер-ключом аккаунта.
+pub fn sign_device(
+    account_secret_b64: &str,
+    user_id: &str,
+    device_id: &str,
+    curve_b64: &str,
+    ed_b64: &str,
+) -> Result<String> {
+    use ed25519_dalek::ed25519::signature::Signer as _;
+    let key = master_signing_key(account_secret_b64)?;
+    let sig = key.sign(device_canon(user_id, device_id, curve_b64, ed_b64).as_bytes());
+    Ok(URL_SAFE_NO_PAD.encode(sig.to_bytes()))
+}
+
+/// Проверить, что устройство пира действительно принадлежит его аккаунту.
+pub fn verify_device(
+    master_key_b64: &str,
+    user_id: &str,
+    device_id: &str,
+    curve_b64: &str,
+    ed_b64: &str,
+    device_sig_b64: &str,
+) -> Result<()> {
+    use ed25519_dalek::Verifier as _;
+    let master_bytes: [u8; 32] = decode_b64(master_key_b64)?
+        .try_into()
+        .map_err(|_| err("мастер-ключ: ожидалось 32 байта"))?;
+    let sig_bytes: [u8; 64] = decode_b64(device_sig_b64)?
+        .try_into()
+        .map_err(|_| err("подпись устройства: ожидалось 64 байта"))?;
+    let master = ed25519_dalek::VerifyingKey::from_bytes(&master_bytes).map_err(err)?;
+    master
+        .verify(
+            device_canon(user_id, device_id, curve_b64, ed_b64).as_bytes(),
+            &ed25519_dalek::Signature::from_bytes(&sig_bytes),
+        )
+        .map_err(|_| {
+            "olm: устройство не подписано мастер-ключом аккаунта — возможна подсадка устройства сервером"
+                .to_owned()
+        })
+}
+
 pub fn create_outbound(
     account_pickle: &str,
     their_identity_b64: &str,
@@ -287,6 +377,55 @@ pub fn decrypt(session_pickle: &str, message_type: u32, body_b64: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn master_cross_signing_binds_devices_to_account() {
+        // Приватник аккаунта (в проде — тот же box-ключ, что уже есть на устройствах).
+        let bob_secret = URL_SAFE_NO_PAD.encode([7u8; 32]);
+        let mallory_secret = URL_SAFE_NO_PAD.encode([9u8; 32]);
+        let master = master_public(&bob_secret).unwrap();
+        assert_eq!(master_public(&bob_secret).unwrap(), master, "вывод детерминирован");
+        assert_ne!(master_public(&mallory_secret).unwrap(), master);
+
+        let device = account_generate_otks_signed(&account_new().unwrap(), 1, "Bob", "ios-1").unwrap();
+        let sig = sign_device(&bob_secret, "Bob", "ios-1", &device.identity_key_b64,
+                              &device.ed25519_key_b64).unwrap();
+        // Честное устройство проходит; user_id регистронезависим.
+        verify_device(&master, "bob", "ios-1", &device.identity_key_b64,
+                      &device.ed25519_key_b64, &sig).unwrap();
+
+        // Ключевой сценарий: сервер подсаживает своё устройство с полностью
+        // самосогласованным (самоподписанным) бандлом — мастер его не подтверждает.
+        let evil = account_generate_otks_signed(&account_new().unwrap(), 1, "bob", "evil-1").unwrap();
+        let evil_self_sig = sign_device(&mallory_secret, "bob", "evil-1", &evil.identity_key_b64,
+                                        &evil.ed25519_key_b64).unwrap();
+        assert!(verify_prekey_bundle_ok(&evil), "бандл самосогласован (в этом и была дыра)");
+        assert!(verify_device(&master, "bob", "evil-1", &evil.identity_key_b64,
+                              &evil.ed25519_key_b64, &evil_self_sig).is_err());
+
+        // Подмена любого поля канона ловится.
+        assert!(verify_device(&master, "bob", "ios-2", &device.identity_key_b64,
+                              &device.ed25519_key_b64, &sig).is_err());
+        assert!(verify_device(&master, "alice", "ios-1", &device.identity_key_b64,
+                              &device.ed25519_key_b64, &sig).is_err());
+        assert!(verify_device(&master, "bob", "ios-1", &evil.identity_key_b64,
+                              &device.ed25519_key_b64, &sig).is_err());
+        assert!(verify_device(&master, "bob", "ios-1", &device.identity_key_b64,
+                              &evil.ed25519_key_b64, &sig).is_err());
+    }
+
+    /// Самосогласованность бандла (то, что проверяет P7) — вспомогательное для теста выше.
+    fn verify_prekey_bundle_ok(publish: &PublishSigned) -> bool {
+        let otks: serde_json::Value = serde_json::from_str(&publish.one_time_keys_json).unwrap();
+        let sigs: serde_json::Value = serde_json::from_str(&publish.otk_signatures_json).unwrap();
+        let (id, key) = otks.as_object().unwrap().iter().next().unwrap();
+        verify_prekey_bundle(
+            "bob", if publish.one_time_keys_json.is_empty() { "" } else { "evil-1" },
+            &publish.identity_key_b64, &publish.ed25519_key_b64, &publish.identity_sig_b64,
+            id, key.as_str().unwrap(), sigs[id].as_str().unwrap(),
+        )
+        .is_ok()
+    }
 
     #[test]
     fn signed_prekeys_verify_and_catch_substitution() {

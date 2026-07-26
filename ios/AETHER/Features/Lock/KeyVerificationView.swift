@@ -17,6 +17,10 @@ struct KeyVerificationView: View {
     @State private var myKey = ""
     @State private var loading = true
     @State private var confirmMismatch = false
+    // P8: сверяем МАСТЕР-ключи аккаунтов — именно ими подписаны все устройства,
+    // а значит и Double Ratchet. Box-ключи остаются фолбэком для необновлённых пиров.
+    @State private var masterPin: MasterPin?
+    @State private var myMaster = ""
 
     // 64 «словарных» эмодзи — легко назвать вслух по телефону.
     private static let emojiTable: [String] = [
@@ -26,10 +30,22 @@ struct KeyVerificationView: View {
         "🦍","🐘","🦏","🐪","🦒","🐃","🐂","🐄","🐎","🐖","🐏","🐑","🐐","🦌","🐕","🐈",
     ]
 
+    /// Сверяем мастер-ключи, если они есть у обеих сторон: подтверждённый мастер
+    /// аутентифицирует ВСЕ устройства пира (cross-signing), тогда как box-ключ
+    /// к Double Ratchet отношения не имеет. Версия канона входит в хеш.
+    private var usingMaster: Bool { masterPin != nil && !myMaster.isEmpty }
+
+    private var isVerified: Bool {
+        usingMaster ? (masterPin?.verified ?? false) : (pin?.verified ?? false)
+    }
+
     private var fingerprint: (emoji: [String], code: String)? {
-        guard let peerKey = pin?.publicKeyB64, !myKey.isEmpty else { return nil }
+        let version = usingMaster ? "AetherSafety#2" : "AetherSafety#1"
+        let mine = usingMaster ? myMaster : myKey
+        let theirs = usingMaster ? (masterPin?.masterKeyB64 ?? "") : (pin?.publicKeyB64 ?? "")
+        guard !mine.isEmpty, !theirs.isEmpty else { return nil }
         // Симметрия: сортируем ключи, чтобы отпечаток совпадал у обеих сторон.
-        let combined = [myKey, peerKey].sorted().joined(separator: "|")
+        let combined = ([mine, theirs].sorted() + [version]).joined(separator: "|")
         let hash = SHA256.hash(data: Data(combined.utf8))
         let bytes = Array(hash)
         let emoji = bytes.prefix(12).map { Self.emojiTable[Int($0) % Self.emojiTable.count] }
@@ -88,12 +104,16 @@ struct KeyVerificationView: View {
                             .padding(30)
                     }
 
-                    if pin != nil {
+                    if pin != nil || masterPin != nil {
                         VStack(spacing: 10) {
-                            if !(pin?.verified ?? false) {
+                            if !isVerified {
                                 Button {
                                     Task {
-                                        try? await session.core.setKeyVerified(peerId, true)
+                                        if usingMaster {
+                                            try? await session.core.setMasterVerified(peerId, true)
+                                        } else {
+                                            try? await session.core.setKeyVerified(peerId, true)
+                                        }
                                         await reload()
                                         UINotificationFeedbackGenerator().notificationOccurred(.success)
                                     }
@@ -109,7 +129,11 @@ struct KeyVerificationView: View {
                             } else {
                                 Button {
                                     Task {
-                                        try? await session.core.setKeyVerified(peerId, false)
+                                        if usingMaster {
+                                            try? await session.core.setMasterVerified(peerId, false)
+                                        } else {
+                                            try? await session.core.setKeyVerified(peerId, false)
+                                        }
                                         await reload()
                                     }
                                 } label: {
@@ -157,19 +181,23 @@ struct KeyVerificationView: View {
         loading = true
         pin = try? await session.core.keyPin(peerId)
         myKey = await session.core.myPublicKeyB64()
+        masterPin = await session.core.masterPin(peerId)
+        myMaster = await session.core.myMasterKeyB64() ?? ""
         loading = false
     }
 
+    private var hasAnyPin: Bool { pin != nil || masterPin != nil }
+
     private var statusIcon: String {
-        guard let pin else { return "questionmark.circle" }
-        return pin.verified ? "checkmark.shield.fill" : "shield.lefthalf.filled"
+        guard hasAnyPin else { return "questionmark.circle" }
+        return isVerified ? "checkmark.shield.fill" : "shield.lefthalf.filled"
     }
     private var statusColor: Color {
-        guard let pin else { return palette.textSecondary }
-        return pin.verified ? palette.readTick : palette.accent
+        guard hasAnyPin else { return palette.textSecondary }
+        return isVerified ? palette.readTick : palette.accent
     }
     private var statusTitle: String {
-        guard let pin else { return "Нет данных о ключе" }
-        return pin.verified ? "Ключ подтверждён" : "Ключ не подтверждён"
+        guard hasAnyPin else { return "Нет данных о ключе" }
+        return isVerified ? "Ключ подтверждён" : "Ключ не подтверждён"
     }
 }

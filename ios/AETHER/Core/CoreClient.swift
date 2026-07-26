@@ -367,12 +367,21 @@ actor CoreClient {
                                                              userId: myId, deviceId: device)
             try store.metaSet(key: "olm_account", value: published.accountPickle)
             myOlmIdentity = published.identityKeyB64
+            // Cross-signing (P8): устройство подписывается мастер-ключом аккаунта,
+            // выведенным из приватного ключа — он есть на каждом устройстве после логина.
+            let masterKey = try olmMasterPublic(accountSecretB64: myPrivateKey)
+            let deviceSig = try olmSignDevice(accountSecretB64: myPrivateKey, userId: myId,
+                                              deviceId: device,
+                                              identityKeyB64: published.identityKeyB64,
+                                              ed25519KeyB64: published.ed25519KeyB64)
             try api.uploadKeysDeviceSigned(identityKeyB64: published.identityKeyB64,
                                            ed25519KeyB64: published.ed25519KeyB64,
                                            identitySigB64: published.identitySigB64,
                                            oneTimeKeysJson: published.oneTimeKeysJson,
                                            otkSignaturesJson: published.otkSignaturesJson,
-                                           deviceId: device)
+                                           deviceId: device,
+                                           masterKeyB64: masterKey,
+                                           deviceSigB64: deviceSig)
             try store.metaSet(key: "olm_signed_v1", value: "1")
             deviceCache.removeAll()
         } catch {
@@ -387,6 +396,8 @@ actor CoreClient {
     private var pendingKeyChanges: [String: PrekeyBundle] = [:]
     /// То же для входящих: в конверте только curve-identity, бандла нет.
     private var pendingInboundKeys: [String: String] = [:]
+    /// Непринятая смена МАСТЕР-ключа аккаунта пира (P8): peerId → новый мастер.
+    private var pendingMasterChanges: [String: String] = [:]
 
     private func nowTs() -> Int64 { Int64(Date().timeIntervalSince1970 * 1000) }
 
@@ -424,11 +435,42 @@ actor CoreClient {
         return ed
     }
 
-    /// Гейт исходящих: верификация подписи бандла + TOFU-пин olm-identity.
+    /// Cross-signing (P8): устройство должно быть подписано мастер-ключом аккаунта
+    /// пира, а сам мастер — совпасть с запиненным. Подписи бандла (P7) доказывают
+    /// лишь самосогласованность записи, поэтому без этой проверки сервер мог бы
+    /// подсадить пиру фантомное устройство и получать копию каждого сообщения.
+    private func verifyDeviceOwnership(peer: String, deviceId: String, curve: String,
+                                       ed: String?, master: String?, deviceSig: String?) throws {
+        let pinnedMaster = ((try? store.masterPinGet(peerId: peer)) ?? nil)?.masterKeyB64
+        guard let master, let deviceSig, let ed else {
+            // Легаси-устройство без cross-signing. Пока мастер не запинен — терпим
+            // (пир ещё не обновился); после — отказ: подсадка выглядит ровно так.
+            if pinnedMaster != nil {
+                throw KeyTrustAlert(message: "устройство собеседника не подписано его аккаунтом — возможна подсадка устройства сервером")
+            }
+            return
+        }
+        let status = try store.masterPinCheck(peerId: peer, masterKeyB64: master, nowTs: nowTs())
+        if status == .mismatch {
+            pendingMasterChanges[peer] = master
+            throw KeyTrustAlert(message: "мастер-ключ аккаунта собеседника изменился — сверьте цифры безопасности или примите новый ключ")
+        }
+        do {
+            try olmVerifyDevice(masterKeyB64: master, userId: peer, deviceId: deviceId,
+                                identityKeyB64: curve, ed25519KeyB64: ed, deviceSigB64: deviceSig)
+        } catch {
+            throw KeyTrustAlert(message: "подпись устройства не сошлась с мастер-ключом аккаунта — возможна подсадка устройства сервером")
+        }
+    }
+
+    /// Гейт исходящих: cross-signing + верификация подписи бандла + TOFU-пин olm-identity.
     /// Бросает KeyTrustAlert при неверной/неполной подписи, стриппинге и смене ключа —
     /// только эти ошибки роняют отправку целиком (см. sendDirect).
     private func verifyAndPinBundle(peer: String, deviceId: String, bundle: PrekeyBundle) throws {
         let key = sessionKey(peer, deviceId)
+        try verifyDeviceOwnership(peer: peer, deviceId: deviceId, curve: bundle.identityKeyB64,
+                                  ed: bundle.ed25519KeyB64, master: bundle.masterKeyB64,
+                                  deviceSig: bundle.deviceSigB64)
         // В пин уходит только ПРОВЕРЕННЫЙ ed25519: иначе сервер мог бы подсунуть
         // свой ed в неподписанном бандле и намертво поссорить нас с честным пиром.
         let ed = try verifiedEd25519(peer: peer, deviceId: deviceId, bundle: bundle)
@@ -440,10 +482,27 @@ actor CoreClient {
         }
     }
 
+    /// Мой мастер-ключ аккаунта (для отпечатка на экране сверки).
+    func myMasterKeyB64() -> String? {
+        guard !myPrivateKey.isEmpty else { return nil }
+        return try? olmMasterPublic(accountSecretB64: myPrivateKey)
+    }
+
+    /// Запиненный мастер-ключ пира и статус его ручной сверки.
+    func masterPin(_ peerId: String) -> MasterPin? {
+        (try? store.masterPinGet(peerId: peerId.lowercased())) ?? nil
+    }
+
+    func setMasterVerified(_ peerId: String, _ verified: Bool) throws {
+        try store.masterPinSetVerified(peerId: peerId.lowercased(), verified: verified)
+    }
+
     /// Есть ли непринятая смена ключа у пира (для алерта/баннера в чате).
+    /// Смена мастер-ключа приоритетнее: она обесценивает все device-пины пира.
     func pendingKeyChange(for peerId: String) -> String? {
         let id = peerId.lowercased()
         let matches: (String) -> Bool = { $0 == id || $0.hasPrefix("\(id)::") }
+        if pendingMasterChanges[id] != nil { return id }
         return pendingKeyChanges.keys.first(where: matches)
             ?? pendingInboundKeys.keys.first(where: matches)
     }
@@ -455,6 +514,21 @@ actor CoreClient {
     /// перепин curve-ключа; сессию заведёт следующий prekey-конверт (отклонённое
     /// сообщение ретраится поллингом и вскроется само).
     func acceptNewOlmKey(peerKey: String) throws {
+        // Смена мастера обесценивает все device-пины и сессии пира: переустановка
+        // аккаунта либо атака. Принимаем мастер и обнуляем производное доверие —
+        // сессии переустановятся свежим prekey-обменом с проверкой подписи.
+        if let master = pendingMasterChanges[peerKey] {
+            try store.masterPinAccept(peerId: peerKey, masterKeyB64: master, nowTs: nowTs())
+            pendingMasterChanges.removeValue(forKey: peerKey)
+            for dev in (try? peerDevices(peerKey, force: true)) ?? [] {
+                let key = sessionKey(peerKey, dev.deviceId)
+                try? store.olmPinDelete(peerKey: key)
+                try? store.olmSessionDelete(peerId: key)
+                pendingKeyChanges.removeValue(forKey: key)
+                pendingInboundKeys.removeValue(forKey: key)
+            }
+            return
+        }
         if pendingKeyChanges[peerKey] != nil {
             let (peer, device) = splitSessionKey(peerKey)
             let bundle = try api.claimKeysDevice(userId: peer, deviceId: device)
@@ -498,7 +572,8 @@ actor CoreClient {
         var devices = (try? peerDevices(id)) ?? []
         if devices.isEmpty {
             devices = [DeviceInfo(deviceId: "primary", identityKeyB64: "",
-                                  ed25519KeyB64: nil, identitySigB64: nil)]
+                                  ed25519KeyB64: nil, identitySigB64: nil,
+                                  masterKeyB64: nil, deviceSigB64: nil)]
         }
         // Фаза 1 — сессии: claim + верификация подписи бандла + TOFU-пин (SEC HIGH-2)
         // для ВСЕХ устройств до отправки первой копии. Крипто-тревога (смена ключа,
@@ -598,6 +673,24 @@ actor CoreClient {
         // сервером — сообщение отклоняется, тихого перепина нет.
         guard !senderIdentity.isEmpty else {
             throw CoreError.Crypto(msg: "ratchet: конверт без olm_identity")
+        }
+        // Cross-signing (P8): если мастер пира уже запинен, устройство-отправитель
+        // обязано быть в его директории и подписано этим мастером. Иначе сервер
+        // спуфил бы авторство новым device_id (для него TOFU дал бы «первый контакт»).
+        if let pinnedMaster = ((try? store.masterPinGet(peerId: peer)) ?? nil)?.masterKeyB64 {
+            var devices = (try? peerDevices(peer)) ?? []
+            if !devices.contains(where: { $0.deviceId == senderDevice }) {
+                devices = (try? peerDevices(peer, force: true)) ?? devices
+            }
+            guard let dev = devices.first(where: { $0.deviceId == senderDevice }),
+                  dev.identityKeyB64 == senderIdentity,
+                  dev.masterKeyB64 == pinnedMaster,
+                  let ed = dev.ed25519KeyB64, let sig = dev.deviceSigB64,
+                  (try? olmVerifyDevice(masterKeyB64: pinnedMaster, userId: peer,
+                                        deviceId: senderDevice, identityKeyB64: senderIdentity,
+                                        ed25519KeyB64: ed, deviceSigB64: sig)) != nil else {
+                throw CoreError.Crypto(msg: "ratchet: устройство отправителя не подписано его аккаунтом — возможна подсадка устройства сервером")
+            }
         }
         let pinStatus = try store.olmPinCheck(peerKey: key, curve25519B64: senderIdentity,
                                               ed25519B64: nil, nowTs: nowTs())

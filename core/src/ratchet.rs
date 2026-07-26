@@ -138,6 +138,51 @@ pub fn olm_verify_prekey_bundle(
     .map_err(err)
 }
 
+// ---- Cross-signing устройств мастер-ключом аккаунта (P8) ----
+
+#[uniffi::export]
+pub fn olm_master_public(account_secret_b64: String) -> Result<String, CoreError> {
+    aether_ratchet_core::master_public(&account_secret_b64).map_err(err)
+}
+
+#[uniffi::export]
+pub fn olm_sign_device(
+    account_secret_b64: String,
+    user_id: String,
+    device_id: String,
+    identity_key_b64: String,
+    ed25519_key_b64: String,
+) -> Result<String, CoreError> {
+    aether_ratchet_core::sign_device(
+        &account_secret_b64,
+        &user_id,
+        &device_id,
+        &identity_key_b64,
+        &ed25519_key_b64,
+    )
+    .map_err(err)
+}
+
+#[uniffi::export]
+pub fn olm_verify_device(
+    master_key_b64: String,
+    user_id: String,
+    device_id: String,
+    identity_key_b64: String,
+    ed25519_key_b64: String,
+    device_sig_b64: String,
+) -> Result<(), CoreError> {
+    aether_ratchet_core::verify_device(
+        &master_key_b64,
+        &user_id,
+        &device_id,
+        &identity_key_b64,
+        &ed25519_key_b64,
+        &device_sig_b64,
+    )
+    .map_err(err)
+}
+
 #[uniffi::export]
 pub fn olm_create_outbound(
     account_pickle: String,

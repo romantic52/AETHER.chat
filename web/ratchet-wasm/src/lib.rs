@@ -93,6 +93,49 @@ pub fn verify_prekey_bundle(
 }
 
 #[wasm_bindgen]
+pub fn master_public(account_secret_b64: &str) -> Result<String, JsValue> {
+    aether_ratchet_core::master_public(account_secret_b64).map_err(js_err)
+}
+
+#[wasm_bindgen]
+pub fn sign_device(
+    account_secret_b64: &str,
+    user_id: &str,
+    device_id: &str,
+    identity_key_b64: &str,
+    ed25519_key_b64: &str,
+) -> Result<String, JsValue> {
+    aether_ratchet_core::sign_device(
+        account_secret_b64,
+        user_id,
+        device_id,
+        identity_key_b64,
+        ed25519_key_b64,
+    )
+    .map_err(js_err)
+}
+
+#[wasm_bindgen]
+pub fn verify_device(
+    master_key_b64: &str,
+    user_id: &str,
+    device_id: &str,
+    identity_key_b64: &str,
+    ed25519_key_b64: &str,
+    device_sig_b64: &str,
+) -> Result<(), JsValue> {
+    aether_ratchet_core::verify_device(
+        master_key_b64,
+        user_id,
+        device_id,
+        identity_key_b64,
+        ed25519_key_b64,
+        device_sig_b64,
+    )
+    .map_err(js_err)
+}
+
+#[wasm_bindgen]
 pub fn create_outbound(
     account_pickle: &str,
     their_identity_b64: &str,

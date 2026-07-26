@@ -469,6 +469,8 @@ def init_db() -> None:
         # подпись его identity и per-OTK подписи. NULL — легаси до апдейта клиента.
         for table, col in (("crypto_devices", "ed25519_key_b64"),
                            ("crypto_devices", "identity_sig_b64"),
+                           ("crypto_devices", "master_key_b64"),
+                           ("crypto_devices", "device_sig_b64"),
                            ("one_time_keys", "sig_b64")):
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -486,6 +488,10 @@ def init_db() -> None:
                 PRIMARY KEY (user_id, device_id)
             )"""
         )
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_name='signed_devices' AND column_name='cross_signed')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE signed_devices ADD COLUMN cross_signed INTEGER NOT NULL DEFAULT 0")
 
         # Контроль сессий: сессия привязывается к крипто-устройству (клиент
         # сообщает device_id после логина) — чтобы можно было выкинуть
@@ -642,6 +648,9 @@ class UploadKeysRequest(BaseModel):
     identity_sig_b64: Optional[str] = Field(default=None, min_length=16, max_length=256)
     # {key_id: sig_b64}, ключи совпадают с one_time_keys.
     otk_signatures: dict[str, str] = Field(default_factory=dict, max_length=100)
+    # Cross-signing (P8): мастер-ключ аккаунта и его подпись этого устройства.
+    master_key_b64: Optional[str] = Field(default=None, min_length=16, max_length=128)
+    device_sig_b64: Optional[str] = Field(default=None, min_length=16, max_length=256)
 
 
 class UpdateOlmBackupRequest(BaseModel):
@@ -1056,6 +1065,21 @@ def _verify_upload_signatures(user_id: str, body: "UploadKeysRequest") -> None:
             vk.verify(otk_canon.encode(), _decode_b64url(sig, "otk signature"))
         except BadSignatureError:
             raise HTTPException(400, f"one-time key {key_id} signature invalid")
+    # Cross-signing (P8): подпись записи устройства мастер-ключом аккаунта. Именно
+    # она мешает подсадить пиру фантомное устройство с самоподписанным бандлом —
+    # решающая проверка снова у получателя, который пинит мастер-ключ.
+    if body.master_key_b64 or body.device_sig_b64:
+        if not (body.master_key_b64 and body.device_sig_b64):
+            raise HTTPException(400, "Cross-signing requires master_key_b64 and device_sig_b64")
+        _validate_key_b64(body.master_key_b64, "master_key_b64")
+        _validate_sig_b64(body.device_sig_b64, "device_sig_b64")
+        master = VerifyKey(_decode_b64url(body.master_key_b64, "master_key_b64"))
+        dev_canon = (f"AETHER-DEVSIG-1|{user_id.lower()}|{body.device_id}|"
+                     f"{body.identity_key_b64}|{body.ed25519_key_b64}")
+        try:
+            master.verify(dev_canon.encode(), _decode_b64url(body.device_sig_b64, "device_sig_b64"))
+        except BadSignatureError:
+            raise HTTPException(400, "device signature invalid")
 
 
 def _validate_ratchet_envelope(envelope: dict) -> None:
@@ -1093,21 +1117,38 @@ def upload_keys(body: UploadKeysRequest, request: Request,
         _validate_key_b64(body.ed25519_key_b64, "ed25519_key_b64")
         _validate_sig_b64(body.identity_sig_b64, "identity_sig_b64")
         _verify_upload_signatures(current_user, body)
+    cross_signed = body.master_key_b64 is not None
     with db_conn() as cur:
         cur.execute(
-            "SELECT identity_key_b64, ed25519_key_b64 FROM crypto_devices "
+            "SELECT identity_key_b64, ed25519_key_b64, master_key_b64 FROM crypto_devices "
             "WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (current_user, device_id))
         previous = cur.fetchone()
+        cur.execute(
+            "SELECT cross_signed FROM signed_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
+        tombstone = cur.fetchone()
         if not signed:
             # Анти-даунгрейд: раз устройство публиковало подписанные бандлы,
             # неподписанные больше не принимаем (стриппинг подписи невозможен).
-            # Проверяем и надгробие — удаление устройства не сбрасывает требование.
-            cur.execute(
-                "SELECT 1 FROM signed_devices WHERE user_id = LOWER(%s) AND device_id = %s",
-                (current_user, device_id))
-            if (previous and previous.get("ed25519_key_b64")) or cur.fetchone():
+            # Надгробие переживает удаление устройства.
+            if (previous and previous.get("ed25519_key_b64")) or tombstone:
                 raise HTTPException(400, "Signed uploads required for this device")
+        if not cross_signed and ((previous and previous.get("master_key_b64"))
+                                 or (tombstone and tombstone.get("cross_signed"))):
+            raise HTTPException(400, "Cross-signed uploads required for this device")
+        if cross_signed:
+            # Все устройства аккаунта подписаны ОДНИМ мастером (он выводится из
+            # приватного ключа аккаунта). Расхождение — либо баг клиента, либо
+            # попытка развести директорию на два корня доверия.
+            cur.execute(
+                """SELECT master_key_b64 FROM crypto_devices
+                   WHERE user_id = LOWER(%s) AND device_id <> %s AND master_key_b64 IS NOT NULL
+                   LIMIT 1""",
+                (current_user, device_id))
+            other = cur.fetchone()
+            if other and other["master_key_b64"] != body.master_key_b64:
+                raise HTTPException(409, "Master key mismatch with existing devices")
         if previous and (previous["identity_key_b64"] != body.identity_key_b64
                          or (previous.get("ed25519_key_b64") or None) != body.ed25519_key_b64):
             # OTKs are bound to the identity that generated them. A rotated
@@ -1116,19 +1157,25 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                         (current_user, device_id))
         cur.execute(
             """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64,
-                                           ed25519_key_b64, identity_sig_b64, created_at)
-               VALUES (LOWER(%s), %s, %s, %s, %s, %s)
+                                           ed25519_key_b64, identity_sig_b64,
+                                           master_key_b64, device_sig_b64, created_at)
+               VALUES (LOWER(%s), %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (user_id, device_id) DO UPDATE
                SET identity_key_b64 = EXCLUDED.identity_key_b64,
                    ed25519_key_b64 = EXCLUDED.ed25519_key_b64,
-                   identity_sig_b64 = EXCLUDED.identity_sig_b64""",
+                   identity_sig_b64 = EXCLUDED.identity_sig_b64,
+                   master_key_b64 = EXCLUDED.master_key_b64,
+                   device_sig_b64 = EXCLUDED.device_sig_b64""",
             (current_user, device_id, body.identity_key_b64,
-             body.ed25519_key_b64, body.identity_sig_b64, _utc_now()))
+             body.ed25519_key_b64, body.identity_sig_b64,
+             body.master_key_b64, body.device_sig_b64, _utc_now()))
         if signed:
             cur.execute(
-                """INSERT INTO signed_devices (user_id, device_id, first_signed_at)
-                   VALUES (LOWER(%s), %s, %s) ON CONFLICT (user_id, device_id) DO NOTHING""",
-                (current_user, device_id, _utc_now()))
+                """INSERT INTO signed_devices (user_id, device_id, first_signed_at, cross_signed)
+                   VALUES (LOWER(%s), %s, %s, %s)
+                   ON CONFLICT (user_id, device_id) DO UPDATE
+                   SET cross_signed = signed_devices.cross_signed OR EXCLUDED.cross_signed""",
+                (current_user, device_id, _utc_now(), cross_signed))
         if device_id == "primary":
             # Legacy-клиенты и старый claim читают identity из users — держим в синхроне.
             cur.execute("UPDATE users SET olm_identity_key = %s WHERE LOWER(user_id) = LOWER(%s)",
@@ -1216,13 +1263,16 @@ def list_devices(user_id: str, current_user: str = Depends(get_current_user)) ->
     """Все крипто-устройства пользователя: отправитель шифрует копию каждому."""
     with db_conn() as cur:
         cur.execute(
-            "SELECT device_id, identity_key_b64, ed25519_key_b64, identity_sig_b64 "
+            "SELECT device_id, identity_key_b64, ed25519_key_b64, identity_sig_b64, "
+            "       master_key_b64, device_sig_b64 "
             "FROM crypto_devices WHERE user_id = LOWER(%s) ORDER BY created_at",
             (user_id,))
         rows = cur.fetchall()
     return {"devices": [{"device_id": r["device_id"], "identity_key_b64": r["identity_key_b64"],
                          "ed25519_key_b64": r.get("ed25519_key_b64"),
-                         "identity_sig_b64": r.get("identity_sig_b64")} for r in rows]}
+                         "identity_sig_b64": r.get("identity_sig_b64"),
+                         "master_key_b64": r.get("master_key_b64"),
+                         "device_sig_b64": r.get("device_sig_b64")} for r in rows]}
 
 
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
@@ -1237,7 +1287,8 @@ def claim_keys(user_id: str, request: Request, device_id: str = "primary",
         # иначе бандл склеивался бы из двух снапшотов — старый identity + OTK,
         # подписанный уже новым ключом, что у получателя выглядит как атака.
         cur.execute(
-            "SELECT identity_key_b64, ed25519_key_b64, identity_sig_b64 "
+            "SELECT identity_key_b64, ed25519_key_b64, identity_sig_b64, "
+            "       master_key_b64, device_sig_b64 "
             "FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (user_id, device_id))
         row = cur.fetchone()
@@ -1255,6 +1306,8 @@ def claim_keys(user_id: str, request: Request, device_id: str = "primary",
             "identity_key_b64": row["identity_key_b64"],
             "ed25519_key_b64": row.get("ed25519_key_b64"),
             "identity_sig_b64": row.get("identity_sig_b64"),
+            "master_key_b64": row.get("master_key_b64"),
+            "device_sig_b64": row.get("device_sig_b64"),
             "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"],
                              "sig_b64": otk.get("sig_b64")}}
 
