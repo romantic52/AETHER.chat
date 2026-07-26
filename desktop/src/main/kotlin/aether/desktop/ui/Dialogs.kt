@@ -13,10 +13,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.SegmentedButton
+import androidx.compose.material3.SegmentedButtonDefaults
+import androidx.compose.material3.SingleChoiceSegmentedButtonRow
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -32,11 +36,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+/** Вторичная строка в списках чатов: тип по ChatEntity.type (0/1/2/3). */
+private fun chatTypeLabel(type: Int): String = when (type) {
+    1 -> "Группа"
+    2 -> "Канал"
+    3 -> "Избранное"
+    else -> "Личный чат"
+}
 
 /** Пересылка: выбор чата-получателя. */
 @Composable
@@ -47,30 +60,69 @@ fun ForwardDialog(
     onForwarded: (String) -> Unit,
 ) {
     val chats by session.store.getChatList().collectAsState()
+    var query by remember { mutableStateOf("") }
+    val filtered = remember(chats, query) {
+        val q = query.trim()
+        if (q.isEmpty()) chats else chats.filter { it.chat.name.contains(q, ignoreCase = true) }
+    }
     val scope = rememberCoroutineScope()
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (messages.size > 1) "Переслать (${messages.size})" else "Переслать") },
+        title = {
+            Text(
+                if (messages.size > 1) "Переслать (${messages.size})" else "Переслать",
+                style = MaterialTheme.typography.titleLarge,
+            )
+        },
         text = {
-            LazyColumn(modifier = Modifier.heightIn(max = 400.dp)) {
-                items(chats, key = { it.chat.peerId }) { entry ->
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .clickable {
-                                scope.launch {
-                                    // Порядок сохраняем: пересылка пачкой должна
-                                    // лечь в чат в том же виде, что и в исходном.
-                                    messages.forEach { session.repository.enqueueForward(entry.chat.peerId, it) }
-                                    onForwarded(entry.chat.peerId)
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Поиск") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(20.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                // Фиксированный диапазон высоты: при фильтрации диалог не прыгает.
+                LazyColumn(modifier = Modifier.fillMaxWidth().heightIn(min = 300.dp, max = 400.dp)) {
+                    items(filtered, key = { it.chat.peerId }) { entry ->
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    scope.launch {
+                                        // Порядок сохраняем: пересылка пачкой должна
+                                        // лечь в чат в том же виде, что и в исходном.
+                                        messages.forEach { session.repository.enqueueForward(entry.chat.peerId, it) }
+                                        onForwarded(entry.chat.peerId)
+                                    }
                                 }
+                                .padding(vertical = 6.dp),
+                        ) {
+                            PeerAvatar(session, entry.chat.peerId, entry.chat.name, entry.chat.avatarFileId, size = 40.dp)
+                            Column {
+                                Text(entry.chat.name, style = MaterialTheme.typography.bodyLarge)
+                                Text(
+                                    chatTypeLabel(entry.chat.type),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
                             }
-                            .padding(vertical = 6.dp),
-                    ) {
-                        PeerAvatar(session, entry.chat.peerId, entry.chat.name, entry.chat.avatarFileId, size = 36.dp)
-                        Text(entry.chat.name, style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                    if (filtered.isEmpty()) {
+                        item(key = "empty") {
+                            Text(
+                                "Ничего не найдено",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.fillMaxWidth().padding(vertical = 24.dp),
+                            )
+                        }
                     }
                 }
             }
@@ -81,6 +133,10 @@ fun ForwardDialog(
         },
     )
 }
+
+// Сервер длину названия не проверяет, поэтому предел держим на клиенте:
+// длиннее 64 символов всё равно не помещается в списке чатов и шапке.
+private const val GROUP_NAME_LIMIT = 64
 
 /** Создание группы/канала с E2E-ключом (порт CreateGroupScreen). */
 @Composable
@@ -179,14 +235,49 @@ fun CreateGroupDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(if (isChannel) "Новый канал" else "Новая группа") },
+        title = {
+            Text(
+                if (isChannel) "Новый канал" else "Новая группа",
+                style = MaterialTheme.typography.titleLarge,
+            )
+        },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
+                    SegmentedButton(
+                        selected = !isChannel,
+                        onClick = { isChannel = false },
+                        shape = SegmentedButtonDefaults.itemShape(index = 0, count = 2),
+                    ) { Text("Группа") }
+                    SegmentedButton(
+                        selected = isChannel,
+                        onClick = { isChannel = true },
+                        shape = SegmentedButtonDefaults.itemShape(index = 1, count = 2),
+                    ) { Text("Канал") }
+                }
+                Text(
+                    if (isChannel) {
+                        "Писать в канал могут только администраторы. Публичное @имя назначается " +
+                            "позже в настройках: по нему канал находят в поиске и подписываются сами."
+                    } else {
+                        "Писать могут все участники. Публичное @имя назначается позже в настройках: " +
+                            "по нему группу находят в поиске и вступают без приглашения."
+                    },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
                 OutlinedTextField(
                     value = name,
-                    onValueChange = { name = it },
+                    onValueChange = { name = it.take(GROUP_NAME_LIMIT) },
                     label = { Text("Название") },
                     singleLine = true,
+                    supportingText = {
+                        Text(
+                            "${name.length} / $GROUP_NAME_LIMIT",
+                            textAlign = TextAlign.End,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
                 OutlinedTextField(
@@ -195,10 +286,6 @@ fun CreateGroupDialog(
                     label = { Text("Описание") },
                     modifier = Modifier.fillMaxWidth(),
                 )
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("Канал", modifier = Modifier.weight(1f))
-                    Switch(checked = isChannel, onCheckedChange = { isChannel = it })
-                }
                 if (isChannel) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Text("Группа обсуждений", modifier = Modifier.weight(1f))
@@ -285,17 +372,28 @@ fun SafetyNumbersDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Цифры безопасности") },
+        title = { Text("Цифры безопасности", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
                     "Сравните цифры с собеседником по другому каналу. Совпадают — шифрование не подменено.",
                     style = MaterialTheme.typography.bodySmall,
                 )
+                // safetyNumber отдаёт группы по 5 через пробел, а в состоянии может
+                // лежать «…» или текст ошибки — поэтому сначала оставляем одни цифры
+                // и перегруппировываем только настоящее 60-значное число.
+                val rawDigits = digits.filter(Char::isDigit)
+                val formatted = if (rawDigits.length == 60) {
+                    rawDigits.chunked(4).chunked(5).joinToString("\n") { it.joinToString("  ") }
+                } else {
+                    digits
+                }
                 Text(
-                    digits.chunked(24).joinToString("\n"),
+                    formatted,
                     style = MaterialTheme.typography.bodyLarge,
                     fontFamily = FontFamily.Monospace,
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
                 )
                 if (changed) {
                     Text(
@@ -303,13 +401,15 @@ fun SafetyNumbersDialog(
                         color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall,
                     )
-                    TextButton(onClick = {
-                        scope.launch {
-                            runCatching { session.trustStore.acceptServerKey(peerId) }
-                            onDismiss()
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                        TextButton(onClick = {
+                            scope.launch {
+                                runCatching { session.trustStore.acceptServerKey(peerId) }
+                                onDismiss()
+                            }
+                        }) {
+                            Text("Принять новый ключ")
                         }
-                    }) {
-                        Text("Принять новый ключ")
                     }
                 }
             }
@@ -349,9 +449,9 @@ fun ProfileDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Профиль @${session.myId}") },
+        title = { Text("Профиль @${session.myId}", style = MaterialTheme.typography.titleLarge) },
         text = {
-            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 OutlinedTextField(
                     value = displayName,
                     onValueChange = { displayName = it },
