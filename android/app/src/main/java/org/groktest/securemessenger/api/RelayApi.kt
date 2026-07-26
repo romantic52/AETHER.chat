@@ -331,6 +331,28 @@ class RelayApi(baseUrl: String) {
         }
     }
 
+    /**
+     * Подтвердить привязку нового устройства по QR. Пароль не участвует:
+     * подтверждение с доверенного устройства заменяет TOTP. Сервер видит
+     * только шифртекст bundle и сам выдаёт device_id новому устройству.
+     */
+    fun approvePairing(
+        pairingId: String,
+        pairingSecret: String,
+        encryptedBundleB64: String,
+        platform: String,
+    ): String {
+        val body = JSONObject()
+            .put("pairing_id", pairingId)
+            .put("pairing_secret", pairingSecret)
+            .put("encrypted_bundle_b64", encryptedBundleB64)
+            .put("platform", platform)
+            .toString()
+            .toRequestBody("application/json".toMediaType())
+        val response = requestJson(authorizedRequest("$base/pairing/approve").post(body).build())
+        return response.optString("device_id")
+    }
+
     fun totpStatus(userId: String): Boolean {
         restoreSession(userId)
         try {

@@ -450,6 +450,7 @@ class MainActivity : FragmentActivity() {
                                 api = apiSafe,
                                 myId = myId,
                                 onBack = { navController.popBackStack() },
+                                onPairDevice = { navController.navigateSingle("pair_device") },
                                 onLoggedOut = {
                                     // Сервер уже отозвал сессию этого устройства («Выйти»
                                     // на экране безопасности) — локально гасим всё, как при logout.
@@ -466,6 +467,25 @@ class MainActivity : FragmentActivity() {
                                         popUpTo(0) { inclusive = true }
                                     }
                                 }
+                            )
+                        }
+                    }
+
+                    composable("pair_device") {
+                        val apiSafe = api
+                        val keysSafe = keys
+                        if (apiSafe == null || keysSafe == null) {
+                            androidx.compose.runtime.LaunchedEffect(Unit) {
+                                navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                            }
+                            return@composable
+                        }
+                        org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
+                            org.groktest.securemessenger.ui.screens.PairDeviceScreen(
+                                api = apiSafe,
+                                myId = myId,
+                                keys = keysSafe,
+                                onBack = { navController.popBackStack() },
                             )
                         }
                     }

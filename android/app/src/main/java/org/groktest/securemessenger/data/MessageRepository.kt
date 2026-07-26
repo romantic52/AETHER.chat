@@ -319,8 +319,11 @@ class MessageRepository(
             return api.sendMessage(myId, peerId, encryptGroupWire(peerId, wire), clientMsgId = clientMsgId)
         }
         val id = peerId.lowercase()
-        val devices = try { peerDevices(id) } catch (_: Exception) { emptyList() }
-            .ifEmpty { listOf(uniffi.sm_core.DeviceInfo("primary", "")) }
+        // Сбой запроса директории НЕ должен молча ужимать fanout до primary:
+        // копия для остальных устройств аккаунта пропала бы навсегда (проверено
+        // вживую: десктоп не получил сообщение). Пробрасываем — outbox повторит
+        // с backoff. Пустой список — легаси-аккаунт без устройств, primary законен.
+        val devices = peerDevices(id).ifEmpty { listOf(uniffi.sm_core.DeviceInfo("primary", "")) }
         var firstId: String? = null
         var firstError: Exception? = null
         for ((index, dev) in devices.withIndex()) {

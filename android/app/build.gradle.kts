@@ -114,4 +114,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-video:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // Сканирование QR привязки устройства (оффлайн-модель в APK)
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
 }

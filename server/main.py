@@ -1351,12 +1351,31 @@ def get_user_profile(user_id: str, current_user: str = Depends(get_current_user)
 
 
 @app.post("/users/me/heartbeat")
-def heartbeat(current_user: str = Depends(get_current_user)) -> dict:
+def heartbeat(authorization: str = Header(None),
+              current_user: str = Depends(get_current_user)) -> dict:
+    """Presence + sliding expiry сессии. Продление не чаще раза в сутки:
+    без него QR-устройство (у которого нет пароля) умирало бы навсегда
+    через SESSION_LIFETIME_DAYS."""
+    now = datetime.now(timezone.utc)
+    token = authorization.split(" ", 1)[1].strip() if authorization else ""
     with db_conn() as cur:
         cur.execute(
             "UPDATE users SET last_active = %s WHERE LOWER(user_id) = LOWER(%s)",
-            (_utc_now(), current_user)
+            (now.isoformat(), current_user)
         )
+        if token:
+            cur.execute("SELECT expires_at FROM sessions WHERE token = %s", (token,))
+            row = cur.fetchone()
+            renew = True
+            if row and row["expires_at"]:
+                try:
+                    remaining = datetime.fromisoformat(row["expires_at"]) - now
+                    renew = remaining < timedelta(days=SESSION_LIFETIME_DAYS - 1)
+                except (ValueError, TypeError):
+                    renew = True
+            if renew:
+                cur.execute("UPDATE sessions SET expires_at = %s WHERE token = %s",
+                            (_session_expires(), token))
     return {"ok": True}
 
 

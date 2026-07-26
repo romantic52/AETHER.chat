@@ -44,6 +44,8 @@ fun LoginScreen(
     var isRegister by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var busy by remember { mutableStateOf(false) }
+    // QR — дефолт (как в Telegram); пароль остаётся как fallback.
+    var qrMode by remember { mutableStateOf(true) }
     val scope = rememberCoroutineScope()
 
     fun submit() {
@@ -81,13 +83,17 @@ fun LoginScreen(
 
     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
         Column(
-            modifier = Modifier.width(360.dp).padding(24.dp),
+            modifier = Modifier.width(if (qrMode) 420.dp else 360.dp).padding(24.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             Text("Æther", style = MaterialTheme.typography.headlineLarge)
             Text(
-                if (isRegister) "Создание аккаунта" else "Вход",
+                when {
+                    qrMode -> "Вход по QR-коду"
+                    isRegister -> "Создание аккаунта"
+                    else -> "Вход"
+                },
                 style = MaterialTheme.typography.titleMedium,
                 color = MaterialTheme.colorScheme.secondary,
             )
@@ -98,6 +104,13 @@ fun LoginScreen(
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
             )
+            if (qrMode) {
+                QrLoginPane(auth = auth, server = server, onSuccess = onSuccess)
+                TextButton(onClick = { qrMode = false; error = null }) {
+                    Text("Войти по паролю")
+                }
+                return@Column
+            }
             OutlinedTextField(
                 value = username,
                 onValueChange = { username = it },
@@ -147,6 +160,9 @@ fun LoginScreen(
                 error = null
             }) {
                 Text(if (isRegister) "У меня уже есть аккаунт" else "Создать новый аккаунт")
+            }
+            TextButton(onClick = { qrMode = true; error = null }) {
+                Text("Войти по QR-коду")
             }
         }
     }

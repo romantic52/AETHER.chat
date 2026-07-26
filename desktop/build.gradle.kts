@@ -22,6 +22,8 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-swing:1.9.0")
     implementation("org.json:json:20240303")
+    // Рендер QR-кода привязки (кодирование, оффлайн).
+    implementation("com.google.zxing:core:3.5.3")
 }
 
 kotlin {
@@ -39,6 +41,13 @@ tasks.register<JavaExec>("smoke") {
 tasks.register<JavaExec>("msgsmoke") {
     group = "verification"
     mainClass.set("aether.desktop.DevMsgSmokeKt")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
+// Десктопная сторона QR-привязки без UI (DevPairSmoke.kt): .\gradlew.bat pairsmoke --args="<qr.png>"
+tasks.register<JavaExec>("pairsmoke") {
+    group = "verification"
+    mainClass.set("aether.desktop.DevPairSmokeKt")
     classpath = sourceSets["main"].runtimeClasspath
 }
 

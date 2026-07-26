@@ -11,6 +11,7 @@ import androidx.compose.material.icons.filled.Android
 import androidx.compose.material.icons.filled.DeleteForever
 import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.PhoneIphone
+import androidx.compose.material.icons.filled.QrCodeScanner
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Smartphone
 import androidx.compose.material3.*
@@ -48,6 +49,7 @@ fun SecurityScreen(
     api: RelayApi,
     myId: String,
     onBack: () -> Unit,
+    onPairDevice: () -> Unit,
     onLoggedOut: () -> Unit,
 ) {
     val scope = rememberCoroutineScope()
@@ -90,6 +92,12 @@ fun SecurityScreen(
                 Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
 
                 AetherSectionTitle("Устройства и сессии")
+                AetherSettingsRow(
+                    title = "Подключить устройство",
+                    subtitle = "Отсканируйте QR на экране компьютера",
+                    icon = { Icon(Icons.Default.QrCodeScanner, contentDescription = null) },
+                    onClick = onPairDevice,
+                )
                 val current = info
                 if (loading && current == null) {
                     Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {

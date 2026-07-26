@@ -35,6 +35,8 @@ class AetherService : Service() {
         var chatLookup: ((String) -> org.groktest.securemessenger.data.ChatEntity?)? = null
         // Индикатор «печатает...» от собеседника
         var onTyping: ((String) -> Unit)? = null
+        // Вход с нового устройства (QR-привязка): плашка «Выполнен вход»
+        var onDeviceAdded: ((String, String) -> Unit)? = null
         // Приложение на переднем плане — тогда системные уведомления не нужны
         var appInForeground = false
 
@@ -109,6 +111,7 @@ class AetherService : Service() {
                 when (type) {
                     "new_message" -> handleNewMessage(senderId)
                     "typing" -> onTyping?.invoke(senderId)
+                    "device_added" -> handleDeviceAdded(event)
                     "webrtc_offer", "webrtc_answer", "webrtc_ice",
                     "webrtc_hangup", "webrtc_busy" -> handleWebRtcEvent(type, event)
                 }
@@ -150,6 +153,25 @@ class AetherService : Service() {
                 ?: "Aether",
             text = "Новое сообщение",
             peerId = senderId,
+        )
+    }
+
+    /** Вход с нового устройства: плашка в приложении + системное уведомление. */
+    private fun handleDeviceAdded(event: JSONObject) {
+        val deviceId = event.optString("device_id")
+        val platform = event.optString("platform").ifBlank { "устройство" }
+        android.util.Log.i("AetherService", "device_added $deviceId ($platform)")
+        onDeviceAdded?.invoke(deviceId, platform)
+        val readable = when {
+            platform.startsWith("desktop") -> "компьютера"
+            platform.startsWith("ios") -> "iPhone"
+            platform.startsWith("android") -> "Android"
+            else -> platform
+        }
+        showNewMessageNotification(
+            title = "Выполнен вход с нового устройства",
+            text = "Вход с $readable ($deviceId). Если это не вы — откройте «Сессии и безопасность».",
+            peerId = "",
         )
     }
 

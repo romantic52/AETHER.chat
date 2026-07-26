@@ -96,4 +96,35 @@ class AuthRepository(private val prefs: DesktopPrefs) {
         runCatching { account.api.logout() }
         prefs.clearSession()
     }
+
+    /**
+     * Вход по QR: сессию и аккаунтный ключ выдал телефон по E2E-каналу,
+     * пароль не участвовал. device_id назначен сервером — кладём его в
+     * хранилище ядра до первого resolve, чтобы репозиторий не выдумал свой.
+     */
+    suspend fun adoptPairedSession(
+        server: String,
+        userId: String,
+        token: String,
+        deviceId: String,
+        keys: DesktopPrefs.AccountKeys,
+    ): ActiveAccount = withContext(Dispatchers.IO) {
+        val base = ServerConfig.normalizeBaseUrl(server)
+        val user = userId.trim().lowercase()
+        val api = ApiClient(base)
+        api.setSession(token, user)
+        api.heartbeat()
+        prefs.saveKeys(user, keys)
+        prefs.saveSession(DesktopPrefs.Session(base, user, token))
+        val store = uniffi.sm_core.CoreStore.open(
+            prefs.databaseFile(user).also { it.parentFile?.mkdirs() }.absolutePath,
+            prefs.dbKeyB64(),
+        )
+        try {
+            store.metaSet("device_id", deviceId)
+        } finally {
+            store.close()
+        }
+        ActiveAccount(base, user, token, api, keys)
+    }
 }
