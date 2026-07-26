@@ -796,6 +796,7 @@ async function acceptPendingKeyChanges() {
         delete olmSessions[key];
         delete pendingKeyChanges[key];
     }
+    delete peerDevicesCache[peer];   // директория пира устарела вместе с ключами
     await saveRatchetState();
     renderKeyChangeBar();
     showStatus('Новый ключ принят — сообщения синхронизируются', 'success');
@@ -809,13 +810,25 @@ async function acceptPendingKeyChanges() {
 function verifyDeviceOwnership(api, peerId, deviceId, curve, ed, master, deviceSig) {
     const peer = String(peerId).toLowerCase();
     const pinnedMaster = olmMasterPins[peer];
+    // Знание об ЭТОМ устройстве, а не об аккаунте: иначе у пира со смешанным
+    // набором (обновлённый веб + необновлённый телефон) старое устройство
+    // отвергалось бы навсегда, а с ним — и вся переписка.
+    const key = deviceKey(peer, deviceId);
+    const knownDevice = olmIdentityPins[key] !== undefined;
     if (!master || !deviceSig || !ed) {
         // Сервер публикует подписанный бандл только вместе с мастер-подписью,
         // поэтому «ed есть, мастера нет» — это стриппинг полей, а не старый пир.
-        if (pinnedMaster || ed) {
-            throw new Error('Устройство собеседника не подписано его аккаунтом — возможна подсадка устройства или подмена ключей сервером');
+        if (olmEdPins[key] || ed) {
+            throw new Error('Устройство собеседника не подписано его аккаунтом — возможна подмена ключей сервером');
         }
-        return;   // полностью легаси-запись (до P7/P8): TOFU только по curve
+        if (pinnedMaster && !knownDevice) {
+            // Аккаунт уже публикует подписи, а это устройство мы видим впервые и
+            // оно без подписи — форма подсадки. Пропускаем его, не роняя отправку.
+            const error = new Error('Устройство собеседника не подписано его аккаунтом — попросите его обновить приложение');
+            error.skipDevice = true;
+            throw error;
+        }
+        return;   // знакомое легаси-устройство (до P7/P8): TOFU только по curve
     }
     // Сначала доказательство, потом доверие: пин ставится только после того,
     // как мастер действительно подписал ЭТУ запись устройства.
@@ -940,19 +953,20 @@ async function openRatchetEnvelope(peerId, envelope) {
         // (сессия пришла входящим prekey, claim мы не делали), cross-signing не
         // включался бы никогда.
         const peerLower = String(peerId).toLowerCase();
-        const pinnedMaster = olmMasterPins[peerLower];
         let devs = await getPeerDevices(peerId);
         let dev = devs.find(d => d.device_id === senderDevice);
         if (!dev) {
             devs = await getPeerDevices(peerId, true);
             dev = devs.find(d => d.device_id === senderDevice);
         }
-        if (dev && dev.identity_key_b64 === identity) {
-            verifyDeviceOwnership(api, peerLower, senderDevice, identity,
-                                  dev.ed25519_key_b64, dev.master_key_b64, dev.device_sig_b64);
-        } else if (pinnedMaster) {
-            throw new Error('Устройство отправителя отсутствует в директории его аккаунта — возможна подсадка устройства сервером');
+        // Fail-closed: недоступная или «пустая» директория — это и обычный сетевой
+        // сбой (сообщение вернётся следующим поллингом), и способ сервера навсегда
+        // не давать гейту вооружиться. Молча доверять нельзя.
+        if (!dev || dev.identity_key_b64 !== identity) {
+            throw new Error('Устройство отправителя не подтверждено директорией его аккаунта — повторим позже');
         }
+        verifyDeviceOwnership(api, peerLower, senderDevice, identity,
+                              dev.ed25519_key_b64, dev.master_key_b64, dev.device_sig_b64);
         const pinned = olmIdentityPins[key];
         if (pinned && pinned !== identity) {
             // Тревога TOFU: сообщение не вскрываем и не ack'аем, но запоминаем —
@@ -2285,12 +2299,23 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                 // TOFU-пин). Тревога доверия ключам роняет отправку целиком, пока ни
                 // одна копия не ушла — иначе часть копий уже была бы у сервера.
                 const prepared = [];
+                let skipped = null;
                 for (const dev of devices) {
-                    prepared.push({
-                        deviceId: dev.device_id,
-                        envelope: await ratchetEnvelopeForDevice(targetPeer, dev.device_id, wireJson)
-                    });
+                    try {
+                        prepared.push({
+                            deviceId: dev.device_id,
+                            envelope: await ratchetEnvelopeForDevice(targetPeer, dev.device_id, wireJson)
+                        });
+                    } catch (error) {
+                        // Проблема одного устройства (не подписано аккаунтом) —
+                        // остальным доставляем; тревога об аккаунте роняет отправку.
+                        if (!error || !error.skipDevice) throw error;
+                        skipped = error;
+                        console.warn('Пропущено устройство', dev.device_id, error.message);
+                    }
                 }
+                if (!prepared.length) throw skipped || new Error('У получателя нет пригодных устройств');
+                if (skipped) showStatus(skipped.message, 'error');
                 // Фаза 2: доставка копий; сетевой сбой на не-первой копии не роняет отправку.
                 let firstData = null;
                 for (const item of prepared) {
