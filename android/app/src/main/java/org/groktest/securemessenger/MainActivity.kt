@@ -653,8 +653,8 @@ class MainActivity : FragmentActivity() {
                                 onSendFiles = { uris, caption ->
                                     repoSafe.sendFiles(peerId, uris, caption)
                                 },
-                                onSendRecording = { file, mime, kind, durationMs ->
-                                    repoSafe.sendRecording(peerId, file, mime, kind, durationMs)
+                                onSendRecording = { file, mime, kind, durationMs, waveform ->
+                                    repoSafe.sendRecording(peerId, file, mime, kind, durationMs, waveform = waveform)
                                 },
                                 onDownloadMedia = { jsonText ->
                                     repoSafe.downloadMedia(jsonText)

@@ -63,21 +63,38 @@ object VideoUtils {
             val startUs = startMs.coerceAtLeast(0L) * 1000L
             val endUs = lastMs * 1000L
             extractor.seekTo(startUs, MediaExtractor.SEEK_TO_PREVIOUS_SYNC)
-            val baseUs = extractor.sampleTime.coerceAtLeast(0L)
+            // База PTS — самый ранний сэмпл после seek (первый в порядке чтения, обычно
+            // ключевой кадр видео). База ОБЩАЯ для всех треков: независимый ноль на каждый
+            // трек сдвинул бы аудио относительно видео на величину до целого GOP —
+            // MPEG4Writer сохраняет взаимные смещения дорожек, поэтому синхронизацию
+            // держит именно единая точка отсчёта.
+            var baseUs = -1L
+            // Треки, чьи сэмплы уже вышли за endUs: пропускаем их, но цикл не рвём —
+            // иначе из-за интерливинга второй трек обрезался бы раньше первого.
+            val finishedTracks = HashSet<Int>()
             val buffer = ByteBuffer.allocate(2 * 1024 * 1024)
             val info = MediaCodec.BufferInfo()
 
             while (true) {
                 val trackIndex = extractor.sampleTrackIndex
-                if (trackIndex < 0 || extractor.sampleTime > endUs) break
+                if (trackIndex < 0) break // сэмплы кончились во всех треках
+                val sampleTimeUs = extractor.sampleTime
+                if (sampleTimeUs > endUs) {
+                    finishedTracks.add(trackIndex)
+                    // Завершаем, только когда ВСЕ треки прошли endUs.
+                    if (finishedTracks.size >= trackMap.size) break
+                    extractor.advance()
+                    continue
+                }
                 buffer.clear()
                 val size = extractor.readSampleData(buffer, 0)
                 if (size < 0) break
                 trackMap[trackIndex]?.let { muxTrack ->
+                    if (baseUs < 0L) baseUs = sampleTimeUs.coerceAtLeast(0L)
                     info.set(
                         0,
                         size,
-                        (extractor.sampleTime - baseUs).coerceAtLeast(0L),
+                        (sampleTimeUs - baseUs).coerceAtLeast(0L),
                         extractor.sampleFlags,
                     )
                     muxer.writeSampleData(muxTrack, buffer, info)
@@ -87,7 +104,13 @@ object VideoUtils {
 
             muxer.stop()
             muxerStarted = false
-            out.exists() && out.length() > 0L
+            if (out.exists() && out.length() > 0L) {
+                true
+            } else {
+                // Пустой результат не оставляем в cacheDir.
+                out.delete()
+                false
+            }
         } catch (_: Exception) {
             out.delete()
             false

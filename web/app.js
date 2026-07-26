@@ -143,6 +143,8 @@ function mediaDisplayType(o) {
     const kind = o.kind || '';
     if (kind === 'voice') return 'voice';
     if (kind === 'video_msg') return 'video_msg';
+    // Обычное видео (галерея Android, kind='video') — инлайн-плеер, не «Файл».
+    if (kind === 'video' || (!kind && (o.mime_type || '').startsWith('video/'))) return 'video';
     if (kind === 'image' || (o.mime_type || '').startsWith('image/')) return 'image';
     return 'file';
 }
@@ -172,6 +174,7 @@ function toWire(p) {
         case 'image':
         case 'voice':
         case 'video_msg':
+        case 'video':
         case 'file': {
             // Медиа на /upload (новый формат). Легаси-инлайн (content=dataURL без .media)
             // оставляем как есть — Android его проигнорирует, web↔web ещё прочитает.
@@ -185,6 +188,7 @@ function toWire(p) {
             };
             if (p.media.kind) w.kind = p.media.kind;
             if (p.media.duration) w.duration = p.media.duration;
+            if (Array.isArray(p.media.waveform)) w.waveform = p.media.waveform; // волна ГС (пересылка)
             if (p.filename) w.filename = p.filename; // веб-расширение (Android игнорирует)
             if (p.size) w.size = p.size;             // веб-расширение
             if (p.fwd_from || p.forwarded_from) w.fwd_from = p.fwd_from || p.forwarded_from;
@@ -226,6 +230,7 @@ function fromWire(o) {
             };
             if (o.kind) p.media.kind = o.kind;
             if (o.duration) p.media.duration = o.duration;
+            if (Array.isArray(o.waveform)) p.media.waveform = o.waveform; // волна ГС (массив 0..31)
             if (dt === 'file') p.filename = o.filename || 'Файл';
             if (o.size) p.size = o.size;
             if (o.fwd_from) { p.fwd_from = o.fwd_from; p.forwarded_from = o.fwd_from; }
@@ -371,6 +376,11 @@ async function sendMediaFile(bytes, mimeType, kind, displayType, extra = {}) {
         type: displayType,
         media: { file_id: up.file_id, sym_key: up.sym_key, nonce: up.nonce, mime_type: mimeType, kind }
     }, extra);
+    // duration — атрибут media (канон Android, toWire берёт p.media.duration): переносим внутрь.
+    if (payload.duration != null) {
+        payload.media.duration = payload.duration;
+        delete payload.duration;
+    }
     sendPayloadMessage(payload);
 }
 
@@ -1277,6 +1287,7 @@ function enableReplyMode(msg) {
     else if (type === 'image') previewText = '📷 Фотография';
     else if (type === 'voice') previewText = '🎤 Голосовое сообщение';
     else if (type === 'video_msg') previewText = '📹 Видеосообщение';
+    else if (type === 'video') previewText = '🎥 Видео';
     else if (type === 'file') previewText = '📂 Файл: ' + (msg.payload?.filename || 'Документ');
     
     if (replyPreviewContainer) {
@@ -1335,6 +1346,7 @@ async function sendMessage() {
                 else if (type === 'image') previewText = '📷 Фотография';
                 else if (type === 'voice') previewText = '🎤 Голосовое сообщение';
                 else if (type === 'video_msg') previewText = '📹 Видеосообщение';
+                else if (type === 'video') previewText = '🎥 Видео';
                 else if (type === 'file') previewText = '📂 Файл: ' + (origMsg.payload?.filename || 'Документ');
                 
                 payloadObj.reply_to = {
@@ -1368,7 +1380,7 @@ async function sendMessage() {
 async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
     if (!targetPeer) return false;
     
-    const isStoreType = ['text', 'image', 'voice', 'video_msg', 'file', 'poll'].includes(payloadObj.type);
+    const isStoreType = ['text', 'image', 'voice', 'video_msg', 'video', 'file', 'poll'].includes(payloadObj.type);
 
     // Самоуничтожение: добавляем TTL к исходящим контентным сообщениям (кроме опросов)
     if (selfDestructTtl > 0 && isStoreType && payloadObj.type !== 'poll' && !payloadObj.ttl) {
@@ -1954,6 +1966,7 @@ async function pollInbox() {
             else if (pay.type === 'image') preview = '📷 Фотография';
             else if (pay.type === 'voice') preview = '🎤 Голосовое сообщение';
             else if (pay.type === 'video_msg') preview = '📹 Видеосообщение';
+            else if (pay.type === 'video') preview = '🎥 Видео';
             else if (pay.type === 'file') preview = '📂 Файл: ' + (pay.filename || 'Документ');
             else if (pay.type === 'poll') preview = '📊 Опрос: ' + (pay.question || '');
             showBrowserNotification(lastNotificationMsg.peer, preview);
@@ -2113,6 +2126,57 @@ function selectContact(peerId) {
     if (typeof updateSdChip === 'function') updateSdChip();
 }
 
+// Останавливает все прочие audio/video (единственное активное воспроизведение).
+// Беззвучные превью кружков не трогаем — они не конфликтуют по звуку.
+function pauseOtherMedia(except) {
+    document.querySelectorAll('audio, video').forEach(el => {
+        if (el === except) return;
+        if (el.muted && el.closest('.tg-msg-video-msg')) return;
+        el.pause();
+        const otherPlayBtn = el.closest('.tg-voice-player')?.querySelector('.voice-play-btn i');
+        if (otherPlayBtn) otherPlayBtn.className = 'fas fa-play';
+    });
+}
+
+// Общий IntersectionObserver для кружков: беззвучный автоплей только пока
+// сообщение видимо, за экраном превью ставится на паузу (батарея/CPU).
+let videoNoteObserver = null;
+function ensureVideoNoteObserver() {
+    if (videoNoteObserver !== null || !('IntersectionObserver' in window)) return videoNoteObserver;
+    videoNoteObserver = new IntersectionObserver((entries) => {
+        entries.forEach(en => {
+            const v = en.target;
+            v.dataset.vnVisible = en.isIntersecting ? '1' : '';
+            if (v.dataset.vnActive === '1') return; // играет со звуком — управляет пользователь
+            if (en.isIntersecting) {
+                // src появляется лениво после расшифровки — пустой не трогаем.
+                if (v.getAttribute('src')) { v.muted = true; v.play().catch(() => {}); }
+            } else {
+                v.pause();
+            }
+        });
+    }, { threshold: 0.4 });
+    return videoNoteObserver;
+}
+
+// Рисует бары волны ГС (значения 0..31, контракт с Android) в inline-SVG.
+// Значения приходят от пира, поэтому жёстко приводим к числам и клампим.
+function voiceWaveformSvg(waveform, width, height, color) {
+    const vals = waveform.map(v => Math.max(0, Math.min(31, Number(v) || 0)));
+    const n = vals.length;
+    if (!n) return '';
+    const step = width / n;
+    const barW = Math.max(1.5, step * 0.6);
+    let rects = '';
+    for (let i = 0; i < n; i++) {
+        const h = 2 + (vals[i] / 31) * (height - 2);
+        const x = i * step + (step - barW) / 2;
+        const y = (height - h) / 2;
+        rects += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" rx="1"/>`;
+    }
+    return `<svg width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" fill="${color}" style="display:block;">${rects}</svg>`;
+}
+
 function appendMessage(msg, animate = false) {
     maybeInsertDateDivider(msg);
     const wrapper = document.createElement('div');
@@ -2134,20 +2198,42 @@ function appendMessage(msg, animate = false) {
     } else if (type === 'image') {
         contentHtml = `<img src="${content}" class="tg-msg-image">`;
     } else if (type === 'voice') {
+        // Реальная волна из wire-поля waveform (контракт с Android); нет волны — прежний слайдер.
+        const wf = (msg.payload && msg.payload.media && Array.isArray(msg.payload.media.waveform) && msg.payload.media.waveform.length > 0)
+            ? msg.payload.media.waveform : null;
+        const wfW = 150, wfH = 24;
+        const progressHtml = wf ? `
+                    <div class="voice-waveform" style="position:relative;width:${wfW}px;height:${wfH}px;">
+                        ${voiceWaveformSvg(wf, wfW, wfH, 'var(--text-secondary)')}
+                        <div class="voice-wf-progress" style="position:absolute;left:0;top:0;bottom:0;width:0%;overflow:hidden;pointer-events:none;">
+                            ${voiceWaveformSvg(wf, wfW, wfH, 'var(--accent-color)')}
+                        </div>
+                        <input type="range" class="voice-slider" min="0" max="100" value="0" style="position:absolute;left:0;top:0;width:100%;height:100%;margin:0;opacity:0;cursor:pointer;">
+                    </div>` : `
+                    <input type="range" class="voice-slider" min="0" max="100" value="0">`;
         contentHtml = `
             <div class="tg-voice-player">
                 <button class="voice-play-btn" title="Воспроизвести"><i class="fas fa-play"></i></button>
                 <div class="voice-progress-container">
-                    <input type="range" class="voice-slider" min="0" max="100" value="0">
+                    ${progressHtml}
                     <span class="voice-duration">0:00</span>
                 </div>
                 <audio src="${content}" preload="metadata" style="display:none;"></audio>
             </div>
         `;
     } else if (type === 'video_msg') {
+        // Без безусловного autoplay: беззвучное превью запускает IntersectionObserver
+        // только для видимых кружков, тап — воспроизведение со звуком (см. ниже).
         contentHtml = `
             <div class="tg-msg-video-msg">
-                <video src="${content}" loop playsinline autoplay muted></video>
+                <video src="${content}" loop playsinline muted preload="metadata"></video>
+            </div>
+        `;
+    } else if (type === 'video') {
+        // Обычное видео (kind 'video' с Android) — инлайн-плеер со штатными контролами.
+        contentHtml = `
+            <div class="tg-msg-video">
+                <video src="${content}" controls playsinline preload="metadata" style="max-width: 280px; width: 100%; border-radius: 10px; display: block;"></video>
             </div>
         `;
     } else if (type === 'file') {
@@ -2221,6 +2307,8 @@ function appendMessage(msg, animate = false) {
             if (!url) return;
             const el = wrapper.querySelector('img.tg-msg-image, audio, video');
             if (el) el.src = url;
+            // Кружок: если к моменту загрузки уже видим — запускаем беззвучное превью.
+            if (el && el.tagName === 'VIDEO' && el.dataset.vnVisible === '1' && el.muted) el.play().catch(() => {});
         }).catch(e => console.error('media load failed', e));
     }
 
@@ -2243,20 +2331,18 @@ function appendMessage(msg, animate = false) {
         const playBtn = wrapper.querySelector('.voice-play-btn');
         const slider = wrapper.querySelector('.voice-slider');
         const durationSpan = wrapper.querySelector('.voice-duration');
-        
+        const wfProgress = wrapper.querySelector('.voice-wf-progress');
+
         let isSeeking = false;
-        
+        // Chromium-баг: у webm из MediaRecorder duration === Infinity —
+        // фолбэк на длительность из payload.media.duration (секунды, wire-поле).
+        const wireDur = Number(msg.payload && msg.payload.media && msg.payload.media.duration) || 0;
+        const effDuration = () => (isFinite(audio.duration) && audio.duration > 0) ? audio.duration : wireDur;
+        const fmtTime = (t) => `${Math.floor(t / 60)}:${Math.floor(t % 60).toString().padStart(2, '0')}`;
+
         playBtn.addEventListener('click', () => {
             if (audio.paused) {
-                document.querySelectorAll('audio, video').forEach(el => {
-                    if (el !== audio) {
-                        el.pause();
-                        const otherPlayBtn = el.closest('.tg-voice-player')?.querySelector('.voice-play-btn i');
-                        if (otherPlayBtn) {
-                            otherPlayBtn.className = 'fas fa-play';
-                        }
-                    }
-                });
+                pauseOtherMedia(audio);
                 audio.play().catch(()=>{});
                 playBtn.innerHTML = '<i class="fas fa-pause"></i>';
             } else {
@@ -2264,60 +2350,76 @@ function appendMessage(msg, animate = false) {
                 playBtn.innerHTML = '<i class="fas fa-play"></i>';
             }
         });
-        
+
         audio.addEventListener('loadedmetadata', () => {
-            const mins = Math.floor(audio.duration / 60);
-            const secs = Math.floor(audio.duration % 60).toString().padStart(2, '0');
-            durationSpan.textContent = `${mins}:${secs}`;
+            durationSpan.textContent = fmtTime(effDuration());
         });
-        
+
         audio.addEventListener('timeupdate', () => {
-            if (!isSeeking && audio.duration) {
-                slider.value = (audio.currentTime / audio.duration) * 100;
-                const mins = Math.floor(audio.currentTime / 60);
-                const secs = Math.floor(audio.currentTime % 60).toString().padStart(2, '0');
-                const totalMins = Math.floor(audio.duration / 60);
-                const totalSecs = Math.floor(audio.duration % 60).toString().padStart(2, '0');
-                durationSpan.textContent = `${mins}:${secs} / ${totalMins}:${totalSecs}`;
+            const dur = effDuration();
+            if (!isSeeking && dur) {
+                const pct = Math.min(100, (audio.currentTime / dur) * 100);
+                slider.value = pct;
+                if (wfProgress) wfProgress.style.width = pct + '%';
+                durationSpan.textContent = `${fmtTime(audio.currentTime)} / ${fmtTime(dur)}`;
             }
         });
-        
+
         audio.addEventListener('ended', () => {
             playBtn.innerHTML = '<i class="fas fa-play"></i>';
             slider.value = 0;
-            const mins = Math.floor(audio.duration / 60);
-            const secs = Math.floor(audio.duration % 60).toString().padStart(2, '0');
-            durationSpan.textContent = `${mins}:${secs}`;
+            if (wfProgress) wfProgress.style.width = '0%';
+            durationSpan.textContent = fmtTime(effDuration());
         });
-        
+
         slider.addEventListener('input', () => {
             isSeeking = true;
         });
-        
+
         slider.addEventListener('change', () => {
-            if (audio.duration) {
-                audio.currentTime = (slider.value / 100) * audio.duration;
+            const dur = effDuration();
+            if (dur) {
+                audio.currentTime = (slider.value / 100) * dur;
+                if (wfProgress) wfProgress.style.width = slider.value + '%';
             }
             isSeeking = false;
         });
     } else if (type === 'video_msg') {
         const video = wrapper.querySelector('video');
         if (video) {
+            // Беззвучное зацикленное превью — только пока кружок на экране.
+            const obs = ensureVideoNoteObserver();
+            if (obs) obs.observe(video);
             video.addEventListener('click', (e) => {
                 e.stopPropagation();
-                document.querySelectorAll('audio, video').forEach(el => {
-                    if (el !== video) {
-                        el.pause();
-                        const otherPlayBtn = el.closest('.tg-voice-player')?.querySelector('.voice-play-btn i');
-                        if (otherPlayBtn) otherPlayBtn.className = 'fas fa-play';
-                    }
-                });
-                
-                video.muted = !video.muted;
-                if (video.paused) {
+                if (video.dataset.vnActive !== '1') {
+                    // Первый тап: воспроизведение со звуком с начала.
+                    pauseOtherMedia(video);
+                    video.dataset.vnActive = '1';
+                    video.muted = false;
+                    video.loop = false;
+                    try { video.currentTime = 0; } catch (e2) {}
                     video.play().catch(()=>{});
+                } else if (video.paused) {
+                    pauseOtherMedia(video);
+                    video.play().catch(()=>{});
+                } else {
+                    video.pause();
                 }
             });
+            video.addEventListener('ended', () => {
+                // Досмотрели со звуком — возвращаемся к беззвучному превью.
+                video.dataset.vnActive = '';
+                video.muted = true;
+                video.loop = true;
+                if (video.dataset.vnVisible === '1') video.play().catch(()=>{});
+            });
+        }
+    } else if (type === 'video') {
+        const video = wrapper.querySelector('video');
+        if (video) {
+            // Единственное активное воспроизведение: старт видео стопит ГС/кружки.
+            video.addEventListener('play', () => pauseOtherMedia(video));
         }
     } else if (type === 'file') {
         const fileDiv = wrapper.querySelector('.tg-file-message');
@@ -2619,6 +2721,7 @@ function renderContactsList() {
             if (type === 'image') preview = '📷 Фотография';
             else if (type === 'voice') preview = '🎤 Голосовое сообщение';
             else if (type === 'video_msg') preview = '📹 Видеосообщение';
+            else if (type === 'video') preview = '🎥 Видео';
             else if (type === 'file') preview = '📂 Файл: ' + (lastMsg.payload?.filename || 'Документ');
             else if (type === 'poll') preview = '📊 Опрос: ' + (lastMsg.payload?.question || '');
             lastMsgText = lastMsg.direction === 'out' ? `Вы: ${preview}` : preview;
@@ -3807,40 +3910,68 @@ let mediaRecorder = null;
 let recordedChunks = [];
 let recordingTimerInterval = null;
 let recordingSeconds = 0;
+let recordingStartTs = 0;         // точный замер длительности записи (мс)
 let recordingStream = null;
 let isRecordingVideo = false;
+let isRecordingCancelled = false; // ставится в cancelRecording ДО stop()
+
+// Подбор поддерживаемого контейнера (Safari не умеет webm — падаем на mp4).
+function pickRecorderMime(candidates) {
+    if (window.MediaRecorder && MediaRecorder.isTypeSupported) {
+        for (const t of candidates) {
+            if (MediaRecorder.isTypeSupported(t)) return t;
+        }
+    }
+    return '';
+}
+
+// Фактическая длительность записи в секундах (уходит в payload.media.duration).
+function recordedDurationSec() {
+    const sec = recordingStartTs ? (Date.now() - recordingStartTs) / 1000 : recordingSeconds;
+    return Math.max(0.1, Math.round(sec * 10) / 10);
+}
 
 async function startAudioRecording() {
     try {
         recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true });
         isRecordingVideo = false;
+        isRecordingCancelled = false;
         showRecordingUI("Запись аудио");
-        
+
         recordedChunks = [];
-        mediaRecorder = new MediaRecorder(recordingStream);
+        const mime = pickRecorderMime(['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4']);
+        mediaRecorder = mime ? new MediaRecorder(recordingStream, { mimeType: mime }) : new MediaRecorder(recordingStream);
         mediaRecorder.ondataavailable = (e) => {
             if (e.data && e.data.size > 0) {
                 recordedChunks.push(e.data);
             }
         };
-        
-        mediaRecorder.onstop = async () => {
-            clearInterval(recordingTimerInterval);
-            stopRecordingUI();
-            
-            if (recordedChunks.length === 0) return;
-            const blob = new Blob(recordedChunks, { type: 'audio/webm' });
-            // Единый транспорт: шифруем+грузим в /upload (совместимо с Android).
-            const bytes = new Uint8Array(await blob.arrayBuffer());
-            await sendMediaFile(bytes, 'audio/webm', 'voice', 'voice');
 
-            cleanupRecordingStream();
+        const rec = mediaRecorder;
+        mediaRecorder.onstop = async () => {
+            try {
+                clearInterval(recordingTimerInterval);
+                stopRecordingUI();
+                // Отмена: финальный ondataavailable приходит уже ПОСЛЕ очистки chunks,
+                // поэтому решаем по флагу, а не по recordedChunks.
+                if (isRecordingCancelled) return;
+                if (recordedChunks.length === 0) return;
+                const actualMime = rec.mimeType || mime || 'audio/webm';
+                const blob = new Blob(recordedChunks, { type: actualMime });
+                // Единый транспорт: шифруем+грузим в /upload (совместимо с Android).
+                const bytes = new Uint8Array(await blob.arrayBuffer());
+                await sendMediaFile(bytes, actualMime, 'voice', 'voice', { duration: recordedDurationSec() });
+            } finally {
+                cleanupRecordingStream();
+            }
         };
-        
+
         mediaRecorder.start();
         startRecordingTimer();
     } catch (e) {
         console.error("Audio recording failed:", e);
+        cleanupRecordingStream();
+        stopRecordingUI();
         alert("Не удалось получить доступ к микрофону");
     }
 }
@@ -3849,40 +3980,55 @@ async function startVideoRecording() {
     try {
         recordingStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: { facingMode: currentFacingMode, width: 320, height: 320 } });
         isRecordingVideo = true;
+        isRecordingCancelled = false;
         showRecordingUI("Запись видео");
-        
+
         const previewContainer = document.getElementById('recording-preview-container');
         const previewVideo = document.getElementById('recording-video-preview');
         previewContainer.classList.remove('hidden');
         previewVideo.srcObject = recordingStream;
-        
+
         recordedChunks = [];
-        mediaRecorder = new MediaRecorder(recordingStream, { mimeType: 'video/webm;codecs=vp8,opus' });
+        const mime = pickRecorderMime(['video/webm;codecs=vp8,opus', 'video/webm', 'video/mp4']);
+        mediaRecorder = mime ? new MediaRecorder(recordingStream, { mimeType: mime }) : new MediaRecorder(recordingStream);
         mediaRecorder.ondataavailable = (e) => {
             if (e.data && e.data.size > 0) {
                 recordedChunks.push(e.data);
             }
         };
-        
-        mediaRecorder.onstop = async () => {
-            clearInterval(recordingTimerInterval);
-            stopRecordingUI();
-            
-            previewVideo.srcObject = null;
-            previewContainer.classList.add('hidden');
-            
-            if (recordedChunks.length === 0) return;
-            const blob = new Blob(recordedChunks, { type: 'video/webm' });
-            // Единый транспорт: шифруем+грузим в /upload (совместимо с Android).
-            const bytes = new Uint8Array(await blob.arrayBuffer());
-            await sendMediaFile(bytes, 'video/webm', 'video_msg', 'video_msg');
 
-            cleanupRecordingStream();
+        const rec = mediaRecorder;
+        mediaRecorder.onstop = async () => {
+            try {
+                clearInterval(recordingTimerInterval);
+                stopRecordingUI();
+
+                previewVideo.srcObject = null;
+                previewContainer.classList.add('hidden');
+
+                // Отмена: см. комментарий в аудио-ветке.
+                if (isRecordingCancelled) return;
+                if (recordedChunks.length === 0) return;
+                const actualMime = rec.mimeType || mime || 'video/webm';
+                const blob = new Blob(recordedChunks, { type: actualMime });
+                // Единый транспорт: шифруем+грузим в /upload (совместимо с Android).
+                const bytes = new Uint8Array(await blob.arrayBuffer());
+                await sendMediaFile(bytes, actualMime, 'video_msg', 'video_msg', { duration: recordedDurationSec() });
+            } finally {
+                cleanupRecordingStream();
+            }
         };
-        
+
         mediaRecorder.start();
         startRecordingTimer();
     } catch (e) {
+        // Не оставляем захваченными камеру/микрофон и висящую панель записи.
+        cleanupRecordingStream();
+        stopRecordingUI();
+        const pc = document.getElementById('recording-preview-container');
+        const pv = document.getElementById('recording-video-preview');
+        if (pv) pv.srcObject = null;
+        if (pc) pc.classList.add('hidden');
         if (e.name === 'NotFoundError') {
             alert("Камера не найдена!");
         } else {
@@ -3894,6 +4040,7 @@ async function startVideoRecording() {
 
 function cancelRecording() {
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+        isRecordingCancelled = true; // ДО stop(): иначе финальный chunk отправит сообщение
         recordedChunks = [];
         mediaRecorder.stop();
     }
@@ -3922,6 +4069,7 @@ function stopRecordingUI() {
 
 function startRecordingTimer() {
     recordingSeconds = 0;
+    recordingStartTs = Date.now();
     recordingTimerInterval = setInterval(() => {
         recordingSeconds++;
         const mins = Math.floor(recordingSeconds / 60).toString().padStart(2, '0');

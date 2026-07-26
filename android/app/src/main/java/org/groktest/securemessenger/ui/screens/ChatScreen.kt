@@ -117,7 +117,8 @@ fun ChatScreen(
     onSendMedia: suspend (List<android.net.Uri>, String?) -> Exception?,
     // Отправка как документ (файл) — без сжатия, с именем/размером
     onSendFiles: suspend (List<android.net.Uri>, String?) -> Exception? = { _, _ -> null },
-    onSendRecording: suspend (java.io.File, String, String, Long) -> Exception? = { _, _, _, _ -> null },
+    // Последний параметр — waveform: реальные амплитуды ГС (0..31, <=63 бакетов) или null
+    onSendRecording: suspend (java.io.File, String, String, Long, List<Int>?) -> Exception? = { _, _, _, _, _ -> null },
     onDeleteMessage: suspend (String, Boolean) -> Exception? = { _, _ -> null },
     onReact: (String, String) -> Unit = { _, _ -> },
     // (#A2) Повторная отправка сообщения со статусом «ошибка» (-1)
@@ -412,6 +413,13 @@ fun ChatScreen(
     var voicePreviewMs by remember { mutableStateOf(0L) }
     var trimStart by remember { mutableStateOf(0f) }
     var trimEnd by remember { mutableStateOf(1f) }
+    // РЕАЛЬНАЯ ВОЛНА: амплитуды рекордера, лог-нормированные в 0..31 (~каждые 100мс).
+    // Переживает сегменты («дописать»), чистится в clearVoice.
+    val voiceWaveform = remember { mutableStateListOf<Int>() }
+    // Смещение пальца по X в жесте записи — для подсказки slide-to-cancel.
+    var recordDragX by remember { mutableStateOf(0f) }
+    // Идёт отправка голосового: onDispose не должен удалять файлы у неё из-под ног.
+    val voiceSendInFlight = remember { mutableStateOf(false) }
 
     LaunchedEffect(isRecordingVoice, voiceBaseMs) {
         if (isRecordingVoice) {
@@ -425,7 +433,25 @@ fun ChatScreen(
         }
     }
 
+    // Снимаем огибающую записи: maxAmplitude каждые ~100мс → бакеты 0..31;
+    // при отправке даунсемплятся до <=63 и уезжают в wire-поле "waveform".
+    LaunchedEffect(isRecordingVoice) {
+        while (isRecordingVoice) {
+            val amp = try { voiceRecorder.value?.maxAmplitude ?: 0 } catch (_: Exception) { 0 }
+            voiceWaveform.add(
+                (31.0 * kotlin.math.ln(1.0 + amp) / kotlin.math.ln(1.0 + 32767.0))
+                    .toInt().coerceIn(0, 31)
+            )
+            kotlinx.coroutines.delay(100)
+        }
+    }
+
     fun startVoiceRecording() {
+        // Guard от двойного старта: повторный вход поверх активного рекордера
+        // утекал бы MediaRecorder'ом и держал микрофон до ухода с экрана.
+        if (isRecordingVoice || voiceRecorder.value != null) return
+        // Стопим воспроизведение медиа в ленте — динамик не должен орать в микрофон.
+        ChatPlaybackCoordinator.stopAll()
         var rec: android.media.MediaRecorder? = null
         var file: java.io.File? = null
         try {
@@ -436,6 +462,10 @@ fun ChatScreen(
             rec.setAudioSource(android.media.MediaRecorder.AudioSource.MIC)
             rec.setOutputFormat(android.media.MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(android.media.MediaRecorder.AudioEncoder.AAC)
+            // Явные параметры вместо девайсных дефолтов (часто 8 кГц, «телефонное» звучание)
+            rec.setAudioChannels(1)
+            rec.setAudioSamplingRate(48000)
+            rec.setAudioEncodingBitRate(64000)
             rec.setOutputFile(f.absolutePath)
             rec.prepare()
             rec.start()
@@ -485,6 +515,7 @@ fun ChatScreen(
         voiceSegments.clear()
         voicePreviewFile?.let { try { it.delete() } catch (e: Exception) {} }
         voicePreviewFile = null
+        voiceWaveform.clear()
         voiceBaseMs = 0L
         voiceSegmentStartedAt = 0L
         recordSeconds = 0
@@ -498,8 +529,10 @@ fun ChatScreen(
         recordLocked = false
         if (send && ok && voiceBaseMs >= 1000L) {
             isSending = true
+            voiceSendInFlight.value = true
             val segs = voiceSegments.toList()
             val durMs = voiceBaseMs
+            val wave = downsampleWaveform(voiceWaveform.toList())
             coroutineScope.launch {
                 val recording = withContext(Dispatchers.IO) {
                     val valid = segs.filter { it.exists() && it.length() > 0L }
@@ -513,15 +546,20 @@ fun ChatScreen(
                     }
                 }
                 val err = if (recording != null) withContext(Dispatchers.IO) {
-                    try { onSendRecording(recording, "audio/mp4", "voice", durMs) }
+                    try { onSendRecording(recording, "audio/mp4", "voice", durMs, wave) }
                     finally { recording.delete() }
                 } else IllegalStateException("Не удалось подготовить голосовое сообщение")
                 isSending = false
                 clearVoice()
+                voiceSendInFlight.value = false
                 if (err != null) snackbarHostState.showSnackbar("Ошибка отправки: ${err.message}", duration = SnackbarDuration.Long)
             }
         } else {
             clearVoice()
+            // Слишком короткое зажатие при попытке отправить — подсказываем, а не молчим.
+            if (send) coroutineScope.launch {
+                snackbarHostState.showSnackbar("Зажмите кнопку для записи")
+            }
         }
     }
 
@@ -535,10 +573,16 @@ fun ChatScreen(
         coroutineScope.launch {
             val out = withContext(Dispatchers.IO) {
                 val o = java.io.File(context.cacheDir, "voice_prev_${System.currentTimeMillis()}.m4a")
-                if (VoiceUtils.concat(segs, o)) o else null
+                if (VoiceUtils.concat(segs, o)) o else { o.delete(); null }
+            }
+            if (out == null) {
+                // Склейка не удалась — не оставляем сегменты «прилипать» к следующей записи.
+                clearVoice()
+                snackbarHostState.showSnackbar("Не удалось сохранить запись")
+                return@launch
             }
             voicePreviewFile = out
-            voicePreviewMs = out?.let { withContext(Dispatchers.IO) { VoiceUtils.durationMs(it) } }?.takeIf { it > 0 } ?: baseMs
+            voicePreviewMs = withContext(Dispatchers.IO) { VoiceUtils.durationMs(out) }.takeIf { it > 0 } ?: baseMs
             trimStart = 0f; trimEnd = 1f
         }
     }
@@ -546,10 +590,14 @@ fun ChatScreen(
     // Дописать из превью (зажал) — новый сегмент к уже записанным.
     // Продолжаем в залоченном режиме (hands-free): говорим, стоп по квадрату → снова превью.
     fun resumeVoiceRecording() {
-        voicePreviewFile?.let { try { it.delete() } catch (e: Exception) {} }
-        voicePreviewFile = null
         startVoiceRecording()
-        recordLocked = true
+        // Превью удаляем только ПОСЛЕ успешного старта нового сегмента:
+        // если мик занят, запись не пропадает — превью остаётся на месте.
+        if (isRecordingVoice) {
+            voicePreviewFile?.let { try { it.delete() } catch (e: Exception) {} }
+            voicePreviewFile = null
+        }
+        recordLocked = isRecordingVoice
     }
 
     // Отправить из превью с учётом обрезки [trimStart, trimEnd].
@@ -559,25 +607,45 @@ fun ChatScreen(
         val sMs = (trimStart * total).toLong()
         val eMs = (trimEnd * total).toLong().coerceAtMost(total)
         isSending = true
+        voiceSendInFlight.value = true
+        val waveFull = voiceWaveform.toList()
+        val tS = trimStart
+        val tE = trimEnd
         coroutineScope.launch {
-            val dur = (eMs - sMs).coerceAtLeast(1000L)
+            var trimFailed = false
             val err = withContext(Dispatchers.IO) {
                 val out = java.io.File(context.cacheDir, "voice_trim_${System.currentTimeMillis()}.m4a")
                 try {
-                    val recording = if (VoiceUtils.trim(prev, out, sMs, eMs)) out else prev
-                    onSendRecording(recording, "audio/mp4", "voice", dur)
+                    val trimmed = VoiceUtils.trim(prev, out, sMs, eMs)
+                    trimFailed = !trimmed
+                    // Обрезка не удалась → шлём ПОЛНЫЙ файл; длительность — всегда
+                    // от фактически отправляемого файла, чтобы таймер совпадал со звуком.
+                    val recording = if (trimmed) out else prev
+                    val dur = if (trimmed) (eMs - sMs).coerceAtLeast(1L)
+                              else VoiceUtils.durationMs(prev).takeIf { it > 0 } ?: total
+                    val wave = downsampleWaveform(
+                        if (trimmed && waveFull.isNotEmpty()) {
+                            val from = (tS * waveFull.size).toInt().coerceIn(0, waveFull.size - 1)
+                            val to = (tE * waveFull.size).toInt().coerceIn(from + 1, waveFull.size)
+                            waveFull.subList(from, to)
+                        } else waveFull
+                    )
+                    onSendRecording(recording, "audio/mp4", "voice", dur, wave)
                 } finally {
                     out.delete()
                 }
             }
             isSending = false
             clearVoice()
+            voiceSendInFlight.value = false
+            if (trimFailed) snackbarHostState.showSnackbar("Обрезка не применилась")
             if (err != null) snackbarHostState.showSnackbar("Ошибка отправки: ${err.message}", duration = SnackbarDuration.Long)
         }
     }
 
-    val audioPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
-        if (granted) startVoiceRecording()
+    val audioPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ ->
+        // Запись НЕ стартуем: палец давно отпущен, жест завершён — иначе получалась бы
+        // «бесхозная» запись без release-to-send. Пользователь просто зажмёт кнопку снова.
     }
 
     // ---- Видео-кружок: запись внутри приложения (как в Telegram) ----
@@ -588,7 +656,7 @@ fun ChatScreen(
             val result = withContext(Dispatchers.IO) {
                 try {
                     val duration = VideoUtils.durationMs(f)
-                    onSendRecording(f, "video/mp4", "video_note", duration)
+                    onSendRecording(f, "video/mp4", "video_note", duration, null)
                 } catch (e: Exception) {
                     e
                 } finally {
@@ -605,6 +673,8 @@ fun ChatScreen(
         }
     }
     fun launchVideoNote() {
+        // Перед рекордером кружка глушим воспроизведение медиа в ленте (контракт с ChatMedia)
+        ChatPlaybackCoordinator.stopAll()
         showVideoNoteRecorder = true
     }
     val cameraPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
@@ -616,9 +686,26 @@ fun ChatScreen(
             try { voiceRecorder.value?.stop() } catch (_: Exception) {}
             try { voiceRecorder.value?.release() } catch (_: Exception) {}
             voiceRecorder.value = null
-            voiceSegments.forEach { try { it.delete() } catch (_: Exception) {} }
-            voicePreviewFile?.let { try { it.delete() } catch (_: Exception) {} }
+            // Файлы не трогаем, если их прямо сейчас читает фоновая отправка —
+            // уход с экрана сразу после отпускания кнопки не должен срывать send.
+            if (!voiceSendInFlight.value) {
+                voiceSegments.forEach { try { it.delete() } catch (_: Exception) {} }
+                voicePreviewFile?.let { try { it.delete() } catch (_: Exception) {} }
+            }
         }
+    }
+
+    // Сворачивание приложения во время записи (в т.ч. незалоченной): фоновому
+    // приложению система глушит микрофон — сохраняем записанное в превью, не теряем.
+    val lifecycleOwner = androidx.compose.ui.platform.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_STOP && isRecordingVoice) {
+                stopVoiceToPreview()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
     // ---- Фото с камеры ----
@@ -935,6 +1022,8 @@ fun ChatScreen(
                                 onTrimChange = { s, e -> trimStart = s; trimEnd = e },
                                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                                 accent = MaterialTheme.colorScheme.primary,
+                                // Реальная огибающая записи (null → прежний hash-фейк)
+                                waveform = remember(previewFile) { downsampleWaveform(voiceWaveform.toList()) },
                                 modifier = Modifier.weight(1f).padding(end = 8.dp).height(56.dp)
                             )
                         } else {
@@ -988,6 +1077,19 @@ fun ChatScreen(
                                 Spacer(Modifier.width(8.dp))
                                 val s2 = recordSeconds
                                 Text(String.format("%d:%02d", s2 / 60, s2 % 60), color = MaterialTheme.colorScheme.onBackground)
+                                if (!recordLocked) {
+                                    Spacer(Modifier.width(12.dp))
+                                    // Slide-to-cancel как в Telegram: подсказка едет за пальцем (dx/2)
+                                    Text(
+                                        "‹ Влево — отмена",
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        fontSize = 12.sp,
+                                        maxLines = 1,
+                                        modifier = Modifier.offset {
+                                            androidx.compose.ui.unit.IntOffset((recordDragX / 2f).toInt(), 0)
+                                        }
+                                    )
+                                }
                                 Spacer(Modifier.weight(1f))
                                 if (recordLocked) {
                                     Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
@@ -1145,6 +1247,7 @@ fun ChatScreen(
                                         .matchParentSize()
                                         .pointerInput(recordVideoMode) {
                                             val lockPx = 80.dp.toPx()
+                                            val cancelPx = 96.dp.toPx()
                                             awaitEachGesture {
                                                 val down = awaitFirstDown(requireUnconsumed = false)
                                                 val startY = down.position.y
@@ -1181,7 +1284,11 @@ fun ChatScreen(
                                                 }
 
                                                 startVoiceRecording()
+                                                // Мик занят/ошибка старта — жест дальше не ведём.
+                                                if (!isRecordingVoice) return@awaitEachGesture
                                                 var locked = false
+                                                var cancelled = false
+                                                recordDragX = 0f
                                                 while (true) {
                                                     val ev = awaitPointerEvent()
                                                     val ch = ev.changes.firstOrNull() ?: break
@@ -1191,11 +1298,29 @@ fun ChatScreen(
                                                         recordLocked = true
                                                         haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
                                                     }
-                                                    if (!ch.pressed) { ch.consume(); break }
+                                                    // Свайп ВЛЕВО → отмена (slide-to-cancel, как в Telegram)
+                                                    val dx = ch.position.x - down.position.x
+                                                    if (!locked) recordDragX = dx.coerceAtMost(0f)
+                                                    if (!locked && dx < -cancelPx) {
+                                                        cancelled = true
+                                                        haptic.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                        ch.consume()
+                                                        break
+                                                    }
+                                                    if (!ch.pressed) {
+                                                        // ACTION_CANCEL (шторка/звонок/перехват родителем) приходит
+                                                        // с pressed=false и isConsumed — это НЕ «отпустил → отправить».
+                                                        // После лока обрыв жеста не важен: запись уже hands-free.
+                                                        cancelled = ch.isConsumed && !locked
+                                                        ch.consume()
+                                                        break
+                                                    }
                                                 }
-                                                // Отпустил без лока → отправить голосовое.
+                                                recordDragX = 0f
+                                                // Отпустил без лока → отправить; отмена/обрыв жеста → выбросить.
                                                 // locked → запись продолжается (стоп по кнопке-квадрату → превью).
-                                                if (!locked) stopVoiceRecording(send = true)
+                                                if (cancelled) stopVoiceRecording(send = false)
+                                                else if (!locked) stopVoiceRecording(send = true)
                                             }
                                         },
                                     contentAlignment = Alignment.Center
@@ -2017,11 +2142,18 @@ fun MessageBubble(
                         } else {
                             wireDuration.toLong()
                         }
+                        // Реальная волна из wire-поля "waveform" (инты 0..31); нет — фейк в плеере
+                        val waveform = remember(mediaText) {
+                            json?.optJSONArray("waveform")?.let { arr ->
+                                List(arr.length()) { i -> arr.optInt(i) }
+                            }?.takeIf { it.isNotEmpty() }
+                        }
                         VoiceMessagePlayer(
                             jsonText = mediaText,
                             durationMs = durationMs,
                             tint = textColor,
-                            onDownloadMedia = onDownloadMedia
+                            onDownloadMedia = onDownloadMedia,
+                            waveform = waveform
                         )
                     } else if (kind == "file") {
                         FileMessageBubble(
@@ -2579,6 +2711,8 @@ private fun parseMediaPayloadForDisplay(raw: String): org.json.JSONObject? {
     if (obj.has("fileSize")) out.put("file_size", obj.optLong("fileSize"))
     if (media?.has("file_size") == true) out.put("file_size", media.optLong("file_size"))
     if (media?.has("fileSize") == true) out.put("file_size", media.optLong("fileSize"))
+    // Реальная волна голосового (массив интов) — переносим как есть
+    (obj.optJSONArray("waveform") ?: media?.optJSONArray("waveform"))?.let { out.put("waveform", it) }
     return normalizeMediaPayloadForDisplay(out, fallbackKind = when (type) {
         "image" -> "image"
         "video" -> "video"
@@ -2628,6 +2762,24 @@ private fun firstStringForDisplay(obj: org.json.JSONObject, vararg keys: String)
         if (value.isNotBlank()) return value
     }
     return null
+}
+
+/**
+ * Даунсемпл огибающей ГС до <=63 бакетов усреднением — формат wire-поля "waveform"
+ * (инты 0..31, как у Telegram). Пустой вход → null (плеер нарисует фолбэк).
+ */
+private fun downsampleWaveform(src: List<Int>, maxBuckets: Int = 63): List<Int>? {
+    if (src.isEmpty()) return null
+    if (src.size <= maxBuckets) return src.toList()
+    val out = ArrayList<Int>(maxBuckets)
+    for (i in 0 until maxBuckets) {
+        val from = i * src.size / maxBuckets
+        val to = ((i + 1) * src.size / maxBuckets).coerceAtLeast(from + 1)
+        var sum = 0
+        for (j in from until to) sum += src[j]
+        out.add(sum / (to - from))
+    }
+    return out
 }
 
 private fun formatMsgTime(ts: Long): String =

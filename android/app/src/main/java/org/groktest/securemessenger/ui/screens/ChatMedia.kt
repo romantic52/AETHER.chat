@@ -15,6 +15,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
@@ -56,7 +58,7 @@ import org.groktest.securemessenger.ui.theme.LocalThemeSettings
  * Голосовое сообщение: кнопка play/pause + дорожка + длительность.
  * Файл скачивается и расшифровывается по первому нажатию, затем кэшируется.
  */
-private object ChatPlaybackCoordinator {
+internal object ChatPlaybackCoordinator {
     private var owner: String? = null
     private var stop: (() -> Unit)? = null
 
@@ -73,6 +75,13 @@ private object ChatPlaybackCoordinator {
             owner = null
             stop = null
         }
+    }
+
+    /** Останавливает текущее воспроизведение (старт записи ГС/кружка, звонок). */
+    fun stopAll() {
+        stop?.invoke()
+        owner = null
+        stop = null
     }
 }
 
@@ -118,18 +127,30 @@ fun VoiceMessagePlayer(
     jsonText: String,
     durationMs: Long,
     tint: Color,
-    onDownloadMedia: suspend (String) -> File?
+    onDownloadMedia: suspend (String) -> File?,
+    waveform: List<Int>? = null
 ) {
+    val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val appearance = LocalThemeSettings.current
     var isPlaying by remember(jsonText) { mutableStateOf(false) }
     var isLoading by remember(jsonText) { mutableStateOf(false) }
     var player by remember(jsonText) { mutableStateOf<android.media.MediaPlayer?>(null) }
     var progress by remember(jsonText) { mutableStateOf(0f) }
+    // Веб не шлёт duration: после prepare подставляем реальную длительность файла
+    var realDurationMs by remember(jsonText, durationMs) { mutableStateOf(durationMs) }
+    // Композиция снята — созданному в фоне плееру некуда жить, сразу release
+    val disposed = remember(jsonText) { mutableStateOf(false) }
 
-    val bars = remember(jsonText) {
-        val rnd = java.util.Random(jsonText.hashCode().toLong())
-        FloatArray(36) { 0.25f + rnd.nextFloat() * 0.75f }
+    val bars = remember(jsonText, waveform) {
+        if (!waveform.isNullOrEmpty()) {
+            // Реальная огибающая записи: значения 0..31 -> высота бара 0..1
+            FloatArray(waveform.size) { i -> (waveform[i].coerceIn(0, 31) / 31f).coerceAtLeast(0.08f) }
+        } else {
+            // Старые сообщения без waveform: стабильный псевдослучайный фейк
+            val rnd = java.util.Random(jsonText.hashCode().toLong())
+            FloatArray(36) { 0.25f + rnd.nextFloat() * 0.75f }
+        }
     }
 
     fun play(p: android.media.MediaPlayer) {
@@ -139,11 +160,18 @@ fun VoiceMessagePlayer(
         }
         try {
             p.start()
+            applyPlaybackSpeed(p, playbackSpeedState.value)
             isPlaying = true
         } catch (_: Exception) {
             isPlaying = false
             ChatPlaybackCoordinator.release(jsonText)
         }
+    }
+
+    // Смена скорости на лету применяется к играющему плееру
+    LaunchedEffect(playbackSpeedState.value) {
+        val p = player ?: return@LaunchedEffect
+        if (isPlaying) applyPlaybackSpeed(p, playbackSpeedState.value)
     }
 
     LaunchedEffect(isPlaying, player) {
@@ -160,6 +188,7 @@ fun VoiceMessagePlayer(
 
     DisposableEffect(jsonText) {
         onDispose {
+            disposed.value = true
             ChatPlaybackCoordinator.release(jsonText)
             try { player?.release() } catch (_: Exception) {}
             player = null
@@ -184,25 +213,46 @@ fun VoiceMessagePlayer(
                     else -> {
                         isLoading = true
                         scope.launch {
-                            val file = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
                             try {
-                                if (file != null) {
+                                val file = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }
+                                if (file == null) {
+                                    android.widget.Toast.makeText(context, "Не удалось загрузить голосовое", android.widget.Toast.LENGTH_SHORT).show()
+                                    return@launch
+                                }
+                                // Создание и старт — в NonCancellable: prepare() блокирующий
+                                // и неотменяемый, при отмене scope (скролл) готовый нативный
+                                // плеер иначе утёк бы без release().
+                                withContext(kotlinx.coroutines.NonCancellable) {
                                     val mp = withContext(Dispatchers.IO) {
-                                        android.media.MediaPlayer().apply {
-                                            setDataSource(file.absolutePath)
-                                            prepare()
+                                        val p = android.media.MediaPlayer()
+                                        try {
+                                            p.setDataSource(file.absolutePath)
+                                            p.prepare()
+                                            p
+                                        } catch (t: Throwable) {
+                                            p.release()
+                                            throw t
                                         }
                                     }
-                                    mp.setOnCompletionListener {
-                                        isPlaying = false
-                                        progress = 0f
-                                        ChatPlaybackCoordinator.release(jsonText)
+                                    if (disposed.value) {
+                                        // Пузырь уже ушёл из композиции — освобождаем сразу
+                                        try { mp.release() } catch (_: Exception) {}
+                                    } else {
+                                        mp.setOnCompletionListener {
+                                            isPlaying = false
+                                            progress = 0f
+                                            ChatPlaybackCoordinator.release(jsonText)
+                                        }
+                                        if (realDurationMs <= 0L) realDurationMs = mp.duration.toLong()
+                                        player = mp
+                                        play(mp)
                                     }
-                                    player = mp
-                                    play(mp)
                                 }
+                            } catch (c: kotlinx.coroutines.CancellationException) {
+                                throw c
                             } catch (_: Exception) {
                                 isPlaying = false
+                                android.widget.Toast.makeText(context, "Не удалось загрузить голосовое", android.widget.Toast.LENGTH_SHORT).show()
                             } finally {
                                 isLoading = false
                             }
@@ -253,9 +303,22 @@ fun VoiceMessagePlayer(
             modifier = Modifier.height(26.dp).width(130.dp)
         )
         Spacer(Modifier.width(8.dp))
-        val shownMs = if (progress > 0f) (durationMs * progress).toLong() else durationMs
-        val secs = (shownMs / 1000L).toInt()
-        Text(String.format("%d:%02d", secs / 60, secs % 60), color = tint, style = MaterialTheme.typography.labelSmall)
+        if (isPlaying) {
+            // Играет: вместо счётчика — кликабельный бейдж скорости 1x/1.5x/2x
+            Text(
+                playbackSpeedLabel(playbackSpeedState.value),
+                color = tint,
+                style = MaterialTheme.typography.labelSmall,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(tint.copy(alpha = 0.16f))
+                    .clickable { playbackSpeedState.value = nextPlaybackSpeed(playbackSpeedState.value) }
+                    .padding(horizontal = 7.dp, vertical = 2.dp)
+            )
+        } else {
+            val shownMs = if (progress > 0f) (realDurationMs * progress).toLong() else realDurationMs
+            Text(formatClock(shownMs), color = tint, style = MaterialTheme.typography.labelSmall)
+        }
     }
 }
 
@@ -307,12 +370,43 @@ fun VideoMessage(
     var loading by remember(jsonText) { mutableStateOf(filePath == null) }
     var videoViewRef by remember(jsonText) { mutableStateOf<android.widget.VideoView?>(null) }
     var playing by remember(jsonText) { mutableStateOf(false) }
+    var positionMs by remember(jsonText) { mutableStateOf(0L) }
+    var videoDurationMs by remember(jsonText) { mutableStateOf(0L) }
 
     LaunchedEffect(jsonText) {
         if (filePath != null) return@LaunchedEffect
         loading = true
         filePath = withContext(Dispatchers.IO) { onDownloadMedia(jsonText) }?.absolutePath
         loading = false
+    }
+
+    // Поллинг позиции для прогресс-бара, пока видео играет
+    LaunchedEffect(playing) {
+        while (playing) {
+            videoViewRef?.let { vv ->
+                try {
+                    positionMs = vv.currentPosition.toLong().coerceAtLeast(0L)
+                    if (videoDurationMs <= 0L) videoDurationMs = vv.duration.toLong().coerceAtLeast(0L)
+                } catch (_: Exception) {}
+            }
+            kotlinx.coroutines.delay(250)
+        }
+    }
+
+    DisposableEffect(jsonText) {
+        onDispose { ChatPlaybackCoordinator.release(jsonText) }
+    }
+
+    // Перемотка по доле прогресс-бара (тап или драг)
+    fun seekVideo(fraction: Float) {
+        val vv = videoViewRef ?: return
+        val dur = videoDurationMs
+        if (dur <= 0L) return
+        val target = (fraction.coerceIn(0f, 1f) * dur).toLong()
+        try {
+            vv.seekTo(target.toInt())
+            positionMs = target
+        } catch (_: Exception) {}
     }
 
     Box(
@@ -322,16 +416,24 @@ fun VideoMessage(
             .clip(RoundedCornerShape(AetherStyle.MediaRadius))
             .background(Color.Black)
             .clickable(enabled = filePath != null) {
-                // Play/pause по тапу — без системного MediaController, перемотки нет
+                // Play/pause по тапу — без системного MediaController
                 val vv = videoViewRef ?: return@clickable
                 if (playing) {
                     try { vv.pause() } catch (_: Exception) {}
                     playing = false
+                    ChatPlaybackCoordinator.release(jsonText)
                 } else {
+                    // Старт видео останавливает другое медиа (ГС/кружок/видео)
+                    ChatPlaybackCoordinator.claim(jsonText) {
+                        try { videoViewRef?.pause() } catch (_: Exception) {}
+                        playing = false
+                    }
                     try {
                         vv.start()
                         playing = true
-                    } catch (_: Exception) {}
+                    } catch (_: Exception) {
+                        ChatPlaybackCoordinator.release(jsonText)
+                    }
                 }
             },
         contentAlignment = Alignment.Center
@@ -344,10 +446,15 @@ fun VideoMessage(
                         setVideoPath(path)
                         setOnPreparedListener { player ->
                             player.isLooping = false
+                            videoDurationMs = player.duration.toLong().coerceAtLeast(0L)
                             seekTo(1)
                             pause()
                         }
-                        setOnCompletionListener { playing = false }
+                        setOnCompletionListener {
+                            playing = false
+                            positionMs = 0L
+                            ChatPlaybackCoordinator.release(jsonText)
+                        }
                         videoViewRef = this
                     }
                 },
@@ -380,6 +487,56 @@ fun VideoMessage(
                         tint = Color.White,
                         modifier = Modifier.size(28.dp)
                     )
+                }
+            }
+
+            // Подпись времени и тонкий прогресс-бар снизу (тап/драг — перемотка)
+            if (videoDurationMs > 0L) {
+                Text(
+                    "${formatClock(positionMs)} / ${formatClock(videoDurationMs)}",
+                    color = Color.White,
+                    style = MaterialTheme.typography.labelSmall,
+                    modifier = Modifier
+                        .align(Alignment.BottomStart)
+                        .padding(start = 10.dp, bottom = 14.dp)
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(Color.Black.copy(alpha = 0.4f))
+                        .padding(horizontal = 6.dp, vertical = 1.dp)
+                )
+                Box(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .fillMaxWidth()
+                        .height(12.dp)
+                        .pointerInput(videoDurationMs) {
+                            detectTapGestures { offset ->
+                                seekVideo(offset.x / size.width.coerceAtLeast(1))
+                            }
+                        }
+                        .pointerInput(videoDurationMs) {
+                            detectHorizontalDragGestures { change, _ ->
+                                change.consume()
+                                seekVideo(change.position.x / size.width.coerceAtLeast(1))
+                            }
+                        }
+                ) {
+                    Canvas(Modifier.fillMaxSize()) {
+                        val barH = 3.dp.toPx()
+                        val y = size.height - barH - 2.dp.toPx()
+                        drawRoundRect(
+                            Color.White.copy(alpha = 0.35f),
+                            topLeft = Offset(0f, y),
+                            size = Size(size.width, barH),
+                            cornerRadius = CornerRadius(barH / 2f)
+                        )
+                        val frac = (positionMs.toFloat() / videoDurationMs.coerceAtLeast(1L)).coerceIn(0f, 1f)
+                        drawRoundRect(
+                            Color.White,
+                            topLeft = Offset(0f, y),
+                            size = Size(size.width * frac, barH),
+                            cornerRadius = CornerRadius(barH / 2f)
+                        )
+                    }
                 }
             }
         } else if (loading) {
@@ -453,6 +610,12 @@ fun FileMessageBubble(
     }
 }
 
+/** Подпись времени mm:ss для плееров. */
+private fun formatClock(ms: Long): String {
+    val s = (ms / 1000L).toInt().coerceAtLeast(0)
+    return String.format("%d:%02d", s / 60, s % 60)
+}
+
 /** Человекочитаемый размер файла. */
 fun formatFileSize(bytes: Long): String = when {
     bytes <= 0 -> "файл"
@@ -475,15 +638,21 @@ fun VoicePreviewBar(
     onTrimChange: (Float, Float) -> Unit,
     tint: Color,
     accent: Color,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    waveform: List<Int>? = null
 ) {
     var isPlaying by remember { mutableStateOf(false) }
     var player by remember { mutableStateOf<android.media.MediaPlayer?>(null) }
     var progress by remember { mutableStateOf(0f) } // 0..1 по всему файлу
 
-    val bars = remember(file.path) {
-        val rnd = java.util.Random(file.path.hashCode().toLong())
-        FloatArray(48) { 0.25f + rnd.nextFloat() * 0.75f }
+    val bars = remember(file.path, waveform) {
+        if (!waveform.isNullOrEmpty()) {
+            // Реальная огибающая записи: значения 0..31 -> высота бара 0..1
+            FloatArray(waveform.size) { i -> (waveform[i].coerceIn(0, 31) / 31f).coerceAtLeast(0.08f) }
+        } else {
+            val rnd = java.util.Random(file.path.hashCode().toLong())
+            FloatArray(48) { 0.25f + rnd.nextFloat() * 0.75f }
+        }
     }
 
     LaunchedEffect(isPlaying, trimEnd) {
@@ -493,28 +662,66 @@ fun VoicePreviewBar(
                 val dur = p.duration.coerceAtLeast(1)
                 val pos = (p.currentPosition.toFloat() / dur).coerceIn(0f, 1f)
                 progress = pos
-                if (pos >= trimEnd) { try { p.pause() } catch (e: Exception) {}; isPlaying = false; progress = trimStart }
+                if (pos >= trimEnd) {
+                    try { p.pause() } catch (e: Exception) {}
+                    isPlaying = false; progress = trimStart
+                    ChatPlaybackCoordinator.release(file.path)
+                }
             }
             kotlinx.coroutines.delay(40)
         }
     }
-    DisposableEffect(Unit) { onDispose { try { player?.release() } catch (e: Exception) {}; player = null } }
+    DisposableEffect(Unit) {
+        onDispose {
+            ChatPlaybackCoordinator.release(file.path)
+            try { player?.release() } catch (e: Exception) {}
+            player = null
+        }
+    }
+
+    // Превью тоже участвует в координаторе: не играет одновременно с лентой
+    fun claimPreview() {
+        ChatPlaybackCoordinator.claim(file.path) {
+            try { player?.pause() } catch (e: Exception) {}
+            isPlaying = false
+        }
+    }
 
     Row(verticalAlignment = Alignment.CenterVertically, modifier = modifier) {
         IconButton(onClick = {
             val p = player
             when {
-                isPlaying && p != null -> { try { p.pause() } catch (e: Exception) {}; isPlaying = false }
-                p != null -> { try { p.seekTo((trimStart * p.duration).toInt()); p.start(); isPlaying = true } catch (e: Exception) {} }
+                isPlaying && p != null -> {
+                    try { p.pause() } catch (e: Exception) {}
+                    isPlaying = false
+                    ChatPlaybackCoordinator.release(file.path)
+                }
+                p != null -> {
+                    try {
+                        claimPreview()
+                        p.seekTo((trimStart * p.duration).toInt()); p.start(); isPlaying = true
+                    } catch (e: Exception) {}
+                }
                 else -> {
                     try {
                         val mp = android.media.MediaPlayer()
-                        mp.setDataSource(file.absolutePath)
-                        mp.setOnCompletionListener { isPlaying = false; progress = trimStart }
-                        mp.prepare()
+                        try {
+                            mp.setDataSource(file.absolutePath)
+                            mp.setOnCompletionListener {
+                                isPlaying = false; progress = trimStart
+                                ChatPlaybackCoordinator.release(file.path)
+                            }
+                            mp.prepare()
+                        } catch (e: Exception) {
+                            // Не даём нативному плееру утечь при битом файле
+                            mp.release()
+                            throw e
+                        }
+                        player = mp
+                        claimPreview()
                         mp.seekTo((trimStart * mp.duration).toInt())
                         mp.start()
-                        player = mp; isPlaying = true
+                        isPlaying = true
                     } catch (e: Exception) { isPlaying = false }
                 }
             }
@@ -527,7 +734,14 @@ fun VoicePreviewBar(
             onTrimChange = { s, e ->
                 onTrimChange(s, e)
                 // при перетаскивании ручек — остановим проигрывание, чтобы не «убегало»
-                player?.let { try { if (isPlaying) { it.pause(); isPlaying = false } } catch (ex: Exception) {} }
+                player?.let {
+                    try {
+                        if (isPlaying) {
+                            it.pause(); isPlaying = false
+                            ChatPlaybackCoordinator.release(file.path)
+                        }
+                    } catch (ex: Exception) {}
+                }
             },
             tint = tint, accent = accent,
             modifier = Modifier.weight(1f).height(40.dp)
@@ -622,6 +836,8 @@ fun VideoNoteMessage(
     var active by remember(jsonText) { mutableStateOf(false) }
     var playing by remember(jsonText) { mutableStateOf(false) }
     var progress by remember(jsonText) { mutableStateOf(0f) }
+    // Позиция на момент паузы/пересоздания surface: продолжаем с неё, а не с нуля
+    var savedPositionMs by remember(jsonText) { mutableStateOf(0) }
     val scale by animateFloatAsState(
         targetValue = if (active) 1f else 0.97f,
         animationSpec = tween(appearance.motionDuration(240), easing = FastOutSlowInEasing),
@@ -635,13 +851,15 @@ fun VideoNoteMessage(
         loading = false
     }
 
-    LaunchedEffect(active, playing, mediaPlayerRef, prepared) {
+    LaunchedEffect(active, playing, mediaPlayerRef, prepared, playbackSpeedState.value) {
         val mp = mediaPlayerRef ?: return@LaunchedEffect
         if (!prepared) return@LaunchedEffect
         try {
             if (active && playing) {
                 mp.setVolume(1f, 1f)
                 if (!mp.isPlaying) mp.start()
+                // Глобальная скорость 1x/1.5x/2x действует и на кружок
+                applyPlaybackSpeed(mp, playbackSpeedState.value)
             } else if (mp.isPlaying) {
                 mp.pause()
             }
@@ -678,18 +896,21 @@ fun VideoNoteMessage(
                 onClick = {
                     if (!active) {
                         ChatPlaybackCoordinator.claim(jsonText) {
+                            // Чужой claim — пауза, а не закрытие: кружок остаётся
+                            // увеличенным и запоминает позицию для продолжения
+                            try { mediaPlayerRef?.let { savedPositionMs = it.currentPosition } } catch (_: Exception) {}
                             playing = false
-                            active = false
                         }
                         active = true
                         playing = true
                     } else if (playing) {
+                        try { mediaPlayerRef?.let { savedPositionMs = it.currentPosition } } catch (_: Exception) {}
                         playing = false
                         ChatPlaybackCoordinator.release(jsonText)
                     } else {
                         ChatPlaybackCoordinator.claim(jsonText) {
+                            try { mediaPlayerRef?.let { savedPositionMs = it.currentPosition } } catch (_: Exception) {}
                             playing = false
-                            active = false
                         }
                         playing = true
                     }
@@ -698,23 +919,44 @@ fun VideoNoteMessage(
             )
             .pointerInput(active, mediaPlayerRef) {
                 if (!active) return@pointerInput
-                detectDragGestures { change, _ ->
-                    change.consume()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
                     val cx = size.width / 2f
                     val cy = size.height / 2f
-                    var degrees = Math.toDegrees(
-                        kotlin.math.atan2(
-                            (change.position.y - cy).toDouble(),
-                            (change.position.x - cx).toDouble()
-                        )
-                    ).toFloat() + 90f
-                    if (degrees < 0f) degrees += 360f
-                    val fraction = (degrees / 360f).coerceIn(0f, 1f)
-                    mediaPlayerRef?.let { mp ->
-                        try {
-                            mp.seekTo((fraction * mp.duration.coerceAtLeast(1)).toInt())
-                            progress = fraction
-                        } catch (_: Exception) {}
+                    val radius = kotlin.math.min(cx, cy)
+                    val dist = kotlin.math.hypot(
+                        (down.position.x - cx).toDouble(),
+                        (down.position.y - cy).toDouble()
+                    )
+                    // Перемотка только с кольца (внешние ~22% радиуса): внутренние
+                    // касания не перехватываем — они уходят тапу play/pause и скроллу
+                    if (dist <= radius * 0.78) return@awaitEachGesture
+                    var dragging = false
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        val ch = event.changes.firstOrNull { it.id == down.id } ?: break
+                        if (!ch.pressed) break
+                        if (!dragging) {
+                            val moved = (ch.position - down.position).getDistance()
+                            if (moved > viewConfiguration.touchSlop) dragging = true
+                        }
+                        if (dragging) {
+                            ch.consume()
+                            var degrees = Math.toDegrees(
+                                kotlin.math.atan2(
+                                    (ch.position.y - cy).toDouble(),
+                                    (ch.position.x - cx).toDouble()
+                                )
+                            ).toFloat() + 90f
+                            if (degrees < 0f) degrees += 360f
+                            val fraction = (degrees / 360f).coerceIn(0f, 1f)
+                            mediaPlayerRef?.let { mp ->
+                                try {
+                                    mp.seekTo((fraction * mp.duration.coerceAtLeast(1)).toInt())
+                                    progress = fraction
+                                } catch (_: Exception) {}
+                            }
+                        }
                     }
                 }
             },
@@ -744,16 +986,24 @@ fun VideoNoteMessage(
                                         width: Int,
                                         height: Int
                                     ) {
+                                        val surface = android.view.Surface(texture)
+                                        prepared = false
+                                        val mp = android.media.MediaPlayer()
                                         try {
-                                            val surface = android.view.Surface(texture)
-                                            prepared = false
-                                            val mp = android.media.MediaPlayer()
                                             mp.setDataSource(path)
                                             mp.setSurface(surface)
                                             surface.release()
                                             mp.isLooping = false
                                             mp.setOnPreparedListener {
-                                                if (mediaPlayerRef === it) prepared = true
+                                                if (mediaPlayerRef === it) {
+                                                    // Продолжаем с позиции, сохранённой при
+                                                    // паузе координатором или скролле
+                                                    val dur = try { it.duration } catch (_: Exception) { 0 }
+                                                    if (savedPositionMs in 1 until dur) {
+                                                        try { it.seekTo(savedPositionMs) } catch (_: Exception) {}
+                                                    }
+                                                    prepared = true
+                                                }
                                             }
                                             mp.setOnCompletionListener {
                                                 if (mediaPlayerRef === it) {
@@ -761,6 +1011,7 @@ fun VideoNoteMessage(
                                                     playing = false
                                                     active = false
                                                     progress = 0f
+                                                    savedPositionMs = 0
                                                     ChatPlaybackCoordinator.release(jsonText)
                                                 }
                                             }
@@ -776,6 +1027,11 @@ fun VideoNoteMessage(
                                             mediaPlayerRef = mp
                                             mp.prepareAsync()
                                         } catch (_: Exception) {
+                                            // Файл битый/удалён из кэша: не даём утечь ни
+                                            // нативному плееру, ни surface
+                                            try { mp.release() } catch (_: Exception) {}
+                                            try { surface.release() } catch (_: Exception) {}
+                                            if (mediaPlayerRef === mp) mediaPlayerRef = null
                                             active = false
                                             playing = false
                                         }
@@ -790,6 +1046,8 @@ fun VideoNoteMessage(
                                     override fun onSurfaceTextureDestroyed(
                                         texture: android.graphics.SurfaceTexture
                                     ): Boolean {
+                                        // Запоминаем позицию: после re-prepare продолжим с неё
+                                        try { mediaPlayerRef?.let { savedPositionMs = it.currentPosition } } catch (_: Exception) {}
                                         try { mediaPlayerRef?.release() } catch (_: Exception) {}
                                         mediaPlayerRef = null
                                         prepared = false

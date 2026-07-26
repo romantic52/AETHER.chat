@@ -21,9 +21,12 @@
         android:theme="@style/Theme.SecureMessenger"
         android:usesCleartextTraffic="false"
         android:networkSecurityConfig="@xml/network_security_config">
+        <!-- configChanges: пересоздание Activity убивало запись голосового/кружка
+             (state в composable). Compose сам обрабатывает смену конфигурации. -->
         <activity
             android:name=".MainActivity"
             android:exported="true"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode|density"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />

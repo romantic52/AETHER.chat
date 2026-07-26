@@ -8,6 +8,11 @@ import android.media.MediaMuxer
 import java.io.File
 import java.nio.ByteBuffer
 
+/** Сэмплов в одном AAC-кадре. */
+private const val AAC_SAMPLES_PER_FRAME = 1_024L
+/** Фолбэк частоты дискретизации, если дорожка не сообщает свою. */
+private const val FALLBACK_SAMPLE_RATE = 44_100
+
 /** Быстрая склейка и обрезка AAC/M4A без перекодирования. */
 object VoiceUtils {
     fun durationMs(file: File): Long {
@@ -64,8 +69,17 @@ object VoiceUtils {
                     val audioTrack = audioTrackOf(extractor)
                     if (audioTrack < 0) continue
                     extractor.selectTrack(audioTrack)
+                    val format = extractor.getTrackFormat(audioTrack)
+                    // Межсегментный зазор — длительность одного AAC-кадра ИМЕННО этой дорожки:
+                    // константа под 44.1 кГц сдвигала бы PTS на стыках при другой частоте записи.
+                    val sampleRate = try {
+                        format.getInteger(MediaFormat.KEY_SAMPLE_RATE)
+                    } catch (_: Exception) {
+                        FALLBACK_SAMPLE_RATE
+                    }
+                    val frameUs = 1_000_000L * AAC_SAMPLES_PER_FRAME / sampleRate.coerceAtLeast(1)
                     if (muxTrack < 0) {
-                        muxTrack = muxer.addTrack(extractor.getTrackFormat(audioTrack))
+                        muxTrack = muxer.addTrack(format)
                         muxer.start()
                         muxerStarted = true
                     }
@@ -89,16 +103,25 @@ object VoiceUtils {
                         lastPtsUs = normalizedUs
                         extractor.advance()
                     }
-                    offsetUs += lastPtsUs + 23_220L
+                    offsetUs += lastPtsUs + frameUs
                 } finally {
                     extractor.release()
                 }
             }
 
-            if (!muxerStarted) return false
+            if (!muxerStarted) {
+                // Ни в одном сегменте нет аудиодорожки — пустой контейнер не оставляем.
+                out.delete()
+                return false
+            }
             muxer.stop()
             muxerStarted = false
-            out.exists() && out.length() > 0L
+            if (out.exists() && out.length() > 0L) {
+                true
+            } else {
+                out.delete()
+                false
+            }
         } catch (_: Exception) {
             out.delete()
             false
@@ -163,7 +186,13 @@ object VoiceUtils {
 
             muxer.stop()
             muxerStarted = false
-            out.exists() && out.length() > 0L
+            if (out.exists() && out.length() > 0L) {
+                true
+            } else {
+                // Пустой результат не оставляем в cacheDir.
+                out.delete()
+                false
+            }
         } catch (_: Exception) {
             out.delete()
             false

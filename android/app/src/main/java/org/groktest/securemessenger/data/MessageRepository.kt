@@ -15,6 +15,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.crypto.E2ECrypto
 import org.groktest.securemessenger.crypto.KeyTrustStore
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.util.UUID
@@ -240,7 +241,9 @@ class MessageRepository(
     private fun sessionKeyOf(peerId: String, deviceId: String) =
         if (deviceId == "primary") peerId else "$peerId::$deviceId"
 
-    private val peerDevicesCache = mutableMapOf<String, Pair<List<uniffi.sm_core.DeviceInfo>, Long>>()
+    // ConcurrentHashMap: читается из inbox-корутины (senderDeviceOf) и пишется из
+    // outbox-корутины (sendWire) одновременно — обычный HashMap здесь портился бы.
+    private val peerDevicesCache = java.util.concurrent.ConcurrentHashMap<String, Pair<List<uniffi.sm_core.DeviceInfo>, Long>>()
 
     private fun peerDevices(peerId: String, force: Boolean = false): List<uniffi.sm_core.DeviceInfo> {
         val id = peerId.lowercase()
@@ -320,10 +323,17 @@ class MessageRepository(
             .ifEmpty { listOf(uniffi.sm_core.DeviceInfo("primary", "")) }
         var firstId: String? = null
         var firstError: Exception? = null
-        for (dev in devices) {
+        for ((index, dev) in devices.withIndex()) {
             try {
                 val envelope = ratchetMutex.withLock { encryptDirectForDeviceLocked(id, dev.deviceId, wire) }
-                val cid = if (firstId == null) clientMsgId else java.util.UUID.randomUUID().toString()
+                // Детерминированный client_msg_id на копию: не-первичные — msgId::deviceId,
+                // чтобы серверная дедупликация работала и при ретраях fanout'а
+                // (раньше random UUID на каждый ретрай плодил дубликаты).
+                val cid = when {
+                    index == 0 -> clientMsgId
+                    clientMsgId != null -> "$clientMsgId::${dev.deviceId}"
+                    else -> java.util.UUID.randomUUID().toString()
+                }
                 val mid = api.sendMessageDevice(myId, peerId, envelope, cid, dev.deviceId)
                 if (firstId == null) firstId = mid
             } catch (e: Exception) {
@@ -660,7 +670,26 @@ class MessageRepository(
         }
 
         if (obj != null && ptype.isNotBlank() && ptype != "text" && ptype != "media") {
-            return null
+            // Известные чистые контролы игнорируем молча, как раньше. Но НЕИЗВЕСТНЫЙ
+            // тип с контентными признаками (file_id/media{}/text) — это чьё-то
+            // сообщение: молчаливый дроп + ACK терял его навсегда. Ставим плашку.
+            val knownControl = ptype in setOf("pin", "poll_vote", "read_receipt", "sync_sent", "webrtc")
+            val hasContent = obj.has("file_id") || obj.optJSONObject("media") != null ||
+                obj.optString("text").isNotBlank()
+            if (knownControl || !hasContent) return null
+            ensureChatExists(msgPeerId, forceGroup = groupLike)
+            store.insertMessage(
+                MessageEntity(
+                    msgId = m.id,
+                    peerId = msgPeerId,
+                    isOut = false,
+                    text = "[Вложение не поддерживается этой версией]",
+                    timestamp = msgTimestamp,
+                    status = 1
+                )
+            )
+            if (!m.senderId.equals(myId, ignoreCase = true)) store.incrementUnread(msgPeerId)
+            return if (!groupLike && !m.senderId.equals(myId, ignoreCase = true)) m.senderId else null
         }
 
         ensureChatExists(msgPeerId, forceGroup = groupLike)
@@ -788,7 +817,7 @@ class MessageRepository(
             for (msg in store.getPendingOutgoing()) {
                 if (msg.peerId.lowercase() in blockedPeers) continue
                 val localId = localRecordingId(msg.text)
-                if (localId != null && !localRecordingFile(localId).let { it.exists() && it.length() > 0L }) {
+                if (localId != null && !findLocalRecordingFile(localId).let { it.exists() && it.length() > 0L }) {
                     android.util.Log.w("Outbox", "Local recording is missing for msg=${msg.msgId}")
                     store.updateStatus(msg.msgId, -1)
                     attempts.remove(msg.msgId)
@@ -956,13 +985,19 @@ class MessageRepository(
         source: File,
         mime: String,
         kind: String,
-        durationMs: Long
+        durationMs: Long,
+        waveform: List<Int>? = null
     ): Exception? {
         return try {
             val clientId = UUID.randomUUID().toString()
             val wireKind = if (kind == "video_note" || kind == "circle") "video_msg" else kind
             val localFile = localRecordingFile(clientId)
-            if (!source.renameTo(localFile)) source.copyTo(localFile, overwrite = true)
+            if (!source.renameTo(localFile)) {
+                source.copyTo(localFile, overwrite = true)
+                // rename не прошёл (другой том/ФС) — исходник после копии не нужен,
+                // иначе осиротевшие записи копятся в cacheDir.
+                source.delete()
+            }
             require(localFile.length() > 0L) { "Пустая запись" }
             val localJson = JSONObject()
                 .put("type", "media")
@@ -970,6 +1005,11 @@ class MessageRepository(
                 .put("mime_type", mime)
                 .put("duration", durationMs / 1000.0)
                 .put("local_id", clientId)
+                .apply {
+                    // Волна ГС (амплитуды 0..31): хранится в Room вместе с pending-записью
+                    // и из uploadLocalRecording уезжает в wire-JSON как есть.
+                    if (!waveform.isNullOrEmpty()) put("waveform", JSONArray(waveform))
+                }
                 .toString()
 
             ensureChatExists(peerId, fetchProfile = false)
@@ -993,7 +1033,7 @@ class MessageRepository(
     private suspend fun uploadLocalRecording(msg: MessageEntity) {
         val localId = localRecordingId(msg.text)
             ?: throw IllegalArgumentException("Нет локальной записи")
-        val source = localRecordingFile(localId)
+        val source = findLocalRecordingFile(localId)
         require(source.exists() && source.length() > 0L) { "Локальная запись потеряна" }
 
         val payload = JSONObject(msg.text)
@@ -1035,6 +1075,8 @@ class MessageRepository(
         val key: String,
         val kind: String,
         val mime: String,
+        /** 0 — размер неизвестен (старые клиенты не шлют file_size). */
+        val sizeBytes: Long,
     )
 
     private fun mediaRef(jsonText: String): MediaRef? {
@@ -1056,7 +1098,10 @@ class MessageRepository(
             val mime = firstString(obj, "mime_type", "mimeType", "mime")
                 ?: media?.let { firstString(it, "mime_type", "mimeType", "mime") }
                 ?: ""
-            MediaRef(fileId, nonce, key, kind, mime)
+            val size = obj.optLong("file_size", 0L).takeIf { it > 0L }
+                ?: media?.optLong("file_size", 0L)?.takeIf { it > 0L }
+                ?: 0L
+            MediaRef(fileId, nonce, key, kind, mime, size)
         } catch (_: Exception) {
             null
         }
@@ -1065,8 +1110,20 @@ class MessageRepository(
     private fun mediaCacheFile(fileId: String, nonce: String, key: String): File =
         MediaCache.fileFor(cacheRoot, "$fileId|$nonce|$key")
 
+    /** Неотправленные записи живут в filesDir/outbox_media — их не смоет ни
+     *  «Очистить кеш», ни авто-очистка cacheDir системой (иначе запись, сделанная
+     *  офлайн, терялась безвозвратно до отправки). */
     private fun localRecordingFile(id: String): File =
-        MediaCache.fileFor(cacheRoot, "outgoing-recording|$id")
+        MediaCache.outboxFileFor(cacheRoot, "outgoing-recording|$id")
+
+    /** Чтение pending-файла: новый путь, с фолбэком на старую кеш-папку —
+     *  записи, сделанные до переноса, дошлются без потери. */
+    private fun findLocalRecordingFile(id: String): File {
+        val current = localRecordingFile(id)
+        if (current.exists() && current.length() > 0L) return current
+        val legacy = MediaCache.fileFor(cacheRoot, "outgoing-recording|$id")
+        return if (legacy.exists() && legacy.length() > 0L) legacy else current
+    }
 
     private fun localRecordingId(jsonText: String): String? = try {
         JSONObject(jsonText).optString("local_id")
@@ -1076,7 +1133,7 @@ class MessageRepository(
     }
 
     private fun cachedLocalRecording(jsonText: String): File? =
-        localRecordingId(jsonText)?.let(::localRecordingFile)
+        localRecordingId(jsonText)?.let(::findLocalRecordingFile)
             ?.takeIf { it.exists() && it.length() > 0L }
 
     fun cachedMediaFile(jsonText: String): File? =
@@ -1094,7 +1151,7 @@ class MessageRepository(
             if (cacheFile.exists() && cacheFile.length() > 0L) return cacheFile
 
             val lock = mediaDownloadLocks.getOrPut(cacheKey) { Mutex() }
-            lock.withLock {
+            val result = lock.withLock {
                 if (cacheFile.exists() && cacheFile.length() > 0L) return@withLock cacheFile
                 val encryptedBytes = api.downloadFile(ref.fileId)
                 val plain = crypto.decryptBytes(
@@ -1105,14 +1162,25 @@ class MessageRepository(
                 cacheBytes(plain, cacheFile)
                 cacheFile
             }
+            // Файл в кеше — Mutex больше не нужен: без remove map рос бы всю сессию
+            // (по записи на каждое уникальное медиа). При ошибке Mutex остаётся.
+            mediaDownloadLocks.remove(cacheKey)
+            result
         } catch (_: Exception) {
             null
         }
     }
 
-    private fun shouldAutoCache(jsonText: String): Boolean = mediaRef(jsonText)?.let {
-        it.kind == "image" || it.mime.startsWith("image/")
-    } == true
+    /** Автозагрузка при приёме: картинки — всегда; ГС и кружки — как в Telegram,
+     *  но крупные (при известном размере > ~15 МБ) качаем только по тапу. */
+    private fun shouldAutoCache(jsonText: String): Boolean {
+        val ref = mediaRef(jsonText) ?: return false
+        if (ref.kind == "image" || ref.mime.startsWith("image/")) return true
+        val voiceLike = ref.kind in setOf("voice", "video_note", "video_msg") ||
+            ref.mime.startsWith("audio/")
+        if (!voiceLike) return false
+        return ref.sizeBytes <= 0L || ref.sizeBytes <= 15L * 1024 * 1024
+    }
 
     private suspend fun warmUiCache() {
         store.preloadRecentMessages()
@@ -1152,14 +1220,15 @@ class MessageRepository(
     private fun mediaKindFor(mimeType: String): String = when {
         mimeType.startsWith("image/") -> "image"
         mimeType.startsWith("video/") -> "video"
-        mimeType.startsWith("audio/") -> "voice"
+        // audio/* из пикера — документ (mp3-музыка ≠ голосовое): kind 'voice'
+        // ставит только sendRecording для собственных записей диктофона.
         else -> "file"
     }
 
     private fun normalizeIncomingPayload(obj: JSONObject): JSONObject {
         val type = obj.optString("type")
         if (type == "media") return normalizeMediaPayload(obj, fallbackKind = null)
-        if (type !in setOf("image", "video", "voice", "video_msg", "file")) return obj
+        if (type !in setOf("image", "video", "voice", "video_msg", "video_note", "circle", "audio", "file")) return obj
 
         val media = obj.optJSONObject("media")
         val out = JSONObject().put("type", "media")
@@ -1181,12 +1250,15 @@ class MessageRepository(
                 media?.has(key) == true -> out.put(key, media.optInt(key))
             }
         }
+        // Волна ГС: массив интов переносим как есть (и top-level, и из media{})
+        (obj.optJSONArray("waveform") ?: media?.optJSONArray("waveform"))
+            ?.let { out.put("waveform", it) }
         return normalizeMediaPayload(out, fallbackKind = when (type) {
             "image" -> "image"
             "video" -> "video"
             "voice" -> "voice"
-            "video_msg" -> "video_msg"
-            else -> "file"
+            "video_msg", "video_note", "circle" -> "video_msg"
+            else -> "file" // в т.ч. 'audio': музыка — документ, не голосовое
         })
     }
 
@@ -1197,6 +1269,10 @@ class MessageRepository(
         }
         if (obj.optString("kind") in setOf("video_msg", "circle")) {
             obj.put("kind", "video_note")
+        }
+        // Волна из вложенного media{} — на верхний уровень, где её читает плеер
+        if (!obj.has("waveform")) {
+            obj.optJSONObject("media")?.optJSONArray("waveform")?.let { obj.put("waveform", it) }
         }
         return obj
     }

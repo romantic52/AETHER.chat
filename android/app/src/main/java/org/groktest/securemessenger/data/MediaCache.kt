@@ -10,12 +10,24 @@ import java.security.MessageDigest
 @OptIn(coil.annotation.ExperimentalCoilApi::class)
 object MediaCache {
     private const val MEDIA_DIR = "aether_media_cache"
+    private const val OUTBOX_DIR = "outbox_media"
 
     fun mediaDir(context: Context): File = File(context.cacheDir, MEDIA_DIR).apply { mkdirs() }
 
     fun mediaDir(cacheRoot: File): File = File(cacheRoot, MEDIA_DIR).apply { mkdirs() }
 
     fun fileFor(cacheRoot: File, key: String): File = File(mediaDir(cacheRoot), sha256(key))
+
+    /**
+     * Папка НЕОТПРАВЛЕННЫХ записей — во внутреннем filesDir (сосед cacheDir в
+     * приватной директории приложения), а не в кеше: её не трогают ни
+     * «Очистить кеш» ([clearAll] чистит только aether_media_cache), ни
+     * авто-очистка cacheDir системой при нехватке места.
+     */
+    fun outboxDir(cacheRoot: File): File =
+        File(File(cacheRoot.parentFile ?: cacheRoot, "files"), OUTBOX_DIR).apply { mkdirs() }
+
+    fun outboxFileFor(cacheRoot: File, key: String): File = File(outboxDir(cacheRoot), sha256(key))
 
     suspend fun clearAll(context: Context): Long = withContext(Dispatchers.IO) {
         val before = cacheSize(context)
