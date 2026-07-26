@@ -75,6 +75,7 @@ struct ChatView: View {
 
     // TOFU: непринятая смена olm-ключа собеседника (SEC HIGH-2) — баннер.
     @State private var pendingKeyChange: String?
+    @State private var pendingKeyKind: CoreClient.KeyAlertKind?
 
     init(peerId: String, isGroup: Bool) {
         self.peerId = peerId
@@ -251,7 +252,10 @@ struct ChatView: View {
         .task(id: peerId) {
             vm.bind(peerId: peerId, isGroup: isGroup, session: session, messaging: messaging)
             await vm.onAppear()
-            if !isGroup { pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId) }
+            if !isGroup {
+                pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId)
+                pendingKeyKind = await messaging.pendingOlmAlertKind(for: peerId)
+            }
             #if DEBUG
             if let msg = ProcessInfo.processInfo.environment["AETHER_SEND"], !msg.isEmpty {
                 try? await Task.sleep(nanoseconds: 1_500_000_000)
@@ -283,7 +287,10 @@ struct ChatView: View {
         .onReceive(messaging.inboxTick.$tick.dropFirst()) { _ in
             vm.requestReload()
             if !isGroup {
-                Task { pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId) }
+                Task {
+                    pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId)
+                    pendingKeyKind = await messaging.pendingOlmAlertKind(for: peerId)
+                }
             }
         }
         .sheet(item: $pickerFor) { msg in
@@ -434,17 +441,28 @@ struct ChatView: View {
     /// Баннер «ключ собеседника изменился» (TOFU, SEC HIGH-2): переустановка
     /// приложения у пира или атака — решает пользователь, тихих перепинов нет.
     private func keyChangeBanner(peerKey: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label("Ключ шифрования собеседника изменился", systemImage: "exclamationmark.shield.fill")
+        let isMaster = pendingKeyKind == .masterChanged
+        let isUnsigned = pendingKeyKind == .deviceUnsigned
+        let title = isMaster ? "Изменился ключ аккаунта собеседника"
+            : isUnsigned ? "Устройство собеседника не подписано его аккаунтом"
+            : "Ключ шифрования собеседника изменился"
+        let detail = isMaster
+            ? "Так выглядит переустановка аккаунта — либо атака. Приняв ключ, вы обнулите всё доверие к прежним устройствам собеседника. Сверьте отпечаток по другому каналу."
+            : isUnsigned
+            ? "Обычно это значит, что собеседник ещё не обновил приложение: на это устройство сообщения не отправляются, а его сообщения не читаются. Доверять стоит, только если вы уверены, что это его устройство."
+            : "Это смена устройства или переустановка приложения — либо попытка подмены. Сверьте отпечаток по другому каналу, прежде чем принимать."
+        return VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: "exclamationmark.shield.fill")
                 .font(.footnote.weight(.semibold))
-            Text("Это смена устройства или переустановка приложения — либо попытка подмены. Сверьте цифры безопасности по другому каналу, прежде чем принимать.")
+            Text(detail)
                 .font(.caption2)
                 .foregroundStyle(.secondary)
             HStack {
-                Button("Принять новый ключ") {
+                Button(isUnsigned ? "Доверять устройству" : "Принять новый ключ") {
                     Task {
                         await messaging.acceptNewOlmKey(peerKey: peerKey)
                         pendingKeyChange = await messaging.pendingOlmKeyChange(for: peerId)
+                        pendingKeyKind = await messaging.pendingOlmAlertKind(for: peerId)
                     }
                 }
                 .font(.footnote.weight(.semibold))

@@ -500,6 +500,13 @@ def init_db() -> None:
                        WHERE table_schema = current_schema() AND table_name='sessions' AND column_name='device_id')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE sessions ADD COLUMN device_id TEXT")
+        # Когда ЭТА сессия объявила себя устройством. Анти-вор гейт считает возраст
+        # по ней, а не по crypto_devices.created_at: иначе угнанный токен, привязавшись
+        # к старому чужому слоту, получал бы право выкидывать устройства немедленно.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_schema = current_schema() AND table_name='sessions' AND column_name='device_bound_at')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE sessions ADD COLUMN device_bound_at TEXT")
         for col, ddl in [("totp_secret", "TEXT"),
                          ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")]:
             cur.execute(
@@ -802,22 +809,41 @@ def bind_session_device(body: BindDeviceRequest, authorization: str = Header(Non
     """Клиент после логина сообщает своё крипто-устройство: сессия становится
     выкидываемой адресно (экран «Сессии»).
 
-    Привязка к УЖЕ существующему устройству требует его Olm-identity: иначе вор
-    с одним лишь токеном объявлял бы свою сессию чужим устройством и выкидывал
-    настоящее (вместе с его prekeys и Olm-идентичностью)."""
+    identity_key_b64 — слабая проверка «не опечатка»: этот ключ ПУБЛИЧЕН (виден
+    в GET /users/{id}/devices), поэтому доказательством владения быть не может.
+    Настоящая защита от вора токена — в kick_device: он смотрит, как давно ИМЕННО
+    ЭТА сессия привязана к устройству (device_bound_at), а не на возраст самого
+    устройства, который вор наследовал бы вместе с чужим слотом."""
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
         cur.execute(
             "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
             (current_user, body.device_id))
         row = cur.fetchone()
-        if row and row["identity_key_b64"] != body.identity_key_b64:
+        if row and body.identity_key_b64 and row["identity_key_b64"] != body.identity_key_b64:
             raise HTTPException(403, "Device identity mismatch")
-        cur.execute("UPDATE sessions SET device_id = %s WHERE token = %s", (body.device_id, token))
+        # Перепривязка к ДРУГОМУ устройству перезапускает отсчёт: иначе смена
+        # device_id мгновенно наследовала бы право выкидывать чужие устройства.
+        cur.execute(
+            """UPDATE sessions
+               SET device_id = %s,
+                   device_bound_at = CASE WHEN device_id IS DISTINCT FROM %s
+                                          THEN %s ELSE COALESCE(device_bound_at, %s) END
+               WHERE token = %s""",
+            (body.device_id, body.device_id, _utc_now(), _utc_now(), token))
     return {"ok": True}
 
 
 KICK_MIN_DEVICE_AGE_HOURS = 12
+
+
+def _hours_since(iso_ts: Optional[str]) -> Optional[float]:
+    if not iso_ts:
+        return None
+    try:
+        return (datetime.now(timezone.utc) - datetime.fromisoformat(iso_ts)).total_seconds() / 3600
+    except (ValueError, TypeError):
+        return None
 
 
 def _device_age_hours(cur, user_id: str, device_id: Optional[str]) -> Optional[float]:
@@ -875,14 +901,23 @@ async def kick_device(device_id: str, authorization: str = Header(None),
     (моложе 12 часов) выкидывать другие нельзя."""
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
-        cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
+        cur.execute("SELECT device_id, device_bound_at FROM sessions WHERE token = %s", (token,))
         me = cur.fetchone()
         my_device = me["device_id"] if me else None
         # Анти-вор: гейт применяется и к «своему» устройству. Иначе угнанный токен
         # привязывался к чужому device_id (PUT /sessions/me/device) и «выкидывал сам
         # себя», снося настоящему устройству сессии, prekeys и Olm-идентичность.
         # Штатный выход из аккаунта — POST /logout, он крипто-материал не трогает.
+        #
+        # Возраст берём МЕНЬШИЙ из «сколько живёт устройство» и «сколько эта сессия
+        # к нему привязана»: публичный identity_key доказательством владения быть не
+        # может, а вот выждать 12 часов после захвата слота вор не сможет незаметно.
         age = _device_age_hours(cur, current_user, my_device)
+        bind_age = _hours_since(me["device_bound_at"] if me else None)
+        if age is not None and bind_age is not None:
+            age = min(age, bind_age)
+        elif bind_age is not None:
+            age = bind_age
         if age is None or age < KICK_MIN_DEVICE_AGE_HOURS:
             raise HTTPException(
                 403,
@@ -1186,11 +1221,15 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                    identity_sig_b64 = EXCLUDED.identity_sig_b64,
                    master_key_b64 = EXCLUDED.master_key_b64,
                    device_sig_b64 = EXCLUDED.device_sig_b64,
-                   -- Смена ключей = фактически новое устройство в этом слоте:
+                   -- Смена ЛЮБОГО ключа = фактически новое устройство в этом слоте:
                    -- 12-часовой анти-вор гейт kick_device отсчитывается заново,
                    -- иначе захват чужого слота давал бы право выкидывать сразу.
                    created_at = CASE WHEN crypto_devices.identity_key_b64
-                                          <> EXCLUDED.identity_key_b64
+                                          IS DISTINCT FROM EXCLUDED.identity_key_b64
+                                       OR crypto_devices.ed25519_key_b64
+                                          IS DISTINCT FROM EXCLUDED.ed25519_key_b64
+                                       OR crypto_devices.master_key_b64
+                                          IS DISTINCT FROM EXCLUDED.master_key_b64
                                      THEN EXCLUDED.created_at
                                      ELSE crypto_devices.created_at END""",
             (current_user, device_id, body.identity_key_b64,
@@ -1908,8 +1947,14 @@ def inbox(user_id: str, since: str = None, device_id: str = "primary",
                        SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
                    )) AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
                    AND m.created_at > %s
-                   ORDER BY m.created_at ASC""",
-                (user_id, user_id, device_id, since),
+                   AND NOT EXISTS (
+                       SELECT 1 FROM message_receipts r
+                       WHERE r.message_id = m.id AND LOWER(r.user_id) = LOWER(%s)
+                             AND r.device_id = %s
+                   )
+                   ORDER BY m.created_at ASC
+                   LIMIT 200""",
+                (user_id, user_id, device_id, since, user_id, device_id),
             )
             rows = cur.fetchall()
         else:

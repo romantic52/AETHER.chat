@@ -462,6 +462,13 @@ let olmEdPins = Object.create(null);
 // Непринятые смены ключа (deviceKey -> {peerId, identity}): баннер в чате.
 // Живут в памяти вкладки — после перезагрузки тревога всплывёт заново.
 let pendingKeyChanges = Object.create(null);
+// Устройства пира без cross-signing, которые мы не приняли автоматически:
+// deviceKey -> {peerId, identity}. Пользователь решает явно (баннер в чате).
+let pendingUnsignedDevices = Object.create(null);
+// Счётчики неудачных вскрытий: message_id -> попытки. Сообщение, которое не
+// открывается раз за разом, иначе навсегда затыкает окно выдачи инбокса.
+let undecryptableTries = Object.create(null);
+const MAX_DECRYPT_TRIES = 8;
 // TOFU-пины МАСТЕР-ключей аккаунтов (cross-signing, P8): peerId -> master_b64.
 // Корень доверия: им проверяются все устройства пира, поэтому подсадка
 // устройства сервером не проходит даже на «первом контакте» с device_id.
@@ -527,10 +534,13 @@ async function getPeerDevices(peerId, force = false) {
     peerId = peerId.toLowerCase();
     const cached = peerDevicesCache[peerId];
     if (!force && cached && Date.now() - cached.ts < 60_000) return cached.devices;
+    // Форс-рефетч гасим отдельным окном: иначе каждое застрявшее сообщение на
+    // каждом поллинге (а он раз в 2 секунды) било бы по директории заново.
+    if (force && cached && Date.now() - cached.forcedTs < 60_000) return cached.devices;
     const res = await fetch(`${serverUrl}/users/${pathSegment(peerId)}/devices`, { headers: authHeaders() });
     if (!res.ok) throw new Error('Не удалось получить список устройств собеседника');
     const devices = (await res.json()).devices || [];
-    peerDevicesCache[peerId] = { devices, ts: Date.now() };
+    peerDevicesCache[peerId] = { devices, ts: Date.now(), forcedTs: force ? Date.now() : (cached?.forcedTs || 0) };
     return devices;
 }
 
@@ -763,16 +773,51 @@ function pendingKeysForPeer(peerId) {
     return Object.keys(pendingKeyChanges).filter(k => k === id || k.startsWith(`${id}::`));
 }
 
+function pendingUnsignedForPeer(peerId) {
+    if (!peerId) return [];
+    const id = String(peerId).toLowerCase();
+    return Object.keys(pendingUnsignedDevices).filter(k => k === id || k.startsWith(`${id}::`));
+}
+
 function hasPendingKeyAlert(peerId) {
     if (!peerId) return false;
     return pendingMasterChanges[String(peerId).toLowerCase()] !== undefined
-        || pendingKeysForPeer(peerId).length > 0;
+        || pendingKeysForPeer(peerId).length > 0
+        || pendingUnsignedForPeer(peerId).length > 0;
+}
+
+/// Вид тревоги: у смены ключа аккаунта и неподписанного устройства разные
+/// последствия, поэтому и тексты в баннере разные.
+function pendingAlertKind(peerId) {
+    if (!peerId) return null;
+    if (pendingMasterChanges[String(peerId).toLowerCase()] !== undefined) return 'master';
+    if (pendingKeysForPeer(peerId).length) return 'device';
+    if (pendingUnsignedForPeer(peerId).length) return 'unsigned';
+    return null;
 }
 
 function renderKeyChangeBar() {
     const bar = document.getElementById('key-change-bar');
     if (!bar) return;
-    bar.classList.toggle('hidden', !hasPendingKeyAlert(selectedPeer));
+    const kind = pendingAlertKind(selectedPeer);
+    bar.classList.toggle('hidden', !kind);
+    if (!kind) return;
+    const title = bar.querySelector('.key-change-text b');
+    const detail = bar.querySelector('.key-change-text span');
+    const accept = document.getElementById('key-change-accept');
+    if (kind === 'master') {
+        title.innerHTML = '<i class="fas fa-shield-halved"></i> Изменился ключ аккаунта собеседника';
+        detail.textContent = 'Так выглядит переустановка аккаунта — либо атака. Приняв ключ, вы обнулите доверие ко всем прежним устройствам собеседника. Сверьте отпечаток по другому каналу.';
+        accept.textContent = 'Принять новый ключ';
+    } else if (kind === 'unsigned') {
+        title.innerHTML = '<i class="fas fa-shield-halved"></i> Устройство собеседника не подписано его аккаунтом';
+        detail.textContent = 'Обычно это значит, что собеседник ещё не обновил приложение: на это устройство сообщения не отправляются, а его сообщения не читаются.';
+        accept.textContent = 'Доверять устройству';
+    } else {
+        title.innerHTML = '<i class="fas fa-shield-halved"></i> Ключ шифрования собеседника изменился';
+        detail.textContent = 'Смена устройства или переустановка приложения — либо попытка подмены. Сверьте отпечаток по другому каналу, прежде чем принимать.';
+        accept.textContent = 'Принять новый ключ';
+    }
 }
 
 /// Явное принятие нового ключа: снимаем пины и мёртвые сессии этого устройства.
@@ -789,6 +834,13 @@ async function acceptPendingKeyChanges() {
         delete pendingMasterChanges[peer];
         keys = Object.keys(olmIdentityPins).filter(k => k === peer || k.startsWith(`${peer}::`))
             .concat(keys.filter(k => !(k === peer || k.startsWith(`${peer}::`))));
+    }
+    // Неподписанное устройство принимаем по TOFU: пин по curve, без ed25519 —
+    // как у легаси-устройства (появятся подписи — заработает анти-стриппинг).
+    for (const key of pendingUnsignedForPeer(selectedPeer)) {
+        const entry = pendingUnsignedDevices[key];
+        if (entry && entry.identity) olmIdentityPins[key] = entry.identity;
+        delete pendingUnsignedDevices[key];
     }
     for (const key of keys) {
         delete olmIdentityPins[key];
@@ -823,7 +875,11 @@ function verifyDeviceOwnership(api, peerId, deviceId, curve, ed, master, deviceS
         }
         if (pinnedMaster && !knownDevice) {
             // Аккаунт уже публикует подписи, а это устройство мы видим впервые и
-            // оно без подписи — форма подсадки. Пропускаем его, не роняя отправку.
+            // оно без подписи — форма подсадки. Пропускаем его, не роняя отправку,
+            // но тревогу делаем выводимой: пользователь увидит баннер и сможет
+            // осознанно довериться устройству.
+            pendingUnsignedDevices[key] = { peerId: peer, identity: curve };
+            renderKeyChangeBar();
             const error = new Error('Устройство собеседника не подписано его аккаунтом — попросите его обновить приложение');
             error.skipDevice = true;
             throw error;
@@ -953,20 +1009,29 @@ async function openRatchetEnvelope(peerId, envelope) {
         // (сессия пришла входящим prekey, claim мы не делали), cross-signing не
         // включался бы никогда.
         const peerLower = String(peerId).toLowerCase();
-        let devs = await getPeerDevices(peerId);
-        let dev = devs.find(d => d.device_id === senderDevice);
-        if (!dev) {
-            devs = await getPeerDevices(peerId, true);
-            dev = devs.find(d => d.device_id === senderDevice);
+        // Пин первичен: знакомое устройство с совпадающим olm_identity уже доверено,
+        // директория тут ничего не доказывает — а поход в сеть ломал бы приём, если
+        // пир выкинул/переустановил устройство (его прошлые сообщения стали бы
+        // невскрываемыми навсегда).
+        if (olmIdentityPins[key] !== identity) {
+            let devs = await getPeerDevices(peerId);
+            let dev = devs.find(d => d.device_id === senderDevice);
+            if (!dev) {
+                devs = await getPeerDevices(peerId, true);
+                dev = devs.find(d => d.device_id === senderDevice);
+            }
+            // Fail-closed: недоступная или «пустая» директория — это и обычный сетевой
+            // сбой (сообщение вернётся следующим поллингом), и способ сервера навсегда
+            // не давать гейту вооружиться. Молча доверять нельзя.
+            if (!dev || dev.identity_key_b64 !== identity) {
+                throw new Error('Устройство отправителя не подтверждено директорией его аккаунта — повторим позже');
+            }
+            verifyDeviceOwnership(api, peerLower, senderDevice, identity,
+                                  dev.ed25519_key_b64, dev.master_key_b64, dev.device_sig_b64);
+            // В пин уходит ПРОВЕРЕННЫЙ мастером ed25519 — иначе анти-стриппинг не
+            // вооружался бы для чатов, начатых пиром.
+            if (dev.ed25519_key_b64 && dev.master_key_b64) olmEdPins[key] = dev.ed25519_key_b64;
         }
-        // Fail-closed: недоступная или «пустая» директория — это и обычный сетевой
-        // сбой (сообщение вернётся следующим поллингом), и способ сервера навсегда
-        // не давать гейту вооружиться. Молча доверять нельзя.
-        if (!dev || dev.identity_key_b64 !== identity) {
-            throw new Error('Устройство отправителя не подтверждено директорией его аккаунта — повторим позже');
-        }
-        verifyDeviceOwnership(api, peerLower, senderDevice, identity,
-                              dev.ed25519_key_b64, dev.master_key_b64, dev.device_sig_b64);
         const pinned = olmIdentityPins[key];
         if (pinned && pinned !== identity) {
             // Тревога TOFU: сообщение не вскрываем и не ack'аем, но запоминаем —
@@ -2315,7 +2380,9 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                     }
                 }
                 if (!prepared.length) throw skipped || new Error('У получателя нет пригодных устройств');
-                if (skipped) showStatus(skipped.message, 'error');
+                // Причина частичной доставки видна в чате (showStatus пишет в
+                // скрытый после входа элемент экрана логина — там её никто не увидит).
+                if (skipped) renderKeyChangeBar();
                 // Фаза 2: доставка копий; сетевой сбой на не-первой копии не роняет отправку.
                 let firstData = null;
                 for (const item of prepared) {
@@ -2813,9 +2880,24 @@ async function pollInbox() {
                 // failure. ACK it so one poison message cannot block inbox
                 // polling forever. Failed decrypts remain pending.
                 ackThis = decrypted;
+                if (!decrypted && item.id) {
+                    // Карантин: конверт, который не вскрывается раз за разом (пир
+                    // выкинул устройство, ключ сменился и не принят), иначе занимает
+                    // голову окна выдачи и после 200 таких сообщений инбокс мёртв.
+                    const tries = (undecryptableTries[item.id] || 0) + 1;
+                    undecryptableTries[item.id] = tries;
+                    if (tries >= MAX_DECRYPT_TRIES) {
+                        console.warn('Карантин нерасшифрованного сообщения', item.id, e && e.message);
+                        delete undecryptableTries[item.id];
+                        ackThis = true;
+                    }
+                }
                 console.error("Poll parse error:", e);
             } finally {
-                if (ackThis && item.id) ackIds.push(item.id);
+                if (ackThis && item.id) {
+                    ackIds.push(item.id);
+                    delete undecryptableTries[item.id];
+                }
             }
         }
 
