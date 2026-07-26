@@ -419,8 +419,16 @@ actor CoreClient {
                                            deviceId: device,
                                            masterKeyB64: masterKey,
                                            deviceSigB64: deviceSig)
-            try store.metaSet(key: "olm_published_v2", value: "1")
             deviceCache.removeAll()
+            // Флаг ставим ТОЛЬКО когда сервер реально сохранил подписи: старая
+            // версия сервера молча игнорирует незнакомые поля и отвечает 200 —
+            // устройство считало бы cross-signing опубликованным, не опубликовав
+            // его, и не повторяло бы попытку до расхода OTK.
+            let stored = (try? api.listDevices(userId: myId))?
+                .first { $0.deviceId == device }
+            if stored?.masterKeyB64 != nil {
+                try store.metaSet(key: "olm_published_v2", value: "1")
+            }
         } catch {
             // Не критично для UI: повторится при следующем старте/приёме.
         }
