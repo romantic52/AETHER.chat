@@ -24,11 +24,20 @@ dependencies {
     implementation("org.json:json:20240303")
     // Рендер QR-кода привязки (кодирование, оффлайн).
     implementation("com.google.zxing:core:3.5.3")
-    // Голосовые: Android пишет AAC в MP4, веб — mp3/webm. SPI-декодеры
+    // Голосовые: Android и iOS пишут AAC в MP4, десктоп — MP3. SPI-декодеры
     // подключаются к javax.sound.sampled, поэтому проигрывание идёт внутри
     // приложения, а не системным плеером.
     implementation("com.tianscar.javasound:jaad:0.9.4")
     implementation("com.tianscar.javasound:javasound-mp3:1.9.8")
+    // Веб пишет WebM/Opus, и SPI для него нет вовсе (хуже того, jaad ошибочно
+    // забирает такой файл себе и падает). Демультиплексируем и декодируем сами;
+    // обе библиотеки — чистая Java, потому что дистрибутив собирается
+    // jpackage/jlink и нативные библиотеки в него не положить.
+    implementation("org.jitsi:jebml:2.4.4-6-gb310849")
+    implementation("io.github.jaredmdobson:concentus:1.0.2")
+    // jebml объявляет slf4j как provided и без него падает на инициализации
+    // логгера; nop-биндинг заодно убирает предупреждение об отсутствии вывода.
+    implementation("org.slf4j:slf4j-nop:2.0.16")
     // Запись голосовых: чистая Java-реализация LAME (MP3 играют все клиенты).
     implementation("de.sciss:jump3r:1.0.5")
 }

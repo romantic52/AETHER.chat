@@ -1,5 +1,6 @@
 package aether.desktop
 
+import aether.desktop.media.AudioPlayback
 import aether.desktop.media.VoiceRecorder
 import java.io.File
 import javax.sound.sampled.AudioFormat
@@ -39,10 +40,19 @@ private fun probe(file: File) {
         header[0] == 'I'.code.toByte() && header[1] == 'D'.code.toByte() -> "mp3 (id3)"
         else -> "?"
     }
+    println("${file.name}: контейнер $container")
     listOf("file" to false, "buffered" to true).forEach { (label, buffered) ->
         println("  [$label] " + decodeVia(file, buffered))
     }
+    println("  [плеер] " + viaPlayback(file))
 }
+
+/** Ровно тот путь, которым звук идёт в проигрывателе: сигнатура → декодер. */
+private fun viaPlayback(file: File): String = runCatching {
+    val decoded = AudioPlayback.decode(file)
+    "OK ${decoded.format.sampleRate.toInt()}Hz ch=${decoded.format.channels} → " +
+        "${decoded.pcm.size} байт PCM = ${"%.2f".format(decoded.durationMs / 1000.0)} c"
+}.getOrElse { "ОШИБКА ${it.javaClass.simpleName}: ${it.message}" }
 
 private fun decodeVia(file: File, buffered: Boolean): String {
     val result = runCatching {
