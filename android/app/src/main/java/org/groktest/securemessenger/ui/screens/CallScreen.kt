@@ -3,11 +3,18 @@ package org.groktest.securemessenger.ui.screens
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
 import android.media.AudioManager
 import android.media.AudioDeviceInfo
+import android.media.MediaPlayer
+import android.media.RingtoneManager
+import android.media.ToneGenerator
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.VibrationEffect
+import android.os.Vibrator
+import android.os.VibratorManager
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -50,14 +57,20 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
+import coil.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.AetherService
+import org.groktest.securemessenger.api.ServerConfig
+import org.groktest.securemessenger.data.ChatEntity
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.aetherCircle
 import org.groktest.securemessenger.ui.theme.aetherIsland
@@ -75,6 +88,8 @@ fun CallOverlay(
     peerId: String,
     isIncoming: Boolean,
     isVideoCall: Boolean,
+    minimized: Boolean,
+    onMinimizedChange: (Boolean) -> Unit,
     onClose: () -> Unit
 ) {
     val context = LocalContext.current
@@ -103,8 +118,7 @@ fun CallOverlay(
     var connected by remember { mutableStateOf(false) }
     var hasConnected by remember { mutableStateOf(false) }
     var callSeconds by remember { mutableStateOf(0) }
-    var minimized by remember { mutableStateOf(false) }
-    BackHandler(enabled = !minimized) { minimized = true }
+    BackHandler(enabled = !minimized) { onMinimizedChange(true) }
     var micEnabled by remember { mutableStateOf(true) }
     var cameraEnabled by remember { mutableStateOf(isVideoCall) }
     var speakerOn by remember { mutableStateOf(isVideoCall) }
@@ -118,6 +132,16 @@ fun CallOverlay(
     var eglBase by remember { mutableStateOf<EglBase?>(null) }
     var remoteVideoTrack by remember { mutableStateOf<VideoTrack?>(null) }
     val pendingSignals = remember { mutableStateListOf<JSONObject>() }
+
+    // Имя и аватар собеседника из ядрового хранилища (peerId — фолбэк).
+    var peerChat by remember(peerId) { mutableStateOf<ChatEntity?>(null) }
+    LaunchedEffect(peerId) {
+        peerChat = withContext(Dispatchers.IO) {
+            runCatching { AetherService.chatLookup?.invoke(peerId) }.getOrNull()
+        }
+    }
+    val peerName = peerChat?.name?.takeIf { it.isNotBlank() } ?: peerId
+    val peerAvatarFileId = peerChat?.avatarFileId?.takeIf { it.isNotBlank() }
 
     fun sendHangup() {
         try {
@@ -242,10 +266,105 @@ fun CallOverlay(
         applyAudioRoute(speakerOn)
     }
 
+    // Рингтон + вибрация входящего: играют, пока вызов не принят и не завершён.
+    // Уважают режим звонка системы (беззвучный/вибро).
+    val ringing = isIncoming && !accepted && !ending
+    DisposableEffect(ringing) {
+        if (!ringing) return@DisposableEffect onDispose {}
+        val audio = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        var player: MediaPlayer? = null
+        var vibrator: Vibrator? = null
+        try {
+            if (audio.ringerMode == AudioManager.RINGER_MODE_NORMAL) {
+                val uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+                if (uri != null) {
+                    player = MediaPlayer().apply {
+                        setDataSource(context, uri)
+                        setAudioAttributes(
+                            AudioAttributes.Builder()
+                                .setUsage(AudioAttributes.USAGE_NOTIFICATION_RINGTONE)
+                                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                                .build()
+                        )
+                        isLooping = true
+                        prepare()
+                        start()
+                    }
+                }
+            }
+            if (audio.ringerMode != AudioManager.RINGER_MODE_SILENT) {
+                vibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                    (context.getSystemService(Context.VIBRATOR_MANAGER_SERVICE) as VibratorManager).defaultVibrator
+                } else {
+                    @Suppress("DEPRECATION")
+                    context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
+                }
+                vibrator.vibrate(
+                    VibrationEffect.createWaveform(longArrayOf(0L, 900L, 800L), 0)
+                )
+            }
+        } catch (_: Exception) {}
+        onDispose {
+            try { player?.stop() } catch (_: Exception) {}
+            try { player?.release() } catch (_: Exception) {}
+            try { vibrator?.cancel() } catch (_: Exception) {}
+        }
+    }
+
+    // Гудки исходящего вызова, пока собеседник не ответил.
+    val ringback = !isIncoming && !hasConnected && !ending
+    DisposableEffect(ringback) {
+        if (!ringback) return@DisposableEffect onDispose {}
+        val tone = try {
+            ToneGenerator(AudioManager.STREAM_VOICE_CALL, 65).also {
+                it.startTone(ToneGenerator.TONE_SUP_RINGTONE)
+            }
+        } catch (_: Exception) { null }
+        onDispose {
+            try { tone?.stopTone() } catch (_: Exception) {}
+            try { tone?.release() } catch (_: Exception) {}
+        }
+    }
+
     fun processSignal(signal: JSONObject) {
         val type = signal.optString("type")
         val client = webRTCClient
         when (type) {
+            "webrtc_offer" -> {
+                // Повторный offer в ЖИВОМ звонке = ICE-restart от собеседника:
+                // принимаем и отвечаем. Первичный offer сюда не попадает
+                // (его обрабатывает MainActivity через incomingOfferListener).
+                if (client == null || !hasConnected) return
+                val sdp = signal.optString("sdp")
+                if (sdp.isBlank()) return
+                callStatus = "Восстановление связи..."
+                client.setRemoteDescription(
+                    SessionDescription(SessionDescription.Type.OFFER, sdp),
+                    onSet = {
+                        client.createAnswer(object : SdpObserver {
+                            override fun onCreateSuccess(description: SessionDescription?) {
+                                val answer = description ?: return
+                                client.setLocalDescription(
+                                    answer,
+                                    onSet = {
+                                        AetherService.sendWebRtcSignal(JSONObject().apply {
+                                            put("type", "webrtc_answer")
+                                            put("recipient_id", peerId)
+                                            put("sdp", answer.description)
+                                        })
+                                    },
+                                    onError = {}
+                                )
+                            }
+
+                            override fun onSetSuccess() = Unit
+                            override fun onCreateFailure(error: String?) = Unit
+                            override fun onSetFailure(error: String?) = Unit
+                        })
+                    },
+                    onError = {}
+                )
+            }
             "webrtc_answer" -> {
                 if (client == null || !localDescriptionSet) {
                     pendingSignals.add(JSONObject(signal.toString()))
@@ -345,6 +464,37 @@ fun CallOverlay(
                             connected = false
                             callStatus = "Восстановление связи..."
                             val generation = ++disconnectGeneration
+                            // Инициатор звонка пробует ICE-restart (новый offer с
+                            // IceRestart) — отвечающая сторона просто ответит на него.
+                            if (!isIncoming) {
+                                scope.launch {
+                                    delay(2_500)
+                                    if (!connected && generation == disconnectGeneration && !ending && hasConnected) {
+                                        val client = webRTCClient ?: return@launch
+                                        client.createOffer(object : SdpObserver {
+                                            override fun onCreateSuccess(description: SessionDescription?) {
+                                                val offer = description ?: return
+                                                client.setLocalDescription(
+                                                    offer,
+                                                    onSet = {
+                                                        AetherService.sendWebRtcSignal(JSONObject().apply {
+                                                            put("type", "webrtc_offer")
+                                                            put("recipient_id", peerId)
+                                                            put("sdp", offer.description)
+                                                            put("isVideoCall", isVideoCall)
+                                                        })
+                                                    },
+                                                    onError = {}
+                                                )
+                                            }
+
+                                            override fun onSetSuccess() = Unit
+                                            override fun onCreateFailure(error: String?) = Unit
+                                            override fun onSetFailure(error: String?) = Unit
+                                        }, iceRestart = true)
+                                    }
+                                }
+                            }
                             scope.launch {
                                 delay(10_000)
                                 if (!connected && generation == disconnectGeneration && !ending) {
@@ -554,13 +704,13 @@ fun CallOverlay(
                         fillAlpha = AetherStyle.DockFillAlpha,
                         strokeAlpha = AetherStyle.DockStrokeAlpha
                     )
-                    .clickable { minimized = false }
+                    .clickable { onMinimizedChange(false) }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Icon(Icons.Filled.Call, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(peerId, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(peerName, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (connected) formatCallTime(callSeconds) else callStatus,
@@ -674,7 +824,7 @@ fun CallOverlay(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(
-                onClick = { minimized = true },
+                onClick = { onMinimizedChange(true) },
                 modifier = Modifier.size(AetherStyle.SmallControlSize).aetherCircle()
             ) {
                 Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Свернуть", tint = MaterialTheme.colorScheme.onSurface)
@@ -713,11 +863,20 @@ fun CallOverlay(
                         ),
                     contentAlignment = Alignment.Center
                 ) {
-                    Text(initialOf(peerId), color = Color.White, fontSize = 52.sp, fontWeight = FontWeight.Bold)
+                    if (peerAvatarFileId != null) {
+                        AsyncImage(
+                            model = ServerConfig.avatarUrl(peerAvatarFileId),
+                            contentDescription = null,
+                            modifier = Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Text(initialOf(peerName), color = Color.White, fontSize = 52.sp, fontWeight = FontWeight.Bold)
+                    }
                 }
                 Spacer(Modifier.height(22.dp))
             }
-            Text(peerId, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
+            Text(peerName, color = Color.White, fontSize = 30.sp, fontWeight = FontWeight.Bold)
             Spacer(Modifier.height(8.dp))
             Text(callStatus, color = Color.White.copy(alpha = 0.85f), fontSize = 16.sp)
         }

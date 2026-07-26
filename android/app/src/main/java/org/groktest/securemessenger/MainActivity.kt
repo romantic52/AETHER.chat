@@ -5,8 +5,13 @@ import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -27,6 +32,7 @@ import org.groktest.securemessenger.ui.screens.CallOverlay
 import org.groktest.securemessenger.ui.screens.LoginScreen
 import org.groktest.securemessenger.ui.theme.SecureMessengerTheme
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -126,6 +132,12 @@ class MainActivity : FragmentActivity() {
                 // Активный звонок: (peerId, isVideoCall, isIncoming).
                 // Оверлей поверх NavHost — звонок можно свернуть и пользоваться приложением.
                 var activeCall by remember { mutableStateOf<Triple<String, Boolean, Boolean>?>(null) }
+                // Свёрнут ли звонок в мини-пилюлю: тогда контент приложения
+                // сдвигается вниз, чтобы пилюля не перекрывала шапки экранов.
+                var callMinimized by remember { mutableStateOf(false) }
+                androidx.compose.runtime.LaunchedEffect(activeCall) {
+                    if (activeCall != null) callMinimized = false
+                }
 
                 androidx.compose.foundation.layout.Box(
                     modifier = Modifier
@@ -133,11 +145,30 @@ class MainActivity : FragmentActivity() {
                         .background(androidx.compose.material3.MaterialTheme.colorScheme.background),
                     contentAlignment = androidx.compose.ui.Alignment.Center
                 ) {
-                    androidx.compose.foundation.layout.Box(
+                    val callBarVisible = activeCall != null && callMinimized
+                    androidx.compose.foundation.layout.Column(
                         modifier = Modifier
                             .fillMaxHeight()
                             .widthIn(max = 600.dp)
                     ) {
+                        // Резерв под мини-пилюлю звонка: контент уезжает вниз,
+                        // как в Telegram, и шапки экранов не перекрываются.
+                        if (callBarVisible) {
+                            androidx.compose.foundation.layout.Spacer(
+                                Modifier.statusBarsPadding().height(56.dp)
+                            )
+                        }
+                        androidx.compose.foundation.layout.Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(
+                                    if (callBarVisible) {
+                                        Modifier.consumeWindowInsets(WindowInsets.statusBars)
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                        ) {
                         NavHost(
                             navController = navController,
                             startDestination = "login",
@@ -749,6 +780,8 @@ class MainActivity : FragmentActivity() {
                     }
 
                 }
+                        }
+                    }
 
                 // Входящие звонки: глобальный слушатель (не затирается активным звонком)
                 androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -759,6 +792,34 @@ class MainActivity : FragmentActivity() {
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 if (activeCall == null) {
                                     activeCall = Triple(callerId, isVideoCall, true)
+                                    // Приложение в фоне: Compose на паузе, оверлей звонка
+                                    // не смонтируется и рингтон не заиграет — будим
+                                    // пользователя системным уведомлением о звонке.
+                                    if (!AetherService.appInForeground) {
+                                        try {
+                                            val callerName = runCatching {
+                                                AetherService.chatLookup?.invoke(callerId)?.name
+                                            }.getOrNull()?.takeIf { it.isNotBlank() } ?: callerId
+                                            val intent = Intent(this@MainActivity, MainActivity::class.java).apply {
+                                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                            }
+                                            val pending = android.app.PendingIntent.getActivity(
+                                                this@MainActivity, 2, intent,
+                                                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                                            )
+                                            val notif = androidx.core.app.NotificationCompat.Builder(this@MainActivity, "AETHER_MESSAGES")
+                                                .setSmallIcon(R.drawable.ic_stat_aether)
+                                                .setContentTitle(callerName)
+                                                .setContentText(if (isVideoCall) "Входящий видеозвонок" else "Входящий звонок")
+                                                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                                                .setCategory(androidx.core.app.NotificationCompat.CATEGORY_CALL)
+                                                .setContentIntent(pending)
+                                                .setAutoCancel(true)
+                                                .build()
+                                            (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                                                .notify("incoming_call".hashCode(), notif)
+                                        } catch (_: Exception) {}
+                                    }
                                 }
                             }
                         }
@@ -771,6 +832,8 @@ class MainActivity : FragmentActivity() {
                         peerId = callPeer,
                         isIncoming = callIncoming,
                         isVideoCall = callVideo,
+                        minimized = callMinimized,
+                        onMinimizedChange = { callMinimized = it },
                         onClose = {
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 activeCall = null
@@ -788,7 +851,6 @@ class MainActivity : FragmentActivity() {
             }
         }
     }
-}
 }
 }
 }

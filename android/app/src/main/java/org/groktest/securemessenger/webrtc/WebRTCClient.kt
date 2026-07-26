@@ -139,7 +139,7 @@ class WebRTCClient(
         return true
     }
 
-    fun createOffer(sdpObserver: SdpObserver) {
+    fun createOffer(sdpObserver: SdpObserver, iceRestart: Boolean = false) {
         val constraints = MediaConstraints().apply {
             mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
             mandatory.add(
@@ -148,6 +148,10 @@ class WebRTCClient(
                     isVideoCall.toString()
                 )
             )
+            // ICE-restart: новый offer с новыми кандидатами для восстановления связи
+            if (iceRestart) {
+                mandatory.add(MediaConstraints.KeyValuePair("IceRestart", "true"))
+            }
         }
         peerConnection?.createOffer(sdpObserver, constraints)
     }
