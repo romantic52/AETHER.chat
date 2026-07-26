@@ -10,6 +10,8 @@ object Natives {
     fun init() {
         val candidates = listOfNotNull(
             System.getenv("AETHER_NATIVES"),
+            // Установленный дистрибутив: ресурсы приложения рядом с exe.
+            System.getProperty("compose.application.resources.dir"),
             "natives",
             "desktop/natives",
             "../core/target/release",

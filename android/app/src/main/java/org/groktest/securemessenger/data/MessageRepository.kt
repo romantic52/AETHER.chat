@@ -341,6 +341,7 @@ class MessageRepository(
         var firstId: String? = null
         var firstError: Exception? = null
         for ((index, dev) in devices.withIndex()) {
+            var cidForRetry: String? = null
             try {
                 val envelope = ratchetMutex.withLock { encryptDirectForDeviceLocked(id, dev.deviceId, wire) }
                 // Детерминированный client_msg_id на копию: не-первичные — msgId::deviceId,
@@ -348,18 +349,83 @@ class MessageRepository(
                 // (раньше random UUID на каждый ретрай плодил дубликаты).
                 val cid = when {
                     index == 0 -> clientMsgId
-                    clientMsgId != null -> "$clientMsgId::${dev.deviceId}"
+                    clientMsgId != null -> copyClientId(clientMsgId, dev.deviceId)
                     else -> java.util.UUID.randomUUID().toString()
                 }
+                cidForRetry = cid
                 val mid = api.sendMessageDevice(myId, peerId, envelope, cid, dev.deviceId)
                 if (firstId == null) firstId = mid
             } catch (e: Exception) {
-                // Одно недоступное устройство не роняет отправку остальным.
+                // Недоставленная копия не выдаётся за успех и не теряется:
+                // она уходит в очередь дозасылки (см. retryPendingCopies).
                 if (firstError == null) firstError = e
+                if (cidForRetry != null) {
+                    enqueueCopyRetry(PendingCopy(id, dev.deviceId, wire, cidForRetry))
+                }
             }
         }
         return firstId ?: throw (firstError ?: IllegalStateException("У получателя нет доступных устройств"))
     }
+
+    /** Копия сообщения, не доехавшая до конкретного устройства получателя. */
+    private data class PendingCopy(
+        val peerId: String,
+        val deviceId: String,
+        val wire: String,
+        val clientId: String,
+        var attempts: Int = 0,
+    )
+
+    private val pendingCopies = java.util.Collections.synchronizedList(mutableListOf<PendingCopy>())
+
+    private fun enqueueCopyRetry(copy: PendingCopy) {
+        synchronized(pendingCopies) {
+            if (pendingCopies.size >= MAX_PENDING_COPIES) return
+            if (pendingCopies.any { it.clientId == copy.clientId && it.deviceId == copy.deviceId }) return
+            pendingCopies.add(copy)
+        }
+    }
+
+    /**
+     * Дозасылка копий, не доехавших до отдельных устройств аккаунта (устройство
+     * было офлайн, кончились one-time keys). Сообщение у отправителя уже
+     * отмечено доставленным — здесь добираются остальные устройства.
+     */
+    private suspend fun retryPendingCopies() {
+        val batch = synchronized(pendingCopies) { pendingCopies.toList() }
+        for (copy in batch) {
+            val done = try {
+                val envelope = ratchetMutex.withLock {
+                    encryptDirectForDeviceLocked(copy.peerId, copy.deviceId, copy.wire)
+                }
+                api.sendMessageDevice(myId, copy.peerId, envelope, copy.clientId, copy.deviceId)
+                true
+            } catch (e: Exception) {
+                copy.attempts += 1
+                if (copy.attempts >= MAX_COPY_ATTEMPTS) {
+                    android.util.Log.w(
+                        "Outbox",
+                        "копия для ${copy.deviceId} (${copy.peerId}) отброшена после ${copy.attempts} попыток",
+                        e,
+                    )
+                    true
+                } else {
+                    false
+                }
+            }
+            if (done) synchronized(pendingCopies) { pendingCopies.remove(copy) }
+        }
+    }
+
+    /**
+     * Детерминированный client_id копии для конкретного устройства.
+     * Сервер принимает client_id ТОЛЬКО как UUID (`uuid.UUID(client_id)`), поэтому
+     * прежняя схема «msgId::deviceId» уходила в 400 и копии для вторых устройств
+     * молча терялись. Имя-based UUID сохраняет стабильность между ретраями,
+     * то есть дедупликацию на сервере.
+     */
+    private fun copyClientId(clientMsgId: String, deviceId: String): String =
+        java.util.UUID.nameUUIDFromBytes("$clientMsgId::$deviceId".toByteArray(Charsets.UTF_8)).toString()
 
     // ------------------------------------------------------------------
     // Жизненный цикл
@@ -829,6 +895,7 @@ class MessageRepository(
         // чтобы один вечно падающий конверт не держал очередь чата бесконечно.
         val attempts = HashMap<String, Int>()
         while (true) {
+            retryPendingCopies()
             var transientFailure = false
             // Чаты, в которых случился временный сбой: их сообщения пропускаем,
             // чтобы не нарушить порядок внутри чата; другие чаты продолжают слаться.
@@ -885,6 +952,11 @@ class MessageRepository(
         val n = (attempts[msgId] ?: 0) + 1
         attempts[msgId] = n
         return n >= 20
+    }
+
+    private companion object {
+        const val MAX_PENDING_COPIES = 500
+        const val MAX_COPY_ATTEMPTS = 30
     }
 
     // ------------------------------------------------------------------

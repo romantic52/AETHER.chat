@@ -50,6 +50,10 @@ class DesktopCoreStore private constructor(
 
     fun close() {
         scope.cancel()
+        // Без этого нативный CoreStore переживает logout: соединение SQLCipher
+        // остаётся открытым, а следующий вход открывает ещё одно — файл БД
+        // держат сразу несколько хэндлов.
+        runCatching { store.close() }
     }
 
     private inner class MessageStream(private val peerId: String) {

@@ -782,9 +782,22 @@ class WipeRequest(BaseModel):
 def bind_session_device(body: BindDeviceRequest, authorization: str = Header(None),
                         current_user: str = Depends(get_current_user)) -> dict:
     """Клиент после логина сообщает своё крипто-устройство: сессия становится
-    выкидываемой адресно (экран «Сессии»)."""
+    выкидываемой адресно (экран «Сессии»).
+
+    Привязка одноразовая: перепривязать сессию к ДРУГОМУ устройству нельзя.
+    Иначе защита /keys/upload обходилась бы одним запросом — сессия
+    перепривязывалась к чужому слоту и подменяла его identity."""
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
+        cur.execute("SELECT device_id FROM sessions WHERE token = %s FOR UPDATE", (token,))
+        row = cur.fetchone()
+        current_device = row["device_id"] if row else None
+        if current_device and current_device != body.device_id:
+            raise HTTPException(
+                409,
+                "Сессия уже привязана к другому устройству: войдите заново.")
+        if current_device == body.device_id:
+            return {"ok": True}
         cur.execute("UPDATE sessions SET device_id = %s WHERE token = %s", (body.device_id, token))
     return {"ok": True}
 
@@ -926,7 +939,11 @@ def pairing_start(body: PairingStartRequest, request: Request) -> dict:
 
 
 def _load_pairing(cur, pairing_id: str, pairing_secret: str) -> dict:
-    """Достаёт запись, сверяя секрет constant-time; истёкший pending гасит."""
+    """Достаёт запись, сверяя секрет constant-time; истёкшую гасит.
+
+    TTL действует и на approved: подтверждённая, но не забранная привязка не
+    должна оставаться claimable вечно — вместе с ней отзывается и выданная
+    сессия, иначе остаётся 30-дневный токен, который никто не заберёт."""
     cur.execute("SELECT * FROM pairings WHERE pairing_id = %s", (pairing_id,))
     row = cur.fetchone()
     if not row:
@@ -934,16 +951,27 @@ def _load_pairing(cur, pairing_id: str, pairing_secret: str) -> dict:
     if not hmac.compare_digest(row["secret_hash"], _hash_pairing_secret(pairing_secret)):
         raise HTTPException(403, "pairing_secret_invalid")
     result = dict(row)
-    if result["status"] == "pending":
+    if result["status"] in ("pending", "approved"):
         try:
             expired = datetime.now(timezone.utc) > datetime.fromisoformat(result["expires_at"])
         except (ValueError, TypeError):
             expired = True
         if expired:
-            cur.execute("UPDATE pairings SET status = 'expired', session_token = NULL, "
-                        "encrypted_bundle_b64 = NULL WHERE pairing_id = %s", (pairing_id,))
+            _expire_pairing(cur, result)
             result["status"] = "expired"
     return result
+
+
+def _expire_pairing(cur, row: dict) -> None:
+    """Гасит запись привязки и отзывает выданную ей сессию, если её не забрали."""
+    token = row.get("session_token")
+    if token:
+        cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+    cur.execute(
+        "UPDATE pairings SET status = 'expired', session_token = NULL, "
+        "encrypted_bundle_b64 = NULL WHERE pairing_id = %s",
+        (row["pairing_id"],),
+    )
 
 
 @app.post("/pairing/approve")
@@ -984,28 +1012,42 @@ async def pairing_approve(body: PairingApproveRequest, request: Request,
 
 @app.get("/pairing/{pairing_id}/status")
 @limiter.limit("120/minute")
-async def pairing_status(pairing_id: str, request: Request, sec: str = "") -> dict:
+async def pairing_status(pairing_id: str, request: Request,
+                         x_pairing_secret: str = Header(default="")) -> dict:
     """Long-poll нового устройства (до 25 с). approved отдаётся РОВНО один раз:
-    токен и bundle затираются сразу (status='claimed')."""
+    токен и bundle затираются сразу (status='claimed').
+
+    Секрет принимается ТОЛЬКО заголовком X-Pairing-Secret: в query он попадал бы
+    в access-логи сервера и прокси, а это единственный секрет протокола."""
+    secret = x_pairing_secret.strip()
+    if not secret:
+        raise HTTPException(400, "pairing_secret_required")
     deadline = time.monotonic() + 25
     while True:
         with db_conn() as cur:
-            row = _load_pairing(cur, pairing_id, sec)
+            row = _load_pairing(cur, pairing_id, secret)
             status = row["status"]
             if status == "approved":
-                payload = {
+                # Одноразовость: гонку выигрывает тот, чей UPDATE реально задел
+                # строку (rowcount == 1). Второй запрос дождётся блокировки,
+                # увидит уже 'claimed' и не получит ни токена, ни bundle.
+                # Значения берём из прочитанной строки: RETURNING отдал бы уже
+                # затёртые NULL.
+                cur.execute(
+                    """UPDATE pairings SET status = 'claimed', session_token = NULL,
+                       encrypted_bundle_b64 = NULL
+                       WHERE pairing_id = %s AND status = 'approved'""",
+                    (pairing_id,),
+                )
+                if cur.rowcount != 1:
+                    return {"status": "claimed"}
+                return {
                     "status": "approved",
                     "user_id": row["user_id"],
                     "device_id": row["new_device_id"],
                     "session_token": row["session_token"],
                     "encrypted_bundle_b64": row["encrypted_bundle_b64"],
                 }
-                cur.execute(
-                    """UPDATE pairings SET status = 'claimed', session_token = NULL,
-                       encrypted_bundle_b64 = NULL WHERE pairing_id = %s""",
-                    (pairing_id,),
-                )
-                return payload
         if status in ("expired", "claimed"):
             return {"status": status}
         if time.monotonic() >= deadline:

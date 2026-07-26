@@ -61,13 +61,42 @@ tasks.register<JavaExec>("peersmoke") {
 compose.desktop {
     application {
         mainClass = "aether.desktop.MainKt"
+        // sm_core.dll обязана попасть в дистрибутив: без неё установленное
+        // приложение падает на первом же вызове ядра (JNA не находит либу).
+        // appResourcesRootDir кладёт natives/ рядом с exe, а jna.library.path
+        // указывает на распакованный каталог ресурсов.
+        nativeDistributions.appResourcesRootDir.set(project.layout.projectDirectory.dir("natives-dist"))
+        jvmArgs("-Djna.library.path=\$APPDIR")
         nativeDistributions {
             targetFormats(TargetFormat.Msi)
             packageName = "Aether"
             packageVersion = "1.0.0"
+            // jlink собирает JRE только из перечисленных модулей: без них
+            // установленное приложение падало с NoClassDefFoundError
+            // (java.net.http — HTTP-клиент, jdk.crypto.ec — TLS к https-серверу,
+            // jdk.unsupported — sun.misc.Unsafe для JNA).
+            // jdk.localedata — иначе в собранном JRE только английская локаль
+            // и даты в ленте выглядят как «27 Jul» вместо «27 июля».
+            modules(
+                "java.net.http",
+                "java.naming",
+                "java.sql",
+                "jdk.crypto.ec",
+                "jdk.localedata",
+                "jdk.unsupported",
+            )
             windows {
                 menuGroup = "Aether"
             }
         }
     }
 }
+
+/** Раскладывает sm_core.dll в структуру appResourcesRootDir (windows-x64/). */
+val prepareNatives by tasks.registering(Copy::class) {
+    from(layout.projectDirectory.dir("natives")) { include("sm_core.dll") }
+    into(layout.projectDirectory.dir("natives-dist/windows-x64"))
+}
+
+// prepareAppResources забирает содержимое natives-dist — она должна быть готова раньше.
+tasks.matching { it.name == "prepareAppResources" }.configureEach { dependsOn(prepareNatives) }

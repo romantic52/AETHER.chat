@@ -286,21 +286,83 @@ class MessageRepository(
         var firstId: String? = null
         var firstError: Exception? = null
         for ((index, dev) in devices.withIndex()) {
+            var cidForRetry: String? = null
             try {
                 val envelope = ratchetMutex.withLock { encryptDirectForDeviceLocked(id, dev.deviceId, wire) }
                 val cid = when {
                     index == 0 -> clientMsgId
-                    clientMsgId != null -> "$clientMsgId::${dev.deviceId}"
+                    clientMsgId != null -> copyClientId(clientMsgId, dev.deviceId)
                     else -> UUID.randomUUID().toString()
                 }
+                cidForRetry = cid
                 val mid = api.sendMessageDevice(myId, peerId, envelope, cid, dev.deviceId)
                 if (firstId == null) firstId = mid
             } catch (e: Exception) {
+                // Недоставленная копия не выдаётся за успех и не теряется:
+                // она уходит в очередь дозасылки (см. retryPendingCopies).
                 if (firstError == null) firstError = e
+                if (cidForRetry != null) {
+                    enqueueCopyRetry(PendingCopy(id, dev.deviceId, wire, cidForRetry))
+                }
             }
         }
         return firstId ?: throw (firstError ?: IllegalStateException("У получателя нет доступных устройств"))
     }
+
+    /** Копия сообщения, не доехавшая до конкретного устройства получателя. */
+    private data class PendingCopy(
+        val peerId: String,
+        val deviceId: String,
+        val wire: String,
+        val clientId: String,
+        var attempts: Int = 0,
+    )
+
+    private val pendingCopies = java.util.Collections.synchronizedList(mutableListOf<PendingCopy>())
+
+    private fun enqueueCopyRetry(copy: PendingCopy) {
+        synchronized(pendingCopies) {
+            if (pendingCopies.size >= MAX_PENDING_COPIES) return
+            if (pendingCopies.any { it.clientId == copy.clientId && it.deviceId == copy.deviceId }) return
+            pendingCopies.add(copy)
+        }
+    }
+
+    /**
+     * Дозасылка копий, не доехавших до отдельных устройств (устройство было
+     * офлайн, кончились one-time keys). Сообщение у отправителя уже отмечено
+     * доставленным — тут добираются остальные устройства аккаунта.
+     */
+    private suspend fun retryPendingCopies() {
+        val batch = synchronized(pendingCopies) { pendingCopies.toList() }
+        for (copy in batch) {
+            val done = try {
+                val envelope = ratchetMutex.withLock {
+                    encryptDirectForDeviceLocked(copy.peerId, copy.deviceId, copy.wire)
+                }
+                api.sendMessageDevice(myId, copy.peerId, envelope, copy.clientId, copy.deviceId)
+                true
+            } catch (e: Exception) {
+                copy.attempts += 1
+                if (copy.attempts >= MAX_COPY_ATTEMPTS) {
+                    log("копия для ${copy.deviceId} (${copy.peerId}) отброшена после ${copy.attempts} попыток: ${e.message}")
+                    true
+                } else {
+                    false
+                }
+            }
+            if (done) synchronized(pendingCopies) { pendingCopies.remove(copy) }
+        }
+    }
+
+    /**
+     * Детерминированный client_id копии для конкретного устройства.
+     * Сервер принимает client_id ТОЛЬКО как UUID (`uuid.UUID(client_id)`), поэтому
+     * прежняя схема «msgId::deviceId» уходила в 400 и копии для вторых устройств
+     * молча терялись. Имя-based UUID сохраняет стабильность между ретраями.
+     */
+    private fun copyClientId(clientMsgId: String, deviceId: String): String =
+        UUID.nameUUIDFromBytes("$clientMsgId::$deviceId".toByteArray(Charsets.UTF_8)).toString()
 
     // ------------------------------------------------------------------
     // Жизненный цикл
@@ -386,6 +448,7 @@ class MessageRepository(
             val ackIds = mutableListOf<String>()
             for (m in msgs) {
                 try {
+                    debug("inbox ${m.id.take(8)} from=${m.senderId} ratchet=${m.isRatchetEnvelope} group=${m.isGroupEnvelope}")
                     val deliveryPeer = processInboxMessage(m)
                     if (deliveryPeer != null) {
                         try {
@@ -560,6 +623,7 @@ class MessageRepository(
         }
         val obj = try { JSONObject(plain) } catch (e: Exception) { null }?.let { normalizeIncomingPayload(it) }
         val ptype = obj?.optString("type") ?: ""
+        debug("decoded ${m.id.take(8)} type=$ptype peer=$msgPeerId")
 
         if (obj != null && ptype == "reaction") {
             val r = uniffi.sm_core.wireDecode(plain) as? uniffi.sm_core.WireMessage.Reaction
@@ -735,6 +799,7 @@ class MessageRepository(
         var backoffMs = 2_000L
         val attempts = HashMap<String, Int>()
         while (true) {
+            retryPendingCopies()
             var transientFailure = false
             val blockedPeers = HashSet<String>()
             for (msg in store.getPendingOutgoing()) {
@@ -787,6 +852,11 @@ class MessageRepository(
         val n = (attempts[msgId] ?: 0) + 1
         attempts[msgId] = n
         return n >= 20
+    }
+
+    private companion object {
+        const val MAX_PENDING_COPIES = 500
+        const val MAX_COPY_ATTEMPTS = 30
     }
 
     // ------------------------------------------------------------------
@@ -1277,4 +1347,24 @@ class MessageRepository(
     private fun log(message: String) {
         println("[repo] $message")
     }
+
+    /**
+     * Подробный лог приёма: включается AETHER_DEBUG=1, пишется в файл из
+     * AETHER_DEBUG_LOG (иначе в stdout). Нужен, когда приложение запущено не из
+     * консоли и stdout недоступен.
+     */
+    private fun debug(message: String) {
+        if (!debugEnabled) return
+        val line = "[repo/debug] $message"
+        val target = debugLogFile
+        if (target == null) {
+            println(line)
+        } else {
+            runCatching { target.appendText(line + System.lineSeparator()) }
+        }
+    }
+
+    private val debugEnabled = System.getenv("AETHER_DEBUG") == "1"
+    private val debugLogFile: File? =
+        System.getenv("AETHER_DEBUG_LOG")?.takeIf { it.isNotBlank() }?.let(::File)
 }

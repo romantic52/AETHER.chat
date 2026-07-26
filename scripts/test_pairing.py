@@ -48,8 +48,12 @@ def main():
     check(len(sec) >= 32, "секрет достаточной длины")
 
     # 2. Неверный секрет отклоняется
-    r = requests.get(f"{BASE}/pairing/{pid}/status", params={"sec": "wrong-secret-wrong"})
+    r = requests.get(f"{BASE}/pairing/{pid}/status", headers={"X-Pairing-Secret": "wrong-secret-wrong"})
     check(r.status_code == 403, "неверный секрет -> 403")
+
+    # Секрет в query не принимается: он оседал бы в access-логах сервера и прокси
+    r = requests.get(f"{BASE}/pairing/{pid}/status?sec={sec}")
+    check(r.status_code == 400, f"секрет в query больше не принимается -> 400 (получено {r.status_code})")
 
     # 3. approve телефоном
     r = requests.post(f"{BASE}/pairing/approve", headers=auth, json={
@@ -69,7 +73,7 @@ def main():
     check(r.status_code == 409, "повторный approve -> 409")
 
     # 5. status: одноразовая выдача токена и bundle
-    r = requests.get(f"{BASE}/pairing/{pid}/status", params={"sec": sec})
+    r = requests.get(f"{BASE}/pairing/{pid}/status", headers={"X-Pairing-Secret": sec})
     check(r.status_code == 200 and r.json().get("status") == "approved", "status -> approved")
     data = r.json()
     check(data["encrypted_bundle_b64"] == "ZmFrZS1idW5kbGU", "bundle доехал")
@@ -78,7 +82,7 @@ def main():
     check(bool(new_token), "токен выдан")
 
     # 6. Второй запрос -> claimed, без токена и bundle
-    r = requests.get(f"{BASE}/pairing/{pid}/status", params={"sec": sec})
+    r = requests.get(f"{BASE}/pairing/{pid}/status", headers={"X-Pairing-Secret": sec})
     check(r.json().get("status") == "claimed", "повторный status -> claimed")
     check("session_token" not in r.json(), "токен повторно не выдаётся")
 
@@ -93,7 +97,7 @@ def main():
     cur = conn.cursor()
     cur.execute("UPDATE pairings SET expires_at = '2020-01-01T00:00:00+00:00' WHERE pairing_id = %s", (pid2,))
     conn.commit()
-    r = requests.get(f"{BASE}/pairing/{pid2}/status", params={"sec": sec2})
+    r = requests.get(f"{BASE}/pairing/{pid2}/status", headers={"X-Pairing-Secret": sec2})
     check(r.json().get("status") == "expired", "истёкший QR -> expired")
     r = requests.post(f"{BASE}/pairing/approve", headers=auth, json={
         "pairing_id": pid2, "pairing_secret": sec2, "encrypted_bundle_b64": "eA",

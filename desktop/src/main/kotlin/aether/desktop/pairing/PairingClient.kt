@@ -55,8 +55,10 @@ class PairingClient(server: String) {
 
     /** Один long-poll (сервер держит до 25 с). null — ещё pending. */
     fun poll(started: Started): Approved? {
-        val url = "$base/pairing/${enc(started.pairingId)}/status?sec=${enc(started.secret)}"
-        val response = get(url)
+        // Секрет уходит заголовком, а не в query: иначе он оседает в access-логах
+        // сервера и прокси, а это единственный секрет протокола привязки.
+        val url = "$base/pairing/${enc(started.pairingId)}/status"
+        val response = get(url, started.secret)
         return when (response.optString("status")) {
             "approved" -> Approved(
                 userId = response.getString("user_id"),
@@ -102,8 +104,9 @@ class PairingClient(server: String) {
         return send(request)
     }
 
-    private fun get(url: String): JSONObject {
+    private fun get(url: String, pairingSecret: String): JSONObject {
         val request = HttpRequest.newBuilder(URI.create(url))
+            .header("X-Pairing-Secret", pairingSecret)
             .timeout(Duration.ofSeconds(40))
             .GET()
             .build()

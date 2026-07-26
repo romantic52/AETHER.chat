@@ -16,7 +16,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
@@ -51,6 +51,7 @@ import androidx.compose.ui.unit.dp
 import java.awt.FileDialog
 import java.io.File
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -62,7 +63,9 @@ fun ChatPane(
     onShowInfo: () -> Unit,
     onForwardRequest: (MessageEntity) -> Unit,
 ) {
-    val messages by session.store.getMessagesForPeer(peerId).collectAsState()
+    // Поток и позиция скролла привязаны к peerId: без key() при смене чата на
+    // мгновение показывалась лента предыдущего и переносился скролл.
+    val messages by remember(peerId) { session.store.getMessagesForPeer(peerId) }.collectAsState()
     var chat by remember(peerId) { mutableStateOf<ChatEntity?>(null) }
     var presence by remember(peerId) { mutableStateOf("") }
     var canPost by remember(peerId) { mutableStateOf(true) }
@@ -70,20 +73,36 @@ fun ChatPane(
     var replyTo by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
     var editing by remember(peerId) { mutableStateOf<MessageEntity?>(null) }
     val scope = rememberCoroutineScope()
-    val listState = rememberLazyListState()
+    val listState = remember(peerId) { LazyListState() }
     var lastTypingSentAt by remember(peerId) { mutableStateOf(0L) }
+    // «печатает…» гаснет сам: без тика состояние висело до следующей перекомпозиции.
+    var now by remember { mutableStateOf(System.currentTimeMillis()) }
+    LaunchedEffect(typingUntil) {
+        while (System.currentTimeMillis() < typingUntil) {
+            delay(500)
+            now = System.currentTimeMillis()
+        }
+        now = System.currentTimeMillis()
+    }
 
+    // Всё, что ходит в сеть или в ядро, — на IO: иначе открытие чата
+    // подвешивает окно на время запросов.
     LaunchedEffect(peerId) {
-        session.store.preloadMessages(peerId)
-        chat = session.store.getChat(peerId)
-        canPost = runCatching { session.repository.canPostTo(peerId) }.getOrDefault(true)
-        session.repository.sendReadReceipt(peerId)
-        if (chat?.type == 0 && !peerId.equals(session.myId, ignoreCase = true)) {
-            presence = runCatching {
-                withContext(Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
+            session.store.preloadMessages(peerId)
+            val loaded = session.store.getChat(peerId)
+            val allowed = runCatching { session.repository.canPostTo(peerId) }.getOrDefault(true)
+            withContext(Dispatchers.Main) {
+                chat = loaded
+                canPost = allowed
+            }
+            session.repository.sendReadReceipt(peerId)
+            if (loaded?.type == 0 && !peerId.equals(session.myId, ignoreCase = true)) {
+                val status = runCatching {
                     formatPresence(session.api.getUserProfile(peerId).lastActive)
-                }
-            }.getOrDefault("")
+                }.getOrDefault("")
+                withContext(Dispatchers.Main) { presence = status }
+            }
         }
     }
 
@@ -123,7 +142,9 @@ fun ChatPane(
         dialog.isVisible = true
         val files = dialog.files?.toList().orEmpty().filter(File::isFile)
         if (files.isEmpty()) return
-        scope.launch {
+        // Шифрование и заливка файла — не на UI-потоке, иначе окно замирает
+        // на всё время отправки.
+        scope.launch(Dispatchers.IO) {
             val error = if (asFile) session.repository.sendFiles(peerId, files, null)
             else session.repository.sendMedia(peerId, files, null)
             if (error == null) session.store.preloadMessages(peerId)
@@ -164,7 +185,7 @@ fun ChatPane(
                         overflow = TextOverflow.Ellipsis,
                     )
                     val subtitle = when {
-                        System.currentTimeMillis() < typingUntil -> "печатает…"
+                        now < typingUntil -> "печатает…"
                         chat?.type == 1 -> "группа"
                         chat?.type == 2 -> "канал"
                         chat?.type == 3 -> "ваши заметки"

@@ -56,10 +56,24 @@ class DesktopPrefs(baseDir: File = defaultDir()) {
         }.getOrNull()
     }
 
-    /** Ключ SQLCipher-БД: генерируется один раз, живёт только под DPAPI. */
+    /**
+     * Ключ SQLCipher-БД: генерируется один раз, живёт только под DPAPI.
+     * Если файл ключа есть, но не расшифровывается (другой профиль Windows,
+     * повреждение) — БРОСАЕМ ошибку, а не генерируем новый: новый ключ сделал бы
+     * всю локальную историю нечитаемой безвозвратно.
+     */
     fun dbKeyB64(): String {
         val file = File(dir, "dbkey.dpapi")
-        readProtected(file)?.let { return String(it, Charsets.UTF_8) }
+        if (file.isFile) {
+            val raw = readProtected(file)
+                ?: throw IllegalStateException(
+                    "Ключ локальной базы не расшифровывается (DPAPI другого пользователя " +
+                        "Windows или повреждённый файл ${file.name}). История сохранена; " +
+                        "войдите под своей учётной записью Windows или удалите файл вручную, " +
+                        "чтобы начать с чистой базы."
+                )
+            return String(raw, Charsets.UTF_8)
+        }
         val bytes = ByteArray(32).also { SecureRandom().nextBytes(it) }
         val key = Base64.getUrlEncoder().withoutPadding().encodeToString(bytes)
         writeProtected(file, key.toByteArray(Charsets.UTF_8))
@@ -70,8 +84,26 @@ class DesktopPrefs(baseDir: File = defaultDir()) {
 
     private fun keysFile(username: String) = File(dir, "keys_${accountKey(username)}.dpapi")
 
+    /** Атомарная запись: обрыв на середине не оставит секрет «полуфайлом». */
     private fun writeProtected(file: File, plain: ByteArray) {
-        file.writeBytes(Dpapi.protect(plain))
+        val tmp = File(file.parentFile, "${file.name}.tmp")
+        tmp.writeBytes(Dpapi.protect(plain))
+        try {
+            java.nio.file.Files.move(
+                tmp.toPath(),
+                file.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+                java.nio.file.StandardCopyOption.ATOMIC_MOVE,
+            )
+        } catch (_: java.nio.file.AtomicMoveNotSupportedException) {
+            java.nio.file.Files.move(
+                tmp.toPath(),
+                file.toPath(),
+                java.nio.file.StandardCopyOption.REPLACE_EXISTING,
+            )
+        } finally {
+            tmp.delete()
+        }
     }
 
     private fun readProtected(file: File): ByteArray? {
