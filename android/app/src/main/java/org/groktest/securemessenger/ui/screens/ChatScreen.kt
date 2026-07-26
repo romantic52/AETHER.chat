@@ -100,6 +100,8 @@ import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.glass.glassSource
+import org.groktest.securemessenger.ui.glass.glassSurface
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
@@ -675,7 +677,6 @@ fun ChatScreen(
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Transparent)
     ) {
         Scaffold(
             snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
@@ -707,8 +708,9 @@ fun ChatScreen(
                             modifier = Modifier
                                 .weight(1f)
                                 .height(48.dp)
+                                .glassSurface(RoundedCornerShape(AetherStyle.PillRadius))
                                 .aetherIsland(
-                                    shape = RoundedCornerShape(24.dp),
+                                    shape = RoundedCornerShape(AetherStyle.PillRadius),
                                     fillAlpha = AetherStyle.ControlFillAlpha,
                                     strokeAlpha = AetherStyle.ControlStrokeAlpha
                                 )
@@ -719,7 +721,7 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .size(36.dp)
                                     .clip(CircleShape)
-                                    .background(if (isSavedChat) Color(0xFFFFB400) else peerColor(peerId))
+                                    .background(if (isSavedChat) savedChatColor else peerColor(peerId))
                                     .clickable(enabled = !isSavedChat) { onOpenProfile() },
                                 contentAlignment = Alignment.Center
                             ) {
@@ -806,6 +808,12 @@ fun ChatScreen(
                                 IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(38.dp)) {
                                     Icon(Icons.Default.MoreVert, contentDescription = "Меню чата", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
+                                // Канон меню: surface-контейнер, скругление 20.dp (в M3 1.2 у
+                                // DropdownMenu нет shape/containerColor — задаём через тему).
+                                MaterialTheme(
+                                    shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(20.dp)),
+                                    colorScheme = MaterialTheme.colorScheme.copy(surfaceTint = Color.Transparent)
+                                ) {
                                 DropdownMenu(expanded = headerMenuOpen, onDismissRequest = { headerMenuOpen = false }) {
                                     DropdownMenuItem(
                                         text = { Text(if (isPersonalChat) "Профиль" else "Информация") },
@@ -820,6 +828,7 @@ fun ChatScreen(
                                         )
                                     }
                                 }
+                                } // MaterialTheme (канон меню)
                             }
                         }
                     }
@@ -870,7 +879,7 @@ fun ChatScreen(
                             shrinkTowards = Alignment.Bottom
                         )
                     ) {
-                        val accent = if (composerContextIsEditing) Color(0xFFF59E0B) else MaterialTheme.colorScheme.primary
+                        val accent = if (composerContextIsEditing) MaterialTheme.colorScheme.tertiary else MaterialTheme.colorScheme.primary
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                             verticalAlignment = Alignment.CenterVertically
@@ -975,7 +984,7 @@ fun ChatScreen(
                                         tween(600), androidx.compose.animation.core.RepeatMode.Reverse
                                     ), label = "blink"
                                 )
-                                Box(modifier = Modifier.size(10.dp).graphicsLayer { alpha = blink }.clip(CircleShape).background(Color(0xFFEF4444)))
+                                Box(modifier = Modifier.size(10.dp).graphicsLayer { alpha = blink }.clip(CircleShape).background(MaterialTheme.colorScheme.error))
                                 Spacer(Modifier.width(8.dp))
                                 val s2 = recordSeconds
                                 Text(String.format("%d:%02d", s2 / 60, s2 % 60), color = MaterialTheme.colorScheme.onBackground)
@@ -1011,7 +1020,7 @@ fun ChatScreen(
                                     .aetherIsland(
                                         shape = RoundedCornerShape(AetherStyle.PillRadius),
                                         fillAlpha = AetherStyle.ControlFillAlpha,
-                                        strokeAlpha = 0.46f
+                                        strokeAlpha = AetherStyle.ControlStrokeAlpha
                                     ),
                                 placeholder = { Text("Написать сообщение...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                                 maxLines = 4,
@@ -1196,7 +1205,7 @@ fun ChatScreen(
                                         else if (recordVideoMode) Icons.Filled.Videocam
                                         else Icons.Filled.Mic,
                                         contentDescription = if (recordVideoMode) "Видео-кружок" else "Записать голос",
-                                        tint = if (isRecordingVoice) Color(0xFFEF4444) else MaterialTheme.colorScheme.onSurfaceVariant
+                                        tint = if (isRecordingVoice) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -1214,23 +1223,22 @@ fun ChatScreen(
                           .navigationBarsPadding()
                           .padding(end = 12.dp, bottom = AetherStyle.ControlSize + 16.dp)
                   ) {
-                      Surface(
-                          shape = CircleShape,
-                          color = MaterialTheme.colorScheme.surface,
-                          shadowElevation = 4.dp,
-                          modifier = Modifier.size(46.dp).clickable {
-                              coroutineScope.launch {
-                                  glideToLatest()
-                              }
-                          }
+                      Box(
+                          modifier = Modifier
+                              .size(AetherStyle.SmallControlSize)
+                              .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                              .clickable {
+                                  coroutineScope.launch {
+                                      glideToLatest()
+                                  }
+                              },
+                          contentAlignment = Alignment.Center
                       ) {
-                          Box(contentAlignment = Alignment.Center) {
-                              Icon(
-                                  Icons.Filled.KeyboardArrowDown,
-                                  contentDescription = "Вниз",
-                                  tint = MaterialTheme.colorScheme.onSurfaceVariant
-                              )
-                          }
+                          Icon(
+                              Icons.Filled.KeyboardArrowDown,
+                              contentDescription = "Вниз",
+                              tint = MaterialTheme.colorScheme.onSurfaceVariant
+                          )
                       }
                   }
                 }
@@ -1249,7 +1257,8 @@ fun ChatScreen(
                     Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
                     Surface(
                         color = MaterialTheme.colorScheme.errorContainer,
-                        modifier = Modifier.fillMaxWidth()
+                        shape = RoundedCornerShape(AetherStyle.RowRadius),
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = AetherStyle.ScreenHorizontal)
                     ) {
                         Text(
                             "⚠️ Этот канал создан до включения E2E: сервер знает его ключ. Создайте канал заново для сквозного шифрования.",
@@ -1263,7 +1272,8 @@ fun ChatScreen(
             CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
+                    // Лента — источник размытия для стеклянных панелей (пилюля шапки и т.п.)
+                    modifier = Modifier.fillMaxSize().glassSource(),
                     contentPadding = PaddingValues(
                         start = 8.dp,
                         top = if (notE2e) 8.dp else AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
@@ -1380,6 +1390,8 @@ fun ChatScreen(
         forwardingMessage?.let { fmsg ->
             AlertDialog(
                 onDismissRequest = { forwardingMessage = null },
+                shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                containerColor = MaterialTheme.colorScheme.surface,
                 title = { Text("Переслать в...") },
                 text = {
                     if (forwardChats.isEmpty()) {
@@ -1436,13 +1448,17 @@ fun ChatScreen(
                 DatePickerDialog(
                     onDismissRequest = { showScheduleDialog = false },
                     confirmButton = { TextButton(onClick = { scheduleStep = 1 }) { Text("Далее") } },
-                    dismissButton = { TextButton(onClick = { showScheduleDialog = false }) { Text("Отмена") } }
+                    dismissButton = { TextButton(onClick = { showScheduleDialog = false }) { Text("Отмена") } },
+                    shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                    colors = DatePickerDefaults.colors(containerColor = MaterialTheme.colorScheme.surface)
                 ) {
                     DatePicker(state = dateState, title = { Text("  Дата отправки", fontSize = 18.sp) })
                 }
             } else {
                 AlertDialog(
                     onDismissRequest = { showScheduleDialog = false },
+                    shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                    containerColor = MaterialTheme.colorScheme.surface,
                     title = { Text("Время отправки") },
                     text = { TimePicker(state = timeState) },
                     confirmButton = {
@@ -1527,7 +1543,7 @@ fun ChatScreen(
                         .aetherIsland(
                             shape = RoundedCornerShape(AetherStyle.IslandRadius),
                             fillAlpha = AetherStyle.DockFillAlpha,
-                            strokeAlpha = 0.46f
+                            strokeAlpha = AetherStyle.ControlStrokeAlpha
                         )
                         .padding(horizontal = 12.dp, vertical = 12.dp)
                 ) {
@@ -1591,7 +1607,7 @@ fun ChatScreen(
                                         contentAlignment = Alignment.Center
                                     ) {
                                         if (selIndex >= 0) {
-                                            Text("${selIndex + 1}", color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                            Text("${selIndex + 1}", color = MaterialTheme.colorScheme.onPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                         }
                                     }
                                     if (selIndex >= 0) {
@@ -1623,7 +1639,7 @@ fun ChatScreen(
                             .fillMaxWidth()
                             .padding(horizontal = 4.dp, vertical = 8.dp)
                             .height(1.dp)
-                            .background(MaterialTheme.colorScheme.outline.copy(alpha = 0.25f))
+                            .background(MaterialTheme.colorScheme.onBackground.copy(alpha = AetherStyle.DividerAlpha))
                     )
                     Row(
                         modifier = Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 10.dp),
@@ -1659,13 +1675,21 @@ fun ChatScreen(
                                 selected = !attachAsDocument,
                                 onClick = { attachAsDocument = false },
                                 label = { Text("Медиа") },
-                                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                                leadingIcon = { Icon(Icons.Default.Image, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    containerColor = aetherSurface(AetherStyle.SoftIslandFillAlpha),
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.SelectedFillAlpha)
+                                )
                             )
                             FilterChip(
                                 selected = attachAsDocument,
                                 onClick = { attachAsDocument = true },
                                 label = { Text("Файл") },
-                                leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp)) }
+                                leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    containerColor = aetherSurface(AetherStyle.SoftIslandFillAlpha),
+                                    selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.SelectedFillAlpha)
+                                )
                             )
                         }
                         Row(
@@ -1678,13 +1702,8 @@ fun ChatScreen(
                                 modifier = Modifier.weight(1f).padding(end = 8.dp),
                                 placeholder = { Text("Подпись...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                                 maxLines = 3,
-                                shape = RoundedCornerShape(24.dp),
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    unfocusedContainerColor = MaterialTheme.colorScheme.surfaceVariant,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent
-                                )
+                                shape = RoundedCornerShape(AetherStyle.PillRadius),
+                                colors = aetherTextFieldColors()
                             )
                             Box(
                                 modifier = Modifier
@@ -2113,7 +2132,7 @@ fun MessageBubble(
                 // (#A6) Обсуждение поста — открывает подвязанную группу канала
                 if (isChannelPost && onOpenDiscussion != null) {
                     Spacer(modifier = Modifier.height(8.dp))
-                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = AetherStyle.DividerAlpha))
                     TextButton(
                         onClick = { onOpenDiscussion(msg) },
                         modifier = Modifier.fillMaxWidth().height(36.dp),
@@ -2151,8 +2170,7 @@ fun MessageBubble(
                         )
                 ) {
                     val counts = renderedReactions.values.toSet()
-                    val chipBg = if (msg.isOut) Color.White.copy(alpha = 0.18f)
-                        else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                    val chipBg = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
                     Column {
                         Spacer(Modifier.height(4.dp))
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -2239,7 +2257,7 @@ fun MessageBubble(
                                         else -> Icon(
                                             if (status >= 2) Icons.Filled.DoneAll else Icons.Filled.Done,
                                             contentDescription = null,
-                                            tint = if (status >= 3) Color(0xFF4ADE80) else textColor.copy(alpha = 0.6f),
+                                            tint = if (status >= 3) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.6f),
                                             modifier = Modifier.fillMaxSize()
                                         )
                                     }
@@ -2296,6 +2314,12 @@ fun MessageBubble(
                 )
             }
         }
+        // Канон меню: surface-контейнер, скругление 20.dp (в M3 1.2 у
+        // DropdownMenu нет shape/containerColor — задаём через тему).
+        MaterialTheme(
+            shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(20.dp)),
+            colorScheme = MaterialTheme.colorScheme.copy(surfaceTint = Color.Transparent)
+        ) {
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
             Row(
                 modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
@@ -2370,9 +2394,12 @@ fun MessageBubble(
                 }
             )
         }
+        } // MaterialTheme (канон меню)
         if (showDeleteDialog) {
             AlertDialog(
                 onDismissRequest = { showDeleteDialog = false },
+                shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                containerColor = MaterialTheme.colorScheme.surface,
                 title = { Text("Удалить сообщение?") },
                 text = { Text("Можно убрать его только у себя или отправить удаление всем участникам чата.") },
                 confirmButton = {
@@ -2624,6 +2651,9 @@ private fun formatDateSep(ts: Long): String {
     return java.text.SimpleDateFormat(pattern, java.util.Locale("ru")).format(java.util.Date(ts))
 }
 
+/** Янтарный аватар «Сохранённых сообщений» (звезда) — часть аватар-палитры. */
+internal val savedChatColor = Color(0xFFFFB400)
+
 /** Цвета аватаров как в Telegram — стабильный выбор по имени. */
 internal val avatarColors = listOf(
     Color(0xFFE17076), Color(0xFFEDA86C), Color(0xFFA695E7),
@@ -2666,8 +2696,8 @@ private fun DateSeparator(ts: Long) {
             modifier = Modifier
                 .aetherIsland(
                     shape = RoundedCornerShape(12.dp),
-                    fillAlpha = 0.9f,
-                    strokeAlpha = 0.5f
+                    fillAlpha = AetherStyle.IslandFillAlpha,
+                    strokeAlpha = AetherStyle.ControlStrokeAlpha
                 )
                 .padding(horizontal = 10.dp, vertical = 4.dp)
         )

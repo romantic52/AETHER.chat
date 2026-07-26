@@ -11,7 +11,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Email
 import androidx.compose.material.icons.filled.Person
@@ -36,6 +35,8 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import org.groktest.securemessenger.data.ChatListEntry
 import org.groktest.securemessenger.data.messagePreview
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherEdge
 import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.AetherStyle
@@ -93,6 +94,10 @@ fun ChatListScreen(
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
+            if (showArchive) {
+                // Канонический топ-бар под-экрана вместо инлайн-дубля
+                AetherSettingsTopBar("Архив", onBack = { showArchive = false })
+            } else {
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -107,18 +112,6 @@ fun ChatListScreen(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    if (showArchive) {
-                        IconButton(onClick = { showArchive = false }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = MaterialTheme.colorScheme.onBackground)
-                        }
-                        Text(
-                            "Архив",
-                            modifier = Modifier.weight(1f),
-                            fontSize = 24.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                    } else {
                     Text(
                         "Aether",
                         modifier = Modifier.weight(1f),
@@ -128,9 +121,9 @@ fun ChatListScreen(
                     )
                     Row(
                         modifier = Modifier.aetherIsland(
-                            shape = RoundedCornerShape(24.dp),
+                            shape = RoundedCornerShape(AetherStyle.PillRadius),
                             fillAlpha = AetherStyle.SoftIslandFillAlpha,
-                            strokeAlpha = 0.42f
+                            strokeAlpha = AetherStyle.SearchStrokeAlpha
                         ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
@@ -147,6 +140,12 @@ fun ChatListScreen(
                             IconButton(onClick = { createMenuOpen = true }, modifier = Modifier.size(42.dp)) {
                                 Icon(Icons.Default.Add, contentDescription = "Создать", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
                             }
+                            // В material3 1.2.0 у DropdownMenu нет shape/containerColor —
+                            // задаём скругление и чистый surface через локальную тему
+                            MaterialTheme(
+                                colorScheme = MaterialTheme.colorScheme.copy(surfaceTint = MaterialTheme.colorScheme.surface),
+                                shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(20.dp))
+                            ) {
                             DropdownMenu(expanded = createMenuOpen, onDismissRequest = { createMenuOpen = false }) {
                                 DropdownMenuItem(
                                     text = { Text("Создать чат") },
@@ -163,6 +162,7 @@ fun ChatListScreen(
                                     leadingIcon = { Icon(Icons.Default.Add, contentDescription = null) },
                                     onClick = { createMenuOpen = false; onCreateChannel() }
                                 )
+                            }
                             }
                         }
                     }
@@ -206,10 +206,10 @@ fun ChatListScreen(
             CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
                 LazyColumn(
                     state = listState,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().glassSource(),
                     contentPadding = PaddingValues(
                         top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical + 8.dp,
-                        bottom = appearance.edgeDimLength.value.dp
+                        bottom = appearance.edgeDimLength.value.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                     )
                 ) {
                     if (!showArchive && archivedChats.isNotEmpty()) {
@@ -245,6 +245,8 @@ fun ChatListScreen(
             val isSavedChat = entry.chat.type == 3
             AlertDialog(
                 onDismissRequest = { confirmDelete = null },
+                shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                containerColor = MaterialTheme.colorScheme.surface,
                 title = { Text(if (isSavedChat) "Очистить «Избранное»?" else "Удалить чат?") },
                 text = {
                     Text(
@@ -283,9 +285,8 @@ private fun ArchiveRow(count: Int, names: String, onClick: () -> Unit, modifier:
     ) {
         Box(
             modifier = Modifier
-                .size(44.dp)
-                .clip(CircleShape)
-                .background(MaterialTheme.colorScheme.surfaceVariant),
+                .size(AetherStyle.SmallControlSize)
+                .aetherCircle(fillAlpha = 0.5f, strokeAlpha = 0.24f),
             contentAlignment = Alignment.Center
         ) {
             Icon(Icons.Filled.Archive, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(22.dp))
@@ -358,7 +359,6 @@ fun ChatListItem(
         modifier = modifier
             .fillMaxWidth()
             .height(76.dp)
-            .background(Color.Transparent)
     ) {
         // Background Actions (Mute, Archive, Pin, Delete) — рисуем только при свайпе,
         // чтобы прозрачные строки Liquid Glass их не просвечивали
@@ -371,10 +371,10 @@ fun ChatListItem(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val buttons = listOf(
-                Pair("mute", Color.Gray),
-                Pair("archive", Color.Blue),
-                Pair("pin", Color(0xFF10B981)),
-                Pair("delete", Color.Red)
+                Pair("mute", MaterialTheme.colorScheme.onSurfaceVariant),
+                Pair("archive", MaterialTheme.colorScheme.primary),
+                Pair("pin", MaterialTheme.colorScheme.tertiary),
+                Pair("delete", MaterialTheme.colorScheme.error)
             )
             buttons.forEach { (action, color) ->
                 Box(
@@ -392,7 +392,7 @@ fun ChatListItem(
                     }
                     Box(
                         modifier = Modifier
-                            .size(46.dp)
+                            .size(AetherStyle.SmallControlSize)
                             .clip(CircleShape)
                             .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.88f))
                             .border(AetherStyle.Stroke, color.copy(alpha = 0.85f), CircleShape)

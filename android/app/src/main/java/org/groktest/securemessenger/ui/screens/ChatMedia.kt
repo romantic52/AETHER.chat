@@ -31,6 +31,7 @@ import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -43,12 +44,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 /**
@@ -254,7 +255,7 @@ fun VoiceMessagePlayer(
         Spacer(Modifier.width(8.dp))
         val shownMs = if (progress > 0f) (durationMs * progress).toLong() else durationMs
         val secs = (shownMs / 1000L).toInt()
-        Text(String.format("%d:%02d", secs / 60, secs % 60), color = tint, fontSize = 12.sp)
+        Text(String.format("%d:%02d", secs / 60, secs % 60), color = tint, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -301,8 +302,11 @@ fun VideoMessage(
     cachedMediaFile: (String) -> File? = { null },
     onDownloadMedia: suspend (String) -> File?
 ) {
+    val appearance = LocalThemeSettings.current
     var filePath by remember(jsonText) { mutableStateOf(cachedMediaFile(jsonText)?.absolutePath) }
     var loading by remember(jsonText) { mutableStateOf(filePath == null) }
+    var videoViewRef by remember(jsonText) { mutableStateOf<android.widget.VideoView?>(null) }
+    var playing by remember(jsonText) { mutableStateOf(false) }
 
     LaunchedEffect(jsonText) {
         if (filePath != null) return@LaunchedEffect
@@ -315,8 +319,21 @@ fun VideoMessage(
         modifier = Modifier
             .width(300.dp)
             .height(220.dp)
-            .clip(RoundedCornerShape(18.dp))
-            .background(Color.Black),
+            .clip(RoundedCornerShape(AetherStyle.MediaRadius))
+            .background(Color.Black)
+            .clickable(enabled = filePath != null) {
+                // Play/pause по тапу — без системного MediaController, перемотки нет
+                val vv = videoViewRef ?: return@clickable
+                if (playing) {
+                    try { vv.pause() } catch (_: Exception) {}
+                    playing = false
+                } else {
+                    try {
+                        vv.start()
+                        playing = true
+                    } catch (_: Exception) {}
+                }
+            },
         contentAlignment = Alignment.Center
     ) {
         val path = filePath
@@ -324,21 +341,51 @@ fun VideoMessage(
             AndroidView(
                 factory = { ctx ->
                     android.widget.VideoView(ctx).apply {
-                        setMediaController(android.widget.MediaController(ctx).also { it.setAnchorView(this) })
                         setVideoPath(path)
                         setOnPreparedListener { player ->
                             player.isLooping = false
                             seekTo(1)
                             pause()
                         }
+                        setOnCompletionListener { playing = false }
+                        videoViewRef = this
                     }
                 },
                 modifier = Modifier.fillMaxSize()
             )
+
+            // Оверлей как у кружка: скрим-круг + белая иконка play/pause
+            Box(
+                modifier = Modifier
+                    .size(AetherStyle.ControlSize)
+                    .clip(CircleShape)
+                    .background(Color.Black.copy(alpha = 0.48f)),
+                contentAlignment = Alignment.Center
+            ) {
+                AnimatedContent(
+                    targetState = playing,
+                    transitionSpec = {
+                        (fadeIn(tween(appearance.motionDuration(150))) +
+                            scaleIn(tween(appearance.motionDuration(180)), initialScale = 0.72f))
+                            .togetherWith(
+                                fadeOut(tween(appearance.motionDuration(100))) +
+                                    scaleOut(tween(appearance.motionDuration(120)), targetScale = 0.78f)
+                            )
+                    },
+                    label = "videoPlayPause"
+                ) { isPlaying ->
+                    Icon(
+                        if (isPlaying) Icons.Filled.Pause else Icons.Filled.PlayArrow,
+                        contentDescription = if (isPlaying) "Пауза" else "Воспроизвести",
+                        tint = Color.White,
+                        modifier = Modifier.size(28.dp)
+                    )
+                }
+            }
         } else if (loading) {
             CircularProgressIndicator(color = Color.White, modifier = Modifier.size(28.dp))
         } else {
-            Text("Не удалось открыть видео", color = Color.White.copy(alpha = 0.8f), fontSize = 13.sp)
+            Text("Не удалось открыть видео", color = Color.White.copy(alpha = 0.8f), style = MaterialTheme.typography.bodyMedium)
         }
     }
 }
@@ -392,7 +439,7 @@ fun FileMessageBubble(
             .padding(vertical = 2.dp)
     ) {
         Box(
-            modifier = Modifier.size(42.dp).clip(CircleShape).background(tint.copy(alpha = 0.16f)),
+            modifier = Modifier.size(42.dp).clip(CircleShape).background(tint.copy(alpha = AetherStyle.SelectedFillAlpha)),
             contentAlignment = Alignment.Center
         ) {
             if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), color = tint, strokeWidth = 2.dp)
@@ -400,8 +447,8 @@ fun FileMessageBubble(
         }
         Spacer(Modifier.width(10.dp))
         Column(modifier = Modifier.weight(1f, fill = false)) {
-            Text(fileName.ifBlank { "Файл" }, color = tint, fontSize = 15.sp, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
-            Text(formatFileSize(fileSize), color = tint.copy(alpha = 0.7f), fontSize = 12.sp)
+            Text(fileName.ifBlank { "Файл" }, color = tint, style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis)
+            Text(formatFileSize(fileSize), color = tint.copy(alpha = 0.7f), style = MaterialTheme.typography.labelSmall)
         }
     }
 }
@@ -487,7 +534,7 @@ fun VoicePreviewBar(
         )
         Spacer(Modifier.width(8.dp))
         val secs = (((trimEnd - trimStart).coerceAtLeast(0f)) * durationMs / 1000L).toInt()
-        Text(String.format("%d:%02d", secs / 60, secs % 60), color = tint, fontSize = 12.sp)
+        Text(String.format("%d:%02d", secs / 60, secs % 60), color = tint, style = MaterialTheme.typography.labelSmall)
     }
 }
 
@@ -787,7 +834,7 @@ fun VideoNoteMessage(
             ) {
                 Box(
                     modifier = Modifier
-                        .size(if (active) 54.dp else 46.dp)
+                        .size(if (active) AetherStyle.ControlSize else AetherStyle.SmallControlSize)
                         .clip(CircleShape)
                         .background(Color.Black.copy(alpha = 0.48f)),
                     contentAlignment = Alignment.Center

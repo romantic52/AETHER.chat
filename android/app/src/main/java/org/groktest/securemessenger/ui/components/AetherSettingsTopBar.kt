@@ -2,6 +2,7 @@ package org.groktest.securemessenger.ui.components
 
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
@@ -28,7 +29,8 @@ import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 fun AetherSettingsTopBar(
     title: String,
     onBack: (() -> Unit)? = null,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    actions: (@Composable RowScope.() -> Unit)? = null
 ) {
     val dimHeight = LocalThemeSettings.current.edgeDimLength.value.dp
     Box(modifier = modifier.fillMaxWidth().height(dimHeight).zIndex(20f)) {
@@ -53,6 +55,9 @@ fun AetherSettingsTopBar(
                 color = MaterialTheme.colorScheme.onBackground,
                 maxLines = 1
             )
+            if (actions != null) {
+                actions()
+            }
         }
     }
 }

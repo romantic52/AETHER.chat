@@ -1,12 +1,12 @@
 package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
@@ -14,12 +14,10 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -28,7 +26,11 @@ import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.crypto.E2ECrypto
 import org.groktest.securemessenger.data.SecurePrefs
 import org.groktest.securemessenger.data.SessionPrefs
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -160,7 +162,10 @@ fun LoginScreen(
                 onClick = { showSettings = !showSettings },
                 modifier = Modifier
                     .align(Alignment.TopEnd)
+                    .statusBarsPadding()
                     .padding(16.dp)
+                    .size(AetherStyle.SmallControlSize)
+                    .aetherCircle()
             ) {
                 Icon(Icons.Default.Settings, contentDescription = "Настройки", tint = MaterialTheme.colorScheme.onSurfaceVariant)
             }
@@ -169,19 +174,21 @@ fun LoginScreen(
                 modifier = Modifier
                     .align(Alignment.Center)
                     .fillMaxWidth()
-                    .padding(horizontal = 32.dp),
+                    .padding(horizontal = AetherStyle.ScreenHorizontal)
+                    .imePadding()
+                    .verticalScroll(rememberScrollState()),
                 horizontalAlignment = Alignment.Start
             ) {
                 Text(
                     text = "Aether",
-                    fontSize = 48.sp,
+                    style = MaterialTheme.typography.displaySmall,
                     fontWeight = FontWeight.Black,
                     color = MaterialTheme.colorScheme.onBackground
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
                     text = if (isRegister) "Создайте свой профиль в новой экосистеме" else "С возвращением в безопасное пространство",
-                    fontSize = 16.sp,
+                    style = MaterialTheme.typography.bodyLarge,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
@@ -191,33 +198,23 @@ fun LoginScreen(
                     OutlinedTextField(
                         value = server,
                         onValueChange = { server = it },
-                        label = { Text("Сервер", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                        label = { Text("Сервер") },
                         modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        colors = TextFieldDefaults.colors(
-                            focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                            unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                            focusedIndicatorColor = Color.Transparent,
-                            unfocusedIndicatorColor = Color.Transparent,
-                        ),
-                        shape = RoundedCornerShape(16.dp)
+                        colors = aetherTextFieldColors(),
+                        shape = RoundedCornerShape(AetherStyle.FieldRadius)
                     )
                 }
 
                 OutlinedTextField(
                     value = username,
                     onValueChange = { username = it },
-                    placeholder = { Text("Имя пользователя", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    placeholder = { Text("Имя пользователя") },
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                    ),
-                    shape = RoundedCornerShape(16.dp)
+                    colors = aetherTextFieldColors(),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius)
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -225,17 +222,12 @@ fun LoginScreen(
                 OutlinedTextField(
                     value = password,
                     onValueChange = { password = it },
-                    placeholder = { Text("Пароль", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                    placeholder = { Text("Пароль") },
                     visualTransformation = PasswordVisualTransformation(),
                     modifier = Modifier.fillMaxWidth(),
                     singleLine = true,
-                    colors = TextFieldDefaults.colors(
-                        focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                    ),
-                    shape = RoundedCornerShape(16.dp)
+                    colors = aetherTextFieldColors(),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius)
                 )
 
                 AnimatedVisibility(visible = totpNeeded && !isRegister) {
@@ -244,17 +236,12 @@ fun LoginScreen(
                         OutlinedTextField(
                             value = totpCode,
                             onValueChange = { totpCode = it.filter(Char::isDigit).take(10) },
-                            placeholder = { Text("Код 2FA", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                            placeholder = { Text("Код 2FA") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
                             modifier = Modifier.fillMaxWidth(),
                             singleLine = true,
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                                unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha=0.5f),
-                                focusedIndicatorColor = Color.Transparent,
-                                unfocusedIndicatorColor = Color.Transparent,
-                            ),
-                            shape = RoundedCornerShape(16.dp)
+                            colors = aetherTextFieldColors(),
+                            shape = RoundedCornerShape(AetherStyle.FieldRadius)
                         )
                     }
                 }
@@ -270,31 +257,22 @@ fun LoginScreen(
                         onCheckedChange = { rememberMe = it },
                         colors = CheckboxDefaults.colors(checkedColor = MaterialTheme.colorScheme.primary)
                     )
-                    Text("Запомнить меня", color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 14.sp)
+                    Text("Запомнить меня", color = MaterialTheme.colorScheme.onSurfaceVariant, style = MaterialTheme.typography.bodyMedium)
                 }
 
                 Spacer(modifier = Modifier.height(32.dp))
 
-                Button(
+                AetherPrimaryButton(
+                    text = if (isRegister) "Продолжить" else "Войти",
                     onClick = {
                         coroutineScope.launch { submit(isRegister) }
                     },
-                    enabled = !isSubmitting,
-                    modifier = Modifier.fillMaxWidth().height(56.dp),
-                    shape = RoundedCornerShape(16.dp),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    Text(
-                        text = if (isRegister) "Продолжить" else "Войти",
-                        fontSize = 18.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onPrimary
-                    )
-                }
+                    loading = isSubmitting
+                )
 
                 if (error != null) {
                     Spacer(modifier = Modifier.height(16.dp))
-                    Text(text = error!!, color = MaterialTheme.colorScheme.error, fontSize = 14.sp)
+                    Text(text = error!!, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
                 }
 
                 Spacer(modifier = Modifier.height(24.dp))
@@ -303,7 +281,7 @@ fun LoginScreen(
                     Text(
                         text = if (isRegister) "Уже есть аккаунт? Войти" else "Нет аккаунта? Создать",
                         color = MaterialTheme.colorScheme.primary,
-                        fontSize = 16.sp,
+                        style = MaterialTheme.typography.bodyLarge,
                         fontWeight = FontWeight.SemiBold,
                         modifier = Modifier
                             .clip(RoundedCornerShape(8.dp))

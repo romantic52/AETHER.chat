@@ -6,25 +6,28 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.api.ServerConfig
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -106,7 +109,11 @@ fun ProfileSettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(horizontal = 16.dp)
+                    .glassSource()
+                    .verticalScroll(rememberScrollState())
+                    .imePadding()
+                    .navigationBarsPadding()
+                    .padding(horizontal = AetherStyle.ScreenHorizontal)
                     .padding(
                         top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
                         bottom = 8.dp
@@ -137,8 +144,7 @@ fun ProfileSettingsScreen(
                         Text(
                             text = myId.take(1).uppercase(),
                             color = MaterialTheme.colorScheme.onPrimary,
-                            fontSize = 40.sp,
-                            fontWeight = FontWeight.Bold
+                            style = MaterialTheme.typography.displaySmall
                         )
                     }
                 }
@@ -159,14 +165,8 @@ fun ProfileSettingsScreen(
                     onValueChange = { displayName = it },
                     label = { Text("Имя") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f)
-                    )
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -176,14 +176,8 @@ fun ProfileSettingsScreen(
                     onValueChange = { username = it },
                     label = { Text("Юзернейм (@)") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f)
-                    )
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -193,20 +187,15 @@ fun ProfileSettingsScreen(
                     onValueChange = { bio = it },
                     label = { Text("О себе") },
                     modifier = Modifier.fillMaxWidth(),
-                    shape = androidx.compose.foundation.shape.RoundedCornerShape(16.dp),
-                    colors = TextFieldDefaults.colors(
-                        focusedIndicatorColor = Color.Transparent,
-                        unfocusedIndicatorColor = Color.Transparent,
-                        disabledIndicatorColor = Color.Transparent,
-                        focusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.5f),
-                        unfocusedContainerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.3f)
-                    )
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
 
-                Spacer(modifier = Modifier.weight(1f))
+                Spacer(modifier = Modifier.height(24.dp))
 
-                Button(
-                    enabled = !isSaving,
+                AetherPrimaryButton(
+                    text = "Сохранить",
+                    loading = isSaving,
                     onClick = {
                         isSaving = true
                         coroutineScope.launch {
@@ -227,19 +216,12 @@ fun ProfileSettingsScreen(
                                 isSaving = false
                             }
                         }
-                    },
-                    modifier = Modifier.fillMaxWidth().height(50.dp)
-                ) {
-                    if (isSaving) {
-                        CircularProgressIndicator(modifier = Modifier.size(22.dp), color = MaterialTheme.colorScheme.onPrimary, strokeWidth = 2.dp)
-                    } else {
-                        Text("Сохранить", fontSize = 16.sp)
                     }
-                }
+                )
             }
             SnackbarHost(
                 snackbarHostState,
-                Modifier.align(Alignment.BottomCenter).padding(bottom = 12.dp)
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp)
             )
             AetherSettingsTopBar(
                 "Настройки профиля",

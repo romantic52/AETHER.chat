@@ -1,14 +1,17 @@
 package org.groktest.securemessenger.ui.screens
 
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
@@ -24,42 +27,30 @@ fun NotificationsSettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical)
+                    .glassSource()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = AetherStyle.ScreenHorizontal)
+                    .padding(top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical, bottom = 24.dp)
             ) {
-                ListItem(
-                    headlineContent = { Text("Звук уведомлений") },
-                    supportingContent = { Text("Звук при новых сообщениях") },
-                    trailingContent = {
-                        Switch(
-                            checked = themeSettings.notifSound.value,
-                            onCheckedChange = { themeSettings.setNotifSound(it) }
-                        )
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                AetherSwitchRow(
+                    title = "Звук уведомлений",
+                    subtitle = "Звук при новых сообщениях",
+                    checked = themeSettings.notifSound.value,
+                    onCheckedChange = { themeSettings.setNotifSound(it) }
                 )
 
-                ListItem(
-                    headlineContent = { Text("Вибрация") },
-                    supportingContent = { Text("Вибрировать при новых сообщениях") },
-                    trailingContent = {
-                        Switch(
-                            checked = themeSettings.notifVibration.value,
-                            onCheckedChange = { themeSettings.setNotifVibration(it) }
-                        )
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                AetherSwitchRow(
+                    title = "Вибрация",
+                    subtitle = "Вибрировать при новых сообщениях",
+                    checked = themeSettings.notifVibration.value,
+                    onCheckedChange = { themeSettings.setNotifVibration(it) }
                 )
 
-                ListItem(
-                    headlineContent = { Text("Уведомления в фоне") },
-                    supportingContent = { Text("Показывать пуш о новых сообщениях") },
-                    trailingContent = {
-                        Switch(
-                            checked = themeSettings.notifPreviews.value,
-                            onCheckedChange = { themeSettings.setNotifPreviews(it) }
-                        )
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                AetherSwitchRow(
+                    title = "Уведомления в фоне",
+                    subtitle = "Показывать пуш о новых сообщениях",
+                    checked = themeSettings.notifPreviews.value,
+                    onCheckedChange = { themeSettings.setNotifPreviews(it) }
                 )
             }
             AetherSettingsTopBar(

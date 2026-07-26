@@ -21,8 +21,8 @@ class ThemeSettings(context: Context) {
     var designStyle = mutableStateOf(prefs.getString("design_style", "Classic") ?: "Classic")
     // Быстрая реакция по двойному тапу (по умолчанию сердечко)
     var quickReaction = mutableStateOf(prefs.getString("quick_reaction", "❤️") ?: "❤️")
-    // --- Жидкое стекло (настоящий backdrop-blur) ---
-    var liquidGlassEnabled = mutableStateOf(prefs.getBoolean("liquid_glass", false))
+    // --- Жидкое стекло (настоящий backdrop-blur, вкл. по умолчанию на API 31+) ---
+    var liquidGlassEnabled = mutableStateOf(prefs.getBoolean("liquid_glass", true))
     var glassTransparency = mutableStateOf(prefs.getFloat("glass_transparency", 0.5f)) // 0=матовое, 1=прозрачное
     var surfaceTransparency = mutableStateOf(prefs.getFloat("surface_transparency", 0.22f))
     var edgeDimEnabled = mutableStateOf(prefs.getBoolean("edge_dim_enabled", true))

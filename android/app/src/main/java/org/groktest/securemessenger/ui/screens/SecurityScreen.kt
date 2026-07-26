@@ -1,8 +1,8 @@
 package org.groktest.securemessenger.ui.screens
 
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
@@ -17,7 +17,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
@@ -31,9 +30,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
+import org.groktest.securemessenger.ui.components.AetherSectionTitle
+import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 /**
  * «Сессии и безопасность»: устройства аккаунта с адресным выходом,
@@ -78,12 +81,15 @@ fun SecurityScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .glassSource()
                     .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(horizontal = AetherStyle.ScreenHorizontal)
                     .padding(bottom = 24.dp)
             ) {
                 Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
 
-                SectionHeader("Устройства и сессии")
+                AetherSectionTitle("Устройства и сессии")
                 val current = info
                 if (loading && current == null) {
                     Box(Modifier.fillMaxWidth().padding(24.dp), contentAlignment = Alignment.Center) {
@@ -92,18 +98,12 @@ fun SecurityScreen(
                 } else if (current != null) {
                     current.devices.forEach { dev ->
                         val allowed = dev.current || current.canKick
-                        ListItem(
-                            headlineContent = {
-                                Text(deviceTitle(dev.deviceId) + if (dev.current) " · это устройство" else "")
-                            },
-                            supportingContent = {
-                                val since = formatDate(dev.createdAt)
-                                Text(
-                                    "${dev.deviceId} · сессий: ${dev.sessions}" +
-                                        if (since.isNotEmpty()) " · с $since" else ""
-                                )
-                            },
-                            leadingContent = {
+                        val since = formatDate(dev.createdAt)
+                        AetherSettingsRow(
+                            title = deviceTitle(dev.deviceId) + if (dev.current) " · это устройство" else "",
+                            subtitle = "${dev.deviceId} · сессий: ${dev.sessions}" +
+                                if (since.isNotEmpty()) " · с $since" else "",
+                            icon = {
                                 Icon(
                                     deviceIcon(dev.deviceId),
                                     contentDescription = null,
@@ -111,7 +111,7 @@ fun SecurityScreen(
                                     else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             },
-                            trailingContent = {
+                            trailing = {
                                 TextButton(onClick = { kickTarget = dev }, enabled = allowed) {
                                     Text(
                                         if (dev.current) "Выйти" else "Выкинуть",
@@ -120,8 +120,7 @@ fun SecurityScreen(
                                         fontWeight = FontWeight.SemiBold,
                                     )
                                 }
-                            },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                            }
                         )
                     }
                     if (!current.canKick) {
@@ -132,21 +131,13 @@ fun SecurityScreen(
                     }
                 }
 
-                Divider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
-
-                SectionHeader("Двухфакторная аутентификация")
-                ListItem(
-                    headlineContent = { Text("Двухфакторная (TOTP)") },
-                    supportingContent = {
-                        Text(
-                            if (totpOn) "Включена · вход требует код из аутентификатора"
-                            else "Одноразовые коды из приложения-аутентификатора"
-                        )
-                    },
-                    leadingContent = {
+                Spacer(Modifier.height(12.dp))
+                AetherSectionTitle("Двухфакторная аутентификация")
+                AetherSettingsRow(
+                    title = "Двухфакторная (TOTP)",
+                    subtitle = if (totpOn) "Включена · вход требует код из аутентификатора"
+                    else "Одноразовые коды из приложения",
+                    icon = {
                         Icon(
                             Icons.Default.Shield,
                             contentDescription = null,
@@ -154,7 +145,7 @@ fun SecurityScreen(
                             else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     },
-                    trailingContent = {
+                    trailing = {
                         TextButton(onClick = {
                             if (totpOn) {
                                 showTotpDisable = true
@@ -170,42 +161,32 @@ fun SecurityScreen(
                         }) {
                             Text(if (totpOn) "Выключить" else "Включить", fontWeight = FontWeight.SemiBold)
                         }
-                    },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    }
                 )
 
-                Divider(
-                    color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f),
-                    modifier = Modifier.padding(vertical = 8.dp)
-                )
-
-                SectionHeader("Данные")
-                ListItem(
-                    headlineContent = {
-                        Text("Удалить всё: чаты, группы, каналы", color = MaterialTheme.colorScheme.error)
-                    },
-                    supportingContent = {
-                        Text("Не удаляет сам аккаунт и ключи — только очищает данные на сервере и выходит из остальных сессий")
-                    },
-                    leadingContent = {
-                        Icon(
-                            Icons.Default.DeleteForever,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.error
-                        )
-                    },
-                    modifier = Modifier.clickable { showWipe = true },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                Spacer(Modifier.height(12.dp))
+                AetherSectionTitle("Данные")
+                AetherSettingsRow(
+                    title = "Удалить всё: чаты, группы, каналы",
+                    subtitle = "Аккаунт и ключи останутся, данные на сервере будут стёрты",
+                    icon = { Icon(Icons.Default.DeleteForever, contentDescription = null) },
+                    destructive = true,
+                    onClick = { showWipe = true }
                 )
             }
             AetherSettingsTopBar("Безопасность", onBack, Modifier.align(Alignment.TopCenter))
-            SnackbarHost(snackbar, Modifier.align(Alignment.BottomCenter))
+            SnackbarHost(
+                snackbar,
+                Modifier.align(Alignment.BottomCenter).navigationBarsPadding().padding(bottom = 12.dp)
+            )
         }
     }
 
     kickTarget?.let { dev ->
         AlertDialog(
             onDismissRequest = { kickTarget = null },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text(if (dev.current) "Выйти на этом устройстве?" else "Выкинуть устройство?") },
             text = {
                 Text(
@@ -304,23 +285,12 @@ fun SecurityScreen(
 }
 
 @Composable
-private fun SectionHeader(title: String) {
-    Text(
-        title,
-        color = MaterialTheme.colorScheme.primary,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold,
-        modifier = Modifier.padding(start = 16.dp, top = 4.dp, bottom = 4.dp)
-    )
-}
-
-@Composable
 private fun Hint(text: String) {
     Text(
         text,
         fontSize = 13.sp,
         color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
     )
 }
 
@@ -338,6 +308,8 @@ private fun TotpCodeDialog(
     val clipboard = LocalClipboardManager.current
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(AetherStyle.IslandRadius),
+        containerColor = MaterialTheme.colorScheme.surface,
         title = { Text(title) },
         text = {
             Column {
@@ -360,12 +332,14 @@ private fun TotpCodeDialog(
                     Text("Введите текущий код из аутентификатора.")
                     Spacer(Modifier.height(8.dp))
                 }
-                OutlinedTextField(
+                TextField(
                     value = code,
                     onValueChange = { code = it.filter(Char::isDigit).take(10) },
                     label = { Text("Код") },
                     singleLine = true,
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
             }
         },
@@ -389,6 +363,8 @@ private fun WipeDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
     var password by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(AetherStyle.IslandRadius),
+        containerColor = MaterialTheme.colorScheme.surface,
         title = { Text("Удалить всё") },
         text = {
             Column {
@@ -397,13 +373,15 @@ private fun WipeDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
                         "Введите пароль аккаунта для подтверждения."
                 )
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
+                TextField(
                     value = password,
                     onValueChange = { password = it },
                     label = { Text("Пароль") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
             }
         },

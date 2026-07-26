@@ -17,9 +17,12 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -56,12 +59,15 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.AppPalette
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.ThemePalettes
 import org.groktest.securemessenger.ui.theme.aetherCircle
 import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherStroke
+import org.groktest.securemessenger.ui.theme.aetherSurface
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -83,12 +89,12 @@ fun CustomizationScreen(onBack: () -> Unit) {
     GlassBackground {
         Box(modifier = Modifier.fillMaxSize()) {
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier.fillMaxSize().glassSource(),
                 contentPadding = PaddingValues(
                     start = AetherStyle.ScreenHorizontal,
                     top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
                     end = AetherStyle.ScreenHorizontal,
-                    bottom = 28.dp
+                    bottom = 28.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
                 ),
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
@@ -297,14 +303,14 @@ private fun ThemePreviewCard(
     val outerShape = RoundedCornerShape(AetherStyle.IslandRadius)
     val previewShape = RoundedCornerShape(AetherStyle.MediaRadius)
     val fill by animateColorAsState(
-        if (selected) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.68f)
-        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.36f),
+        if (selected) aetherSurface(AetherStyle.IslandFillAlpha)
+        else aetherSurface(AetherStyle.SoftIslandFillAlpha),
         tween(appearance.motionDuration(180)),
         label = "themeFill"
     )
     val stroke by animateColorAsState(
-        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.76f)
-        else MaterialTheme.colorScheme.outline.copy(alpha = 0.28f),
+        if (selected) aetherStroke(AetherStyle.SelectedStrokeAlpha)
+        else MaterialTheme.colorScheme.outline.copy(alpha = AetherStyle.SoftStrokeAlpha),
         tween(appearance.motionDuration(180)),
         label = "themeStroke"
     )
@@ -422,13 +428,13 @@ private fun ChoicePill(
     val appearance = LocalThemeSettings.current
     val shape = RoundedCornerShape(AetherStyle.PillRadius)
     val fill by animateColorAsState(
-        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.22f)
-        else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.46f),
+        if (selected) MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.SelectedFillAlpha)
+        else aetherSurface(AetherStyle.SoftIslandFillAlpha),
         tween(appearance.motionDuration(160)),
         label = "pillFill"
     )
     val stroke by animateColorAsState(
-        MaterialTheme.colorScheme.primary.copy(alpha = if (selected) 0.74f else 0.22f),
+        MaterialTheme.colorScheme.primary.copy(alpha = if (selected) AetherStyle.SelectedStrokeAlpha else AetherStyle.SoftStrokeAlpha),
         tween(appearance.motionDuration(160)),
         label = "pillStroke"
     )
@@ -463,13 +469,8 @@ private fun ReactionButton(
     onClick: () -> Unit
 ) {
     val appearance = LocalThemeSettings.current
-    val fillAlpha by animateFloatAsState(
-        if (selected) 0.28f else AetherStyle.SoftIslandFillAlpha,
-        tween(appearance.motionDuration(160)),
-        label = "reactionFill"
-    )
     val strokeAlpha by animateFloatAsState(
-        if (selected) 0.76f else AetherStyle.SoftStrokeAlpha,
+        if (selected) AetherStyle.SelectedStrokeAlpha else AetherStyle.SoftStrokeAlpha,
         tween(appearance.motionDuration(160)),
         label = "reactionStroke"
     )
@@ -483,7 +484,7 @@ private fun ReactionButton(
             .size(52.dp)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .aetherCircle(
-                fillAlpha = fillAlpha,
+                fillAlpha = AetherStyle.SoftIslandFillAlpha,
                 strokeAlpha = strokeAlpha
             )
             .clickable(onClick = onClick),

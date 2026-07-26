@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.*
@@ -19,7 +20,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -32,7 +32,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.glass.glassSource
+import org.groktest.securemessenger.ui.theme.AetherEdge
+import org.groktest.securemessenger.ui.theme.AetherEdgeDim
+import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
+import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -115,47 +121,13 @@ fun SearchScreen(
     }
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                Column(
-                    modifier = Modifier.background(Color.Transparent)
-                ) {
-                    TopAppBar(
-                        title = {
-                            TextField(
-                                value = query,
-                                onValueChange = { 
-                                    query = it
-                                    performSearch(it)
-                                },
-                                placeholder = { Text("Поиск...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent,
-                                    focusedTextColor = MaterialTheme.colorScheme.onBackground,
-                                    unfocusedTextColor = MaterialTheme.colorScheme.onBackground
-                                ),
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true
-                            )
-                        },
-                        navigationIcon = {
-                            IconButton(onClick = onBack) {
-                                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = MaterialTheme.colorScheme.onSurfaceVariant)
-                            }
-                        },
-                        colors = TopAppBarDefaults.topAppBarColors(
-                            containerColor = Color.Transparent
-                        )
-                    )
-                }
-            },
-            snackbarHost = { SnackbarHost(snackbarHostState) },
-            containerColor = Color.Transparent
-        ) { padding ->
-            Column(modifier = Modifier.padding(padding).fillMaxSize()) {
+        Box(modifier = Modifier.fillMaxSize()) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(top = AetherStyle.EdgeBarHeight)
+                    .navigationBarsPadding()
+            ) {
                 Box(Modifier.fillMaxWidth().height(4.dp)) {
                     Crossfade(
                         targetState = isLoading,
@@ -165,7 +137,7 @@ fun SearchScreen(
                         if (loading) {
                             LinearProgressIndicator(
                                 modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.onBackground
+                                color = MaterialTheme.colorScheme.primary
                             )
                         }
                     }
@@ -188,21 +160,21 @@ fun SearchScreen(
                                 Spacer(modifier = Modifier.height(16.dp))
                                 Button(
                                     onClick = { onCreateChannel(query) },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                                    shape = RoundedCornerShape(AetherStyle.PillRadius)
                                 ) {
                                     Text("Создать канал '$query'")
                                 }
                             }
                         }
                     } else {
-                        LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        LazyColumn(modifier = Modifier.fillMaxSize().glassSource()) {
                             items(results, key = { "${it.isGroup}:${it.userId}" }) { result ->
                             val isMember = memberGroupIds?.contains(result.userId.lowercase()) == true
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
                                     .clickable(enabled = joiningId == null) { selectResult(result) }
-                                    .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    .padding(horizontal = AetherStyle.ScreenHorizontal, vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                     val avatarUrl = if (result.avatarFileId != null && org.groktest.securemessenger.api.ServerConfig.baseUrl.isNotBlank())
@@ -212,13 +184,13 @@ fun SearchScreen(
                                         coil.compose.AsyncImage(
                                             model = avatarUrl,
                                             contentDescription = null,
-                                            modifier = Modifier.size(50.dp).clip(CircleShape),
+                                            modifier = Modifier.size(AetherStyle.AvatarMedium).clip(CircleShape),
                                             contentScale = androidx.compose.ui.layout.ContentScale.Crop
                                         )
                                     } else {
                                         Box(
                                             modifier = Modifier
-                                                .size(50.dp)
+                                                .size(AetherStyle.AvatarMedium)
                                                 .clip(CircleShape)
                                                 .background(MaterialTheme.colorScheme.primary),
                                             contentAlignment = Alignment.Center
@@ -287,6 +259,60 @@ fun SearchScreen(
                         }
                     }
                 }
+            }
+
+            // Плавающий верх: edge-dim + «Назад» + поле-остров поиска (канон под-экранов)
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(appearance.edgeDimLength.value.dp)
+            ) {
+                AetherEdgeDim(AetherEdge.Top, Modifier.matchParentSize())
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .statusBarsPadding()
+                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = onBack, modifier = Modifier.size(48.dp)) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    TextField(
+                        value = query,
+                        onValueChange = {
+                            query = it
+                            performSearch(it)
+                        },
+                        placeholder = { Text("Поиск...") },
+                        colors = aetherTextFieldColors(containerAlpha = 0f),
+                        shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                        modifier = Modifier
+                            .weight(1f)
+                            .aetherIsland(
+                                shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                                fillAlpha = AetherStyle.ControlFillAlpha,
+                                strokeAlpha = AetherStyle.SearchStrokeAlpha
+                            ),
+                        singleLine = true
+                    )
+                }
+            }
+
+            SnackbarHost(
+                hostState = snackbarHostState,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 12.dp)
+            ) { data ->
+                Snackbar(
+                    snackbarData = data,
+                    shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    contentColor = MaterialTheme.colorScheme.onSurface
+                )
             }
         }
     }

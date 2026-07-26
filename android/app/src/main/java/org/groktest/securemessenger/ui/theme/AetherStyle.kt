@@ -50,8 +50,11 @@ object AetherStyle {
     const val SoftIslandFillAlpha = 0.34f
     const val ControlFillAlpha = 0.68f
     const val SearchFillAlpha = 0.58f
+    const val SearchStrokeAlpha = 0.42f
     const val SoftStrokeAlpha = 0.18f
     const val ControlStrokeAlpha = 0.56f
+    const val AvatarFillAlpha = 0.84f
+    const val AvatarStrokeAlpha = 0.46f
     const val DividerAlpha = 0.12f
 }
 

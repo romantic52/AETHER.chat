@@ -28,7 +28,8 @@ private fun graphite() = AppPalette(
         background = Color(0xFF0C0D0F), onBackground = Color(0xFFECECEE),
         surface = Color(0xFF1A1B1E), onSurface = Color(0xFFECECEE),
         surfaceVariant = Color(0xFF26282C), onSurfaceVariant = Color(0xFF8A9099),
-        outline = Color(0xFF2A2C30)
+        outline = Color(0xFF2A2C30),
+        error = Color(0xFFEF5B5B), onError = Color(0xFF190B0D)
     )
 )
 
@@ -41,7 +42,8 @@ private fun rosepine() = AppPalette(
         background = Color(0xFF191724), onBackground = Color(0xFFE0DEF4),
         surface = Color(0xFF1F1D2E), onSurface = Color(0xFFE0DEF4),
         surfaceVariant = Color(0xFF26233A), onSurfaceVariant = Color(0xFF908CAA),
-        outline = Color(0xFF403D52)
+        outline = Color(0xFF403D52),
+        error = Color(0xFFEB6F92), onError = Color(0xFF191724)
     )
 )
 
@@ -54,7 +56,8 @@ private fun sakura() = AppPalette(
         background = Color(0xFF15101A), onBackground = Color(0xFFF3E9EF),
         surface = Color(0xFF1E1622), onSurface = Color(0xFFF3E9EF),
         surfaceVariant = Color(0xFF2A1F2C), onSurfaceVariant = Color(0xFFB79AAA),
-        outline = Color(0xFF3A2C36)
+        outline = Color(0xFF3A2C36),
+        error = Color(0xFFEF5B5B), onError = Color(0xFF190B0D)
     )
 )
 
@@ -67,7 +70,8 @@ private fun mono() = AppPalette(
         background = Color(0xFF0A0A0A), onBackground = Color(0xFFF2F2F2),
         surface = Color(0xFF151515), onSurface = Color(0xFFF2F2F2),
         surfaceVariant = Color(0xFF1F1F1F), onSurfaceVariant = Color(0xFF9A9A9A),
-        outline = Color(0xFF333333)
+        outline = Color(0xFF333333),
+        error = Color(0xFFEF5B5B), onError = Color(0xFF190B0D)
     )
 )
 
@@ -80,7 +84,8 @@ private fun pastel() = AppPalette(
         background = Color(0xFFFDF2F6), onBackground = Color(0xFF3B2A32),
         surface = Color(0xFFFFFFFF), onSurface = Color(0xFF3B2A32),
         surfaceVariant = Color(0xFFF6E3EC), onSurfaceVariant = Color(0xFF8A6B78),
-        outline = Color(0xFFE8CFDA)
+        outline = Color(0xFFE8CFDA),
+        error = Color(0xFFD64560), onError = Color(0xFFFFFFFF)
     )
 )
 
@@ -93,7 +98,8 @@ private fun daylight() = AppPalette(
         background = Color(0xFFF4F5F7), onBackground = Color(0xFF1A1C20),
         surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1A1C20),
         surfaceVariant = Color(0xFFEAECEF), onSurfaceVariant = Color(0xFF6B7077),
-        outline = Color(0xFFDADDE1)
+        outline = Color(0xFFDADDE1),
+        error = Color(0xFFD93B4C), onError = Color(0xFFFFFFFF)
     )
 )
 
@@ -106,7 +112,8 @@ private fun telegramNight() = AppPalette(
         background = Color(0xFF0E1621), onBackground = Color(0xFFF2F5F7),
         surface = Color(0xFF17212B), onSurface = Color(0xFFF2F5F7),
         surfaceVariant = Color(0xFF182533), onSurfaceVariant = Color(0xFF8E9BA7),
-        outline = Color(0xFF3A4B5C)
+        outline = Color(0xFF3A4B5C),
+        error = Color(0xFFEF5B5B), onError = Color(0xFF190B0D)
     )
 )
 
@@ -119,7 +126,8 @@ private fun telegramDay() = AppPalette(
         background = Color(0xFFFFFFFF), onBackground = Color(0xFF17212B),
         surface = Color(0xFFFFFFFF), onSurface = Color(0xFF17212B),
         surfaceVariant = Color(0xFFF1F4F6), onSurfaceVariant = Color(0xFF707B85),
-        outline = Color(0xFFD5DDE3)
+        outline = Color(0xFFD5DDE3),
+        error = Color(0xFFE53935), onError = Color.White
     )
 )
 

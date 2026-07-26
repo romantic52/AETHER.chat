@@ -58,6 +58,10 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.groktest.securemessenger.AetherService
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.webrtc.WebRTCClient
 import org.json.JSONObject
 import org.webrtc.*
@@ -545,26 +549,29 @@ fun CallOverlay(
                 modifier = Modifier
                     .padding(horizontal = 12.dp, vertical = 6.dp)
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(22.dp))
-                    .background(Color(0xFF10B981))
+                    .aetherIsland(
+                        RoundedCornerShape(AetherStyle.PillRadius),
+                        fillAlpha = AetherStyle.DockFillAlpha,
+                        strokeAlpha = AetherStyle.DockStrokeAlpha
+                    )
                     .clickable { minimized = false }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Filled.Call, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
+                Icon(Icons.Filled.Call, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(18.dp))
                 Spacer(Modifier.width(8.dp))
-                Text(peerId, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
+                Text(peerId, color = MaterialTheme.colorScheme.onSurface, fontWeight = FontWeight.SemiBold, fontSize = 14.sp)
                 Spacer(Modifier.width(8.dp))
                 Text(
                     if (connected) formatCallTime(callSeconds) else callStatus,
-                    color = Color.White.copy(alpha = 0.85f),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                     fontSize = 13.sp
                 )
                 Spacer(Modifier.weight(1f))
                 Icon(
                     if (micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
                     contentDescription = "Микрофон",
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier
                         .size(28.dp)
                         .clip(CircleShape)
@@ -578,11 +585,11 @@ fun CallOverlay(
                 Icon(
                     Icons.Filled.CallEnd,
                     contentDescription = "Завершить",
-                    tint = Color.White,
+                    tint = MaterialTheme.colorScheme.onError,
                     modifier = Modifier
                         .size(28.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFFEF4444))
+                        .background(MaterialTheme.colorScheme.error)
                         .clickable { endCall(sendSignal = true) }
                         .padding(4.dp)
                 )
@@ -638,9 +645,9 @@ fun CallOverlay(
                     .padding(top = 52.dp, end = 16.dp)
                     .width(104.dp)
                     .aspectRatio(3f / 4f)
-                    .clip(RoundedCornerShape(14.dp))
+                    .clip(RoundedCornerShape(AetherStyle.MediaRadius))
                     .background(Color.Black)
-                    .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(14.dp)),
+                    .border(1.dp, Color.White.copy(alpha = 0.25f), RoundedCornerShape(AetherStyle.MediaRadius)),
                 contentAlignment = Alignment.Center
             ) {
                 val localTrack = webRTCClient?.localVideoTrack
@@ -668,21 +675,21 @@ fun CallOverlay(
         ) {
             IconButton(
                 onClick = { minimized = true },
-                modifier = Modifier.clip(CircleShape).background(Color.Black.copy(alpha = 0.3f))
+                modifier = Modifier.size(AetherStyle.SmallControlSize).aetherCircle()
             ) {
-                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Свернуть", tint = Color.White)
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Свернуть", tint = MaterialTheme.colorScheme.onSurface)
             }
             Spacer(Modifier.weight(1f))
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(Color.Black.copy(alpha = 0.25f))
+                    .clip(RoundedCornerShape(AetherStyle.PillRadius))
+                    .background(aetherSurface(AetherStyle.SoftIslandFillAlpha))
                     .padding(horizontal = 10.dp, vertical = 5.dp)
             ) {
-                Icon(Icons.Filled.Lock, contentDescription = null, tint = Color(0xFF4ADE80), modifier = Modifier.size(13.dp))
+                Icon(Icons.Filled.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(13.dp))
                 Spacer(Modifier.width(5.dp))
-                Text("E2E", color = Color.White.copy(alpha = 0.9f), fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                Text("E2E", color = MaterialTheme.colorScheme.onSurface, fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
             }
         }
 
@@ -719,14 +726,15 @@ fun CallOverlay(
         Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .navigationBarsPadding()
                 .padding(bottom = 52.dp, start = 12.dp, end = 12.dp)
                 .fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceEvenly,
             verticalAlignment = Alignment.Bottom
         ) {
             if (isIncoming && !accepted) {
-                CallControl(Icons.Filled.Call, "Принять", Color(0xFF22C55E), Color.White) { acceptCall() }
-                CallControl(Icons.Filled.CallEnd, "Отклонить", Color(0xFFEF4444), Color.White) { endCall(sendSignal = true) }
+                CallControl(Icons.Filled.Call, "Принять", AcceptGreen, Color.White) { acceptCall() }
+                CallControl(Icons.Filled.CallEnd, "Отклонить", MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.onError) { endCall(sendSignal = true) }
             } else {
                 CallControl(
                     if (micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
@@ -761,13 +769,19 @@ fun CallOverlay(
                     }
                 }
 
-                CallControl(Icons.Filled.CallEnd, "Завершить", Color(0xFFEF4444), Color.White) { endCall(sendSignal = true) }
+                CallControl(Icons.Filled.CallEnd, "Завершить", MaterialTheme.colorScheme.error, MaterialTheme.colorScheme.onError) { endCall(sendSignal = true) }
             }
         }
     }
     }
     }
 }
+
+/** Зелёный кнопки «Принять»: осознанный хардкод — универсальная семантика «ответить на звонок» поверх тёмного медиа-фона, от палитры темы не зависит. */
+private val AcceptGreen = Color(0xFF22C55E)
+
+/** Круг кнопки управления звонком: осознанно крупнее ControlSize=50 (кандидат на токен CallControlSize в AetherStyle). */
+private val CallControlSize = 64.dp
 
 /** Первая буква имени для аватара-заглушки (как в Telegram). */
 private fun initialOf(name: String): String =
@@ -849,7 +863,7 @@ private fun CallControl(
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
         Box(
             modifier = Modifier
-                .size(64.dp)
+                .size(CallControlSize)
                 .clip(CircleShape)
                 .background(animatedBackground)
                 .clickable(onClick = onClick),

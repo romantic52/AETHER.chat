@@ -8,9 +8,9 @@ import androidx.compose.animation.shrinkVertically
 import androidx.compose.animation.core.FastOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.biometric.BiometricManager
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -21,16 +21,18 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import org.groktest.securemessenger.data.LockPrefs
+import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -53,29 +55,30 @@ fun PrivacySettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
+                    .glassSource()
                     .verticalScroll(rememberScrollState())
-                    .padding(bottom = 24.dp)
+                    .navigationBarsPadding()
+                    .padding(
+                        start = AetherStyle.ScreenHorizontal,
+                        end = AetherStyle.ScreenHorizontal,
+                        bottom = 24.dp
+                    )
             ) {
                 Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
-                ListItem(
-                    headlineContent = { Text("Код-пароль") },
-                    supportingContent = { Text(if (lockEnabled) "Включён · запрашивается при входе" else "Запрашивать пароль при входе") },
-                    leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                    trailingContent = {
-                        Switch(
-                            checked = lockEnabled,
-                            onCheckedChange = { on ->
-                                if (on) {
-                                    showSetPin = true
-                                } else {
-                                    prefs.disable()
-                                    lockEnabled = false
-                                    biometricOn = false
-                                }
-                            }
-                        )
+                AetherSwitchRow(
+                    title = "Код-пароль",
+                    subtitle = if (lockEnabled) "Включён · запрашивается при входе" else "Запрашивать пароль при входе",
+                    checked = lockEnabled,
+                    onCheckedChange = { on ->
+                        if (on) {
+                            showSetPin = true
+                        } else {
+                            prefs.disable()
+                            lockEnabled = false
+                            biometricOn = false
+                        }
                     },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                    icon = { Icon(Icons.Default.Lock, contentDescription = null) }
                 )
 
                 AnimatedVisibility(
@@ -88,41 +91,34 @@ fun PrivacySettingsScreen(
                     )
                 ) {
                     Column {
-                        ListItem(
-                            headlineContent = { Text("Сменить код-пароль") },
-                            leadingContent = { Icon(Icons.Default.Lock, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                            modifier = Modifier.clickable { showSetPin = true },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                        AetherSettingsRow(
+                            title = "Сменить код-пароль",
+                            icon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                            onClick = { showSetPin = true }
                         )
-                        ListItem(
-                            headlineContent = { Text("Разблокировка по отпечатку/лицу") },
-                            supportingContent = { Text(if (biometricAvailable) "Биометрия вместо ввода PIN" else "Биометрия недоступна на устройстве") },
-                            leadingContent = { Icon(Icons.Default.Fingerprint, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
-                            trailingContent = {
-                                Switch(
-                                    checked = biometricOn,
-                                    enabled = biometricAvailable,
-                                    onCheckedChange = {
-                                        biometricOn = it
-                                        prefs.biometricEnabled = it
-                                    }
-                                )
+                        AetherSwitchRow(
+                            title = "Разблокировка по отпечатку/лицу",
+                            subtitle = if (biometricAvailable) "Биометрия вместо ввода PIN" else "Биометрия недоступна на устройстве",
+                            checked = biometricOn,
+                            onCheckedChange = {
+                                biometricOn = it
+                                prefs.biometricEnabled = it
                             },
-                            colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                            icon = { Icon(Icons.Default.Fingerprint, contentDescription = null) },
+                            enabled = biometricAvailable
                         )
                     }
                 }
 
-                Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.1f), modifier = Modifier.padding(vertical = 8.dp))
+                Spacer(Modifier.height(12.dp))
 
                 val blocked = org.groktest.securemessenger.data.BlockStore.blocked
                 var showBlocked by remember { mutableStateOf(false) }
-                ListItem(
-                    headlineContent = { Text("Черный список") },
-                    supportingContent = { Text(if (blocked.isEmpty()) "Список пуст" else "Заблокировано: ${blocked.size}") },
-                    leadingContent = { Icon(Icons.Default.Warning, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant) },
-                    modifier = Modifier.clickable { showBlocked = !showBlocked },
-                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                AetherSettingsRow(
+                    title = "Черный список",
+                    subtitle = if (blocked.isEmpty()) "Список пуст" else "Заблокировано: ${blocked.size}",
+                    icon = { Icon(Icons.Default.Warning, contentDescription = null) },
+                    onClick = { showBlocked = !showBlocked }
                 )
                 AnimatedVisibility(
                     visible = showBlocked,
@@ -133,20 +129,19 @@ fun PrivacySettingsScreen(
                         if (blocked.isEmpty()) {
                             Text(
                                 "Здесь будут пользователи, которых вы заблокировали (в профиле собеседника).",
-                                fontSize = 13.sp,
+                                style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                             )
                         } else {
                             blocked.toList().forEach { id ->
-                                ListItem(
-                                    headlineContent = { Text(id) },
-                                    trailingContent = {
+                                AetherSettingsRow(
+                                    title = id,
+                                    trailing = {
                                         TextButton(onClick = { org.groktest.securemessenger.data.BlockStore.unblock(context, id) }) {
                                             Text("Разблокировать")
                                         }
-                                    },
-                                    colors = ListItemDefaults.colors(containerColor = Color.Transparent)
+                                    }
                                 )
                             }
                         }
@@ -187,28 +182,34 @@ private fun SetPinDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(AetherStyle.IslandRadius),
+        containerColor = MaterialTheme.colorScheme.surface,
         title = { Text("Код-пароль (4 цифры)") },
         text = {
             Column {
-                OutlinedTextField(
+                TextField(
                     value = pin,
                     onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) pin = it },
                     label = { Text("PIN") },
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
                 Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
+                TextField(
                     value = confirm,
                     onValueChange = { if (it.length <= 4 && it.all { c -> c.isDigit() }) confirm = it },
                     label = { Text("Повторите PIN") },
                     singleLine = true,
                     isError = mismatch,
                     visualTransformation = PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword)
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors()
                 )
-                if (mismatch) Text("PIN не совпадает", color = MaterialTheme.colorScheme.error, fontSize = 13.sp)
+                if (mismatch) Text("PIN не совпадает", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }
         },
         confirmButton = {

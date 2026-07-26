@@ -33,7 +33,6 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -54,6 +53,8 @@ import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.data.ChatListEntry
 import org.groktest.securemessenger.data.messagePreview
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.glass.glassSource
+import org.groktest.securemessenger.ui.glass.glassSurface
 import org.groktest.securemessenger.ui.theme.AetherEdge
 import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.AetherStyle
@@ -142,6 +143,7 @@ fun MainScreen(
                             .padding(start = AetherStyle.DockHorizontal, end = AetherStyle.DockHorizontal, bottom = AetherStyle.DockBottom)
                             .fillMaxWidth()
                             .height(AetherStyle.DockHeight)
+                            .glassSurface(RoundedCornerShape(AetherStyle.DockRadius))
                             .aetherIsland(
                                 shape = RoundedCornerShape(AetherStyle.DockRadius),
                                 fillAlpha = AetherStyle.DockFillAlpha,
@@ -418,10 +420,10 @@ private fun ContactsTab(
 
         val recentContacts = remember(chats) { chats.filter { it.chat.type == 0 } }
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().glassSource(),
             contentPadding = PaddingValues(
                 top = 8.dp,
-                bottom = edgeDimHeight
+                bottom = edgeDimHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             )
         ) {
             if (query.length >= 2) {
@@ -484,10 +486,10 @@ private fun CallsTab(
         Text("Звонки", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(10.dp))
         LazyColumn(
-            modifier = Modifier.fillMaxSize(),
+            modifier = Modifier.fillMaxSize().glassSource(),
             contentPadding = PaddingValues(
                 top = 8.dp,
-                bottom = edgeDimHeight
+                bottom = edgeDimHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
             )
         ) {
             if (people.isEmpty()) {
@@ -530,8 +532,8 @@ private fun AetherSearchField(
             .padding(vertical = 4.dp)
             .aetherIsland(
                 shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                fillAlpha = AetherStyle.ControlFillAlpha,
-                strokeAlpha = 0.42f
+                fillAlpha = AetherStyle.SearchFillAlpha,
+                strokeAlpha = AetherStyle.SearchStrokeAlpha
             ),
         shape = RoundedCornerShape(AetherStyle.FieldRadius),
         colors = aetherTextFieldColors(containerAlpha = 0f)
@@ -562,7 +564,7 @@ private fun ChatPersonRow(
             .padding(horizontal = 4.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AetherAvatar(name = name, avatarFileId = avatarFileId, size = 54.dp)
+        AetherAvatar(name = name, avatarFileId = avatarFileId, size = AetherStyle.AvatarMedium)
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
@@ -600,7 +602,7 @@ private fun CallRow(
             .padding(horizontal = 4.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        AetherAvatar(name = entry.chat.name, avatarFileId = entry.chat.avatarFileId, size = 54.dp)
+        AetherAvatar(name = entry.chat.name, avatarFileId = entry.chat.avatarFileId, size = AetherStyle.AvatarMedium)
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(entry.chat.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -630,7 +632,7 @@ private fun RoundActionButton(
         modifier = Modifier
             .size(AetherStyle.SmallControlSize)
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .aetherCircle(fillAlpha = AetherStyle.DockFillAlpha, strokeAlpha = 0.58f)
+            .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
             .clickable(
                 interactionSource = interaction,
                 indication = null,
@@ -650,7 +652,7 @@ private fun AetherAvatar(name: String, avatarFileId: String?, size: androidx.com
     Box(
         modifier = Modifier
             .size(size)
-            .aetherCircle(fillAlpha = 0.84f, strokeAlpha = 0.46f),
+            .aetherCircle(fillAlpha = AetherStyle.AvatarFillAlpha, strokeAlpha = AetherStyle.AvatarStrokeAlpha),
         contentAlignment = Alignment.Center
     ) {
         if (remoteAvatarFileId != null) {
@@ -689,8 +691,16 @@ private fun EmptyTabState(
             Text(title, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 16.sp)
             if (action != null && onAction != null) {
                 Spacer(Modifier.height(14.dp))
-                Button(onClick = onAction) {
-                    Text(action)
+                Box(
+                    modifier = Modifier
+                        .aetherIsland(
+                            shape = RoundedCornerShape(AetherStyle.PillRadius),
+                            fillAlpha = AetherStyle.SoftIslandFillAlpha
+                        )
+                        .clickable { onAction() }
+                        .padding(horizontal = 20.dp, vertical = 10.dp)
+                ) {
+                    Text(action, color = MaterialTheme.colorScheme.primary)
                 }
             }
         }

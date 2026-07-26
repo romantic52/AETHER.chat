@@ -29,6 +29,7 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Cameraswitch
 import androidx.compose.material.icons.filled.FiberManualRecord
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RangeSlider
 import androidx.compose.material3.Text
 import androidx.compose.runtime.*
@@ -48,6 +49,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 private const val MAX_NOTE_SECONDS = 60
@@ -346,12 +348,12 @@ fun VideoNoteRecorder(
                 modifier = Modifier.align(Alignment.TopCenter).statusBarsPadding().padding(top = 24.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                Icon(Icons.Filled.FiberManualRecord, contentDescription = null, tint = Color(0xFFEF4444), modifier = Modifier.size(14.dp))
+                Icon(Icons.Filled.FiberManualRecord, contentDescription = null, tint = MaterialTheme.colorScheme.error, modifier = Modifier.size(14.dp))
                 Spacer(Modifier.width(6.dp))
                 Text(
                     String.format("%d:%02d", seconds / 60, seconds % 60),
                     color = Color.White,
-                    fontSize = 16.sp
+                    style = MaterialTheme.typography.bodyLarge
                 )
             }
             Box(
@@ -359,7 +361,7 @@ fun VideoNoteRecorder(
                     .align(Alignment.TopEnd)
                     .statusBarsPadding()
                     .padding(top = 18.dp, end = 18.dp)
-                    .size(48.dp)
+                    .size(AetherStyle.ControlSize)
                     .clip(CircleShape)
                     .background(Color.White.copy(alpha = if (canSwitchCamera) 0.16f else 0.08f))
                     .clickable(enabled = canSwitchCamera && !isSwitchingCamera) { switchCamera() },
@@ -390,7 +392,7 @@ fun VideoNoteRecorder(
                     valueRange = 0f..1f
                 )
                 val cut = (((trimEnd - trimStart).coerceAtLeast(0f)) * durMs / 1000L).toInt()
-                Text(String.format("0:%02d", cut), color = Color.White, fontSize = 14.sp, modifier = Modifier.align(Alignment.CenterHorizontally))
+                Text(String.format("0:%02d", cut), color = Color.White, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.align(Alignment.CenterHorizontally))
                 Spacer(Modifier.height(12.dp))
             }
 
@@ -398,10 +400,10 @@ fun VideoNoteRecorder(
                 // Слева: отмена (×) или переснять
                 Text(
                     if (phase == "preview") "Переснять" else "Отмена",
-                    color = Color(0xFF60A5FA),
+                    color = MaterialTheme.colorScheme.primary,
                     fontSize = 16.sp,
                     modifier = Modifier
-                        .clip(RoundedCornerShape(10.dp))
+                        .clip(RoundedCornerShape(AetherStyle.PillRadius))
                         .clickable { if (phase == "preview") retake() else cancelAll() }
                         .padding(horizontal = 12.dp, vertical = 8.dp)
                 )
@@ -413,7 +415,7 @@ fun VideoNoteRecorder(
                     modifier = Modifier
                         .size(74.dp)
                         .clip(CircleShape)
-                        .background(if (phase == "preview") Color(0xFF3B82F6) else Color(0xFFEF4444))
+                        .background(if (phase == "preview") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error)
                         .clickable(enabled = !sending) { if (phase == "preview") sendTrimmed() else stopToPreview() },
                     contentAlignment = Alignment.Center
                 ) {

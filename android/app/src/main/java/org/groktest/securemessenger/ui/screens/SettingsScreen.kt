@@ -1,14 +1,11 @@
 package org.groktest.securemessenger.ui.screens
 
-import androidx.compose.foundation.background
-import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -27,8 +24,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -39,7 +34,10 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.api.ServerConfig
+import org.groktest.securemessenger.ui.components.AetherSectionTitle
+import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.aetherCircle
@@ -109,6 +107,7 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
+                .glassSource()
                 .verticalScroll(scrollState)
                 .padding(
                     start = AetherStyle.ScreenHorizontal,
@@ -132,7 +131,7 @@ fun SettingsScreen(
                 Box(
                     modifier = Modifier
                         .size(AetherStyle.AvatarLarge)
-                        .aetherCircle(fillAlpha = 0.24f, strokeAlpha = 0.58f),
+                        .aetherCircle(fillAlpha = AetherStyle.SoftIslandFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha),
                     contentAlignment = Alignment.Center
                 ) {
                     if (remoteAvatarFileId != null) {
@@ -187,14 +186,14 @@ fun SettingsScreen(
 
             Spacer(modifier = Modifier.height(12.dp))
 
-            SettingsSectionTitle("Аккаунт")
-            SettingsItem(
+            AetherSectionTitle("Аккаунт")
+            AetherSettingsRow(
                 title = "Настройки профиля",
                 subtitle = "Имя, юзернейм, аватар, био",
                 icon = { Icon(Icons.Default.Person, contentDescription = null) },
                 onClick = onNavigateToProfile
             )
-            SettingsItem(
+            AetherSettingsRow(
                 title = "Избранное",
                 subtitle = "Личные сохраненные сообщения",
                 icon = { Icon(Icons.Default.Star, contentDescription = null) },
@@ -202,32 +201,32 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(12.dp))
-            SettingsSectionTitle("Приложение")
-            SettingsItem(
+            AetherSectionTitle("Приложение")
+            AetherSettingsRow(
                 title = "Оформление",
                 subtitle = "Темы, прозрачность, пузыри и шрифты",
                 icon = { Icon(Icons.Default.Build, contentDescription = null) },
                 onClick = onNavigateToCustomization
             )
-            SettingsItem(
+            AetherSettingsRow(
                 title = "Уведомления",
                 subtitle = "Звуки, вибрация, исключения",
                 icon = { Icon(Icons.Default.Notifications, contentDescription = null) },
                 onClick = onNavigateToNotifications
             )
-            SettingsItem(
+            AetherSettingsRow(
                 title = "Конфиденциальность",
                 subtitle = "Блокировка, скрытие данных",
                 icon = { Icon(Icons.Default.Lock, contentDescription = null) },
                 onClick = onNavigateToPrivacy
             )
-            SettingsItem(
+            AetherSettingsRow(
                 title = "Сессии и безопасность",
                 subtitle = "Устройства, 2FA, удаление данных",
                 icon = { Icon(Icons.Default.Shield, contentDescription = null) },
                 onClick = onNavigateToSecurity
             )
-            SettingsItem(
+            AetherSettingsRow(
                 title = "Данные и память",
                 subtitle = "Кеш медиа · ${MediaCache.formatSize(cacheBytes)}",
                 icon = { Icon(Icons.Default.Delete, contentDescription = null) },
@@ -235,14 +234,14 @@ fun SettingsScreen(
             )
 
             Spacer(Modifier.height(12.dp))
-            SettingsSectionTitle("Aether")
-            SettingsItem(
+            AetherSectionTitle("Aether")
+            AetherSettingsRow(
                 title = "О приложении",
                 subtitle = "Версия, лицензии",
                 icon = { Icon(Icons.Default.Info, contentDescription = null) },
                 onClick = onNavigateToAbout
             )
-            SettingsItem(
+            AetherSettingsRow(
                 title = "Выйти из аккаунта",
                 subtitle = myId,
                 icon = { Icon(Icons.AutoMirrored.Filled.ExitToApp, contentDescription = null) },
@@ -250,8 +249,8 @@ fun SettingsScreen(
                 onClick = { confirmLogout = true }
             )
             Spacer(Modifier.height(12.dp))
-            SettingsSectionTitle("Разработка")
-            SettingsItem(
+            AetherSectionTitle("Разработка")
+            AetherSettingsRow(
                 title = "Эксперименты",
                 subtitle = "Анимации и новые функции",
                 icon = { Icon(Icons.Default.Science, contentDescription = null) },
@@ -275,6 +274,8 @@ fun SettingsScreen(
     if (confirmClearCache) {
         AlertDialog(
             onDismissRequest = { confirmClearCache = false },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Очистить кеш?") },
             text = { Text("Сообщения останутся. Фото, видео и файлы загрузятся заново при открытии.") },
             confirmButton = {
@@ -293,6 +294,8 @@ fun SettingsScreen(
     if (confirmLogout) {
         AlertDialog(
             onDismissRequest = { confirmLogout = false },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Выйти из аккаунта?") },
             confirmButton = {
                 TextButton(onClick = { confirmLogout = false; onLogout() }) {
@@ -328,7 +331,11 @@ private fun StatusPickerSheet(
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit
 ) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(topStart = AetherStyle.IslandRadius, topEnd = AetherStyle.IslandRadius),
+        containerColor = MaterialTheme.colorScheme.surface
+    ) {
         Row(
             modifier = Modifier.fillMaxWidth().padding(horizontal = 20.dp),
             verticalAlignment = Alignment.CenterVertically
@@ -364,63 +371,5 @@ private fun StatusPickerSheet(
             }
         }
         Spacer(Modifier.navigationBarsPadding().height(8.dp))
-    }
-}
-
-@Composable
-private fun SettingsSectionTitle(title: String) {
-    Text(
-        title,
-        modifier = Modifier.padding(start = 12.dp, bottom = 4.dp),
-        color = MaterialTheme.colorScheme.primary,
-        fontSize = 13.sp,
-        fontWeight = FontWeight.SemiBold
-    )
-}
-
-@Composable
-private fun SettingsItem(
-    title: String,
-    subtitle: String,
-    icon: @Composable () -> Unit,
-    destructive: Boolean = false,
-    onClick: () -> Unit
-) {
-    val accent = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 4.dp)
-            .aetherIsland(
-                shape = RoundedCornerShape(AetherStyle.RowRadius),
-                fillAlpha = AetherStyle.SoftIslandFillAlpha,
-                strokeAlpha = AetherStyle.SoftStrokeAlpha
-            )
-            .clickable { onClick() }
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier
-                .size(AetherStyle.SmallControlSize)
-                .aetherCircle(fillAlpha = 0.7f, strokeAlpha = 0.45f),
-            contentAlignment = Alignment.Center
-        ) {
-            CompositionLocalProvider(LocalContentColor provides accent) {
-                icon()
-            }
-        }
-        Spacer(Modifier.width(12.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(
-                title,
-                fontSize = 16.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground,
-                maxLines = 1
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(subtitle, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 1)
-        }
     }
 }
