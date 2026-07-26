@@ -12,9 +12,10 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Проигрывание голосовых внутри приложения (раньше открывался системный плеер).
  *
- * Форматы: AAC/MP4 с Android и MP3 — через SPI-декодеры javax.sound.sampled,
- * WAV — штатно. Голосовые короткие, поэтому распаковываем целиком в память:
- * это даёт мгновенную перемотку по клику на волне.
+ * Форматы: AAC/MP4 с Android и iOS и MP3 — через SPI-декодеры
+ * javax.sound.sampled, WAV — штатно, WebM/Opus из веба — своим декодером.
+ * Голосовые короткие, поэтому распаковываем целиком в память: это даёт
+ * мгновенную перемотку по клику на волне.
  *
  * Одновременно играет ровно один трек: старт нового останавливает предыдущий.
  */
@@ -40,7 +41,7 @@ object AudioPlayback {
     @Volatile private var seekToMs: Long? = null
 
     /** true — формат распознан и играется внутри приложения. */
-    fun isSupported(file: File): Boolean = runCatching {
+    fun isSupported(file: File): Boolean = isWebm(file) || runCatching {
         AudioSystem.getAudioFileFormat(file)
         true
     }.getOrDefault(false)
@@ -86,12 +87,42 @@ object AudioPlayback {
         _state.value = State()
     }
 
-    private class Decoded(val pcm: ByteArray, val format: AudioFormat) {
+    internal class Decoded(val pcm: ByteArray, val format: AudioFormat) {
         val bytesPerMs: Double = format.frameRate.toDouble() * format.frameSize / 1000.0
         val durationMs: Long = if (bytesPerMs > 0) (pcm.size / bytesPerMs).toLong() else 0
     }
 
-    private fun decode(file: File): Decoded {
+    /**
+     * Контейнер определяется по сигнатуре файла, а не по mime_type: mime
+     * приходит от чужого клиента и врёт — то с параметрами вида
+     * «audio/webm;codecs=opus», то пустой вовсе.
+     */
+    private fun isWebm(file: File): Boolean {
+        val header = ByteArray(4)
+        val read = runCatching {
+            file.inputStream().use { it.readNBytes(header, 0, header.size) }
+        }.getOrDefault(0)
+        return read == header.size && header[0] == 0x1A.toByte() && header[1] == 0x45.toByte() &&
+            header[2] == 0xDF.toByte() && header[3] == 0xA3.toByte()
+    }
+
+    internal fun decode(file: File): Decoded {
+        // WebM/Opus мимо AudioSystem: своего SPI для него нет, а чужой (jaad)
+        // принимает файл за AAC и валится на первом кадре.
+        if (isWebm(file)) {
+            val opus = OpusDecoder.decode(file)
+            val rate = opus.sampleRate.toFloat()
+            val format = AudioFormat(
+                AudioFormat.Encoding.PCM_SIGNED,
+                rate,
+                16,
+                opus.channels,
+                2 * opus.channels,
+                rate,
+                false,
+            )
+            return Decoded(opus.bytes, format)
+        }
         // Именно BufferedInputStream, а не File: у mp3-SPI на файловом потоке
         // распаковывается ровно один кадр (0,05 с вместо 10 с) — ему нужен
         // поток с mark/reset достаточной глубины.
