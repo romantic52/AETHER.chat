@@ -9,13 +9,14 @@ import androidx.compose.foundation.ContextMenuArea
 import androidx.compose.foundation.ContextMenuItem
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -23,7 +24,10 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Archive
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.VolumeOff
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -40,9 +44,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.ui.ExperimentalComposeUiApi
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.PointerEventType
+import androidx.compose.ui.input.pointer.onPointerEvent
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
@@ -61,7 +70,9 @@ fun ChatListPane(
     val chats by session.store.getChatList().collectAsState()
     var query by remember { mutableStateOf("") }
     var searchResults by remember { mutableStateOf<List<RelayApi.UserSearchResult>>(emptyList()) }
+    var archiveOpen by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val trimmedQuery = query.trim().removePrefix("@")
 
     LaunchedEffect(query) {
         val q = query.trim().removePrefix("@")
@@ -73,6 +84,30 @@ fun ChatListPane(
         searchResults = runCatching {
             withContext(Dispatchers.IO) { session.api.searchDirectory(q) }
         }.getOrDefault(emptyList())
+    }
+
+    val archived = remember(chats) { chats.filter { it.chat.isArchived }.sortedForChatList() }
+    val inbox = remember(chats) { chats.filterNot { it.chat.isArchived }.sortedForChatList() }
+    val archivedUnread = remember(archived) { archived.sumOf { it.chat.unreadCount } }
+
+    // Разархивировали последний чат — папки больше нет, иначе список завис бы пустым.
+    LaunchedEffect(archived.isEmpty()) { if (archived.isEmpty()) archiveOpen = false }
+
+    val localMatches = remember(chats, trimmedQuery) {
+        if (trimmedQuery.length < 2) {
+            emptyList()
+        } else {
+            chats.filter {
+                it.chat.name.contains(trimmedQuery, ignoreCase = true) ||
+                    it.chat.peerId.contains(trimmedQuery, ignoreCase = true)
+            }.sortedForChatList()
+        }
+    }
+    val remoteMatches = remember(searchResults, localMatches) {
+        // Уже открытый чат показан секцией выше — дубль из каталога только путает.
+        searchResults.filterNot { found ->
+            localMatches.any { it.chat.peerId.equals(found.userId, ignoreCase = true) }
+        }
     }
 
     Column(modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surface)) {
@@ -96,24 +131,41 @@ fun ChatListPane(
             )
         }
 
-        if (query.trim().length >= 2) {
+        if (trimmedQuery.length >= 2) {
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(searchResults, key = { "s:" + it.userId }) { result ->
-                    SearchResultRow(session, result) {
-                        query = ""
-                        scope.launch {
-                            if (result.isGroup && result.publicJoin) {
-                                runCatching {
-                                    withContext(Dispatchers.IO) { session.api.joinGroup(result.userId) }
+                if (localMatches.isNotEmpty()) {
+                    item(key = "h:local") { SearchSectionHeader("Чаты") }
+                    items(localMatches, key = { "c:" + it.chat.peerId }) { entry ->
+                        ChatRow(
+                            session = session,
+                            entry = entry,
+                            selected = entry.chat.peerId.equals(selectedPeer, ignoreCase = true),
+                            onClick = {
+                                query = ""
+                                onSelectPeer(entry.chat.peerId)
+                            },
+                        )
+                    }
+                }
+                if (remoteMatches.isNotEmpty()) {
+                    item(key = "h:remote") { SearchSectionHeader("Глобальный поиск") }
+                    items(remoteMatches, key = { "s:" + it.userId }) { result ->
+                        SearchResultRow(session, result) {
+                            query = ""
+                            scope.launch {
+                                if (result.isGroup && result.publicJoin) {
+                                    runCatching {
+                                        withContext(Dispatchers.IO) { session.api.joinGroup(result.userId) }
+                                    }
                                 }
+                                session.repository.ensureChatExists(result.userId, forceGroup = result.isGroup)
+                                onSelectPeer(result.userId)
                             }
-                            session.repository.ensureChatExists(result.userId, forceGroup = result.isGroup)
-                            onSelectPeer(result.userId)
                         }
                     }
                 }
-                if (searchResults.isEmpty()) {
-                    item {
+                if (localMatches.isEmpty() && remoteMatches.isEmpty()) {
+                    item(key = "empty") {
                         Text(
                             "Никого не нашлось",
                             style = MaterialTheme.typography.bodyMedium,
@@ -123,16 +175,18 @@ fun ChatListPane(
                     }
                 }
             }
+        } else if (inbox.isEmpty() && archived.isEmpty()) {
+            EmptyChatList(modifier = Modifier.weight(1f))
         } else {
-            val sorted = remember(chats) {
-                chats.filterNot { it.chat.isArchived }
-                    .sortedWith(
-                        compareByDescending<ChatListEntry> { it.chat.isPinned }
-                            .thenByDescending { it.lastTimestamp ?: 0L }
-                    )
-            }
             LazyColumn(modifier = Modifier.weight(1f)) {
-                items(sorted, key = { it.chat.peerId }) { entry ->
+                if (archiveOpen) {
+                    item(key = "archive:back") { ArchiveHeaderRow { archiveOpen = false } }
+                } else if (archived.isNotEmpty()) {
+                    item(key = "archive:folder") {
+                        ArchiveFolderRow(unread = archivedUnread) { archiveOpen = true }
+                    }
+                }
+                items(if (archiveOpen) archived else inbox, key = { "c:" + it.chat.peerId }) { entry ->
                     ChatRow(
                         session = session,
                         entry = entry,
@@ -142,6 +196,108 @@ fun ChatListPane(
                 }
             }
         }
+    }
+}
+
+/** Закреплённые сверху, остальные — по времени последнего сообщения. */
+private fun List<ChatListEntry>.sortedForChatList(): List<ChatListEntry> = sortedWith(
+    compareByDescending<ChatListEntry> { it.chat.isPinned }
+        .thenByDescending { it.lastTimestamp ?: 0L }
+)
+
+@Composable
+private fun SearchSectionHeader(title: String) {
+    Text(
+        title,
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.primary,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(start = 14.dp, end = 12.dp, top = 12.dp, bottom = 4.dp),
+    )
+}
+
+@Composable
+private fun EmptyChatList(modifier: Modifier = Modifier) {
+    Box(modifier = modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier.padding(horizontal = 28.dp),
+        ) {
+            Text(
+                "Здесь пока пусто",
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.onSurface,
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                "Найдите собеседника через поиск сверху — по имени или @нику.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                textAlign = TextAlign.Center,
+            )
+        }
+    }
+}
+
+/** Строка-папка «Архив» в общем списке. */
+@OptIn(ExperimentalComposeUiApi::class)
+@Composable
+private fun ArchiveFolderRow(unread: Int, onClick: () -> Unit) {
+    var hovered by remember { mutableStateOf(false) }
+    Surface(color = rowBackground(selected = false, hovered = hovered)) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            modifier = Modifier
+                .fillMaxWidth()
+                .clickable(onClick = onClick)
+                .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                .onPointerEvent(PointerEventType.Exit) { hovered = false }
+                .padding(horizontal = 12.dp, vertical = 8.dp),
+        ) {
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .size(48.dp)
+                    .clip(CircleShape)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.14f)),
+            ) {
+                Icon(
+                    Icons.Filled.Archive,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(22.dp),
+                )
+            }
+            Text(
+                "Архив",
+                style = MaterialTheme.typography.bodyLarge,
+                fontWeight = FontWeight.Medium,
+                modifier = Modifier.weight(1f).padding(start = 10.dp),
+            )
+            if (unread > 0) UnreadBadge(count = unread, muted = true)
+        }
+    }
+}
+
+/** Шапка режима архива с возвратом в общий список. */
+@Composable
+private fun ArchiveHeaderRow(onBack: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onBack)
+            .padding(horizontal = 4.dp, vertical = 2.dp),
+    ) {
+        IconButton(onClick = onBack) {
+            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
+        }
+        Text(
+            "Архив",
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = FontWeight.Medium,
+        )
     }
 }
 
@@ -175,6 +331,7 @@ private fun SearchResultRow(
     }
 }
 
+@OptIn(ExperimentalComposeUiApi::class)
 @Composable
 private fun ChatRow(
     session: AppSession,
@@ -184,6 +341,17 @@ private fun ChatRow(
 ) {
     val chat = entry.chat
     val scope = rememberCoroutineScope()
+    var hovered by remember(chat.peerId) { mutableStateOf(false) }
+
+    // lastIsOut ядро в списке чатов не заполняет, поэтому статус исходящего берём
+    // из уже загруженного кеша сообщений — это лишь чтение in-memory StateFlow.
+    // Без remember: статус меняется (отправлено -> доставлено -> прочитано) при том
+    // же тексте и времени превью, и запомненное значение осталось бы устаревшим.
+    // Совпадение времени отсекает случай, когда кеш отстал от превью чата.
+    val outgoingStatus = session.store.cachedMessages(chat.peerId).lastOrNull()
+        ?.takeIf { it.isOut && it.timestamp == entry.lastTimestamp }
+        ?.status
+
     val menuItems = buildList {
         add(
             ContextMenuItem(if (chat.isPinned) "Открепить" else "Закрепить") {
@@ -193,6 +361,11 @@ private fun ChatRow(
         add(
             ContextMenuItem(if (chat.isMuted) "Включить уведомления" else "Отключить уведомления") {
                 scope.launch { session.store.setMuted(chat.peerId, !chat.isMuted) }
+            }
+        )
+        add(
+            ContextMenuItem(if (chat.isArchived) "Из архива" else "В архив") {
+                scope.launch { session.store.setArchived(chat.peerId, !chat.isArchived) }
             }
         )
         if (chat.type == 0) {
@@ -210,15 +383,14 @@ private fun ChatRow(
     }
 
     ContextMenuArea(items = { menuItems }) {
-        Surface(
-            color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
-            else MaterialTheme.colorScheme.surface,
-        ) {
+        Surface(color = rowBackground(selected = selected, hovered = hovered)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
                 modifier = Modifier
                     .fillMaxWidth()
                     .clickable(onClick = onClick)
+                    .onPointerEvent(PointerEventType.Enter) { hovered = true }
+                    .onPointerEvent(PointerEventType.Exit) { hovered = false }
                     .padding(horizontal = 12.dp, vertical = 8.dp),
             ) {
                 PeerAvatar(session, chat.peerId, chat.name, chat.avatarFileId, size = 48.dp)
@@ -250,6 +422,23 @@ private fun ChatRow(
                         }
                     }
                     Row(verticalAlignment = Alignment.CenterVertically) {
+                        outgoingStatus?.let { status ->
+                            Text(
+                                when (status) {
+                                    -1 -> "⚠"
+                                    0 -> "🕓"
+                                    1 -> "✓"
+                                    else -> "✓✓"
+                                },
+                                style = MaterialTheme.typography.labelSmall,
+                                color = when (status) {
+                                    3 -> MaterialTheme.colorScheme.primary
+                                    -1 -> MaterialTheme.colorScheme.error
+                                    else -> MaterialTheme.colorScheme.onSurfaceVariant
+                                },
+                                modifier = Modifier.padding(end = 4.dp),
+                            )
+                        }
                         Text(
                             messagePreview(entry.lastText),
                             style = MaterialTheme.typography.bodyMedium,
@@ -258,25 +447,49 @@ private fun ChatRow(
                             overflow = TextOverflow.Ellipsis,
                             modifier = Modifier.weight(1f),
                         )
-                        if (chat.unreadCount > 0) {
-                            Box(
-                                modifier = Modifier
-                                    .padding(start = 6.dp)
-                                    .size(20.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary),
-                                contentAlignment = Alignment.Center,
-                            ) {
-                                Text(
-                                    chat.unreadCount.coerceAtMost(99).toString(),
-                                    style = MaterialTheme.typography.labelSmall,
-                                    color = MaterialTheme.colorScheme.onPrimary,
-                                )
-                            }
+                        when {
+                            chat.unreadCount > 0 -> UnreadBadge(chat.unreadCount, muted = chat.isMuted)
+                            chat.isPinned -> Icon(
+                                Icons.Filled.PushPin,
+                                contentDescription = "Закреплён",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(start = 6.dp).size(14.dp),
+                            )
                         }
                     }
                 }
             }
         }
     }
+}
+
+/** Счётчик непрочитанных: у чатов без звука — приглушённый, как в Telegram. */
+@Composable
+private fun UnreadBadge(count: Int, muted: Boolean) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .padding(start = 6.dp)
+            .defaultMinSize(minWidth = 20.dp)
+            .height(20.dp)
+            .clip(CircleShape)
+            .background(
+                if (muted) MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.5f)
+                else MaterialTheme.colorScheme.primary
+            )
+            .padding(horizontal = 6.dp),
+    ) {
+        Text(
+            count.coerceAtMost(99).toString(),
+            style = MaterialTheme.typography.labelSmall,
+            color = if (muted) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onPrimary,
+        )
+    }
+}
+
+@Composable
+private fun rowBackground(selected: Boolean, hovered: Boolean): Color = when {
+    selected -> MaterialTheme.colorScheme.primary.copy(alpha = 0.12f)
+    hovered -> MaterialTheme.colorScheme.onSurface.copy(alpha = 0.06f)
+    else -> MaterialTheme.colorScheme.surface
 }
