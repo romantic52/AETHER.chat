@@ -303,7 +303,7 @@ struct FileBubble: View {
                         .resizable()
                         .scaledToFill()
                         .frame(width: 48, height: 48)
-                        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                        .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
                     if loading { ProgressView().tint(.white) }
                 } else {
                     Circle().fill(outgoing ? Color.white.opacity(0.18) : palette.accent.opacity(0.18))

@@ -233,8 +233,8 @@ struct GroupProfileView: View {
             }
             .frame(maxWidth: .infinity)
             .frame(height: 58)
-            .liquidGlass(RoundedRectangle(cornerRadius: 14, style: .continuous), interactive: true)
-            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .liquidGlass(RoundedRectangle(cornerRadius: Radius.card, style: .continuous), interactive: true)
+            .contentShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
         }
         .buttonStyle(.squish)
     }
@@ -629,7 +629,7 @@ struct UserProfileView: View {
                     .foregroundStyle(palette.textSecondary)
             }
             .padding(.horizontal, 14).padding(.vertical, 12)
-            .background(palette.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -701,7 +701,7 @@ struct UserProfileView: View {
                             }
                         }
                     }
-                    .background(palette.surface, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
                     .padding(.horizontal, 16)
                 }
             }
@@ -748,7 +748,7 @@ struct UserProfileView: View {
                     .font(.system(size: 20))
                     .foregroundStyle(palette.accent)
                     .frame(width: 36, height: 36)
-                    .background(palette.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: 9, style: .continuous))
+                    .background(palette.accent.opacity(0.14), in: RoundedRectangle(cornerRadius: Radius.nested, style: .continuous))
                 VStack(alignment: .leading, spacing: 2) {
                     Text(item.payload.fileName ?? "Файл")
                         .font(.system(size: 15, weight: .medium))
@@ -779,7 +779,7 @@ struct UserProfileView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            .background(palette.surface, in: RoundedRectangle(cornerRadius: 12))
+            .background(palette.surface, in: RoundedRectangle(cornerRadius: Radius.control))
             .foregroundStyle(palette.accent)
         }
         .buttonStyle(.squish)

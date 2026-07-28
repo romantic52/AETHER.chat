@@ -101,7 +101,7 @@ struct KeyVerificationView: View {
                         }
                         .padding(.vertical, 18)
                         .padding(.horizontal, 22)
-                        .liquidGlass(cornerRadius: 22)
+                        .liquidGlass(cornerRadius: Radius.panel)
                         .padding(.horizontal, 24)
 
                         Text(fp.code)
@@ -143,7 +143,7 @@ struct KeyVerificationView: View {
                                         .foregroundStyle(palette.onAccent)
                                         .frame(maxWidth: .infinity)
                                         .padding(.vertical, 14)
-                                        .background(palette.accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                                        .background(palette.accent, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
                                 }
                                 .buttonStyle(.squish)
                             } else {
@@ -229,7 +229,7 @@ struct KeyVerificationView: View {
                 .padding(12)
                 // Белая подложка всегда, независимо от темы — иначе в тёмной
                 // теме прозрачный фон метки сливается с модулями.
-                .background(.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .background(.white, in: RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
 
             Text("Покажите код собеседнику или отсканируйте его — это надёжнее, чем сверять эмодзи вслух.")
                 .font(.footnote)

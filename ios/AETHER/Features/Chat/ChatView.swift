@@ -472,8 +472,8 @@ struct ChatView: View {
             }
         }
         .padding(12)
-        .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.orange.opacity(0.4)))
+        .background(.orange.opacity(0.15), in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: Radius.control, style: .continuous).stroke(.orange.opacity(0.4)))
         .padding(.horizontal, 12)
         .padding(.top, 6)
     }
@@ -621,7 +621,7 @@ struct ChatView: View {
                             .id(msg.id)
                             .background {
                                 if highlightedId == msg.id {
-                                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
                                         .fill(palette.accent.opacity(0.18))
                                         .padding(.horizontal, -8).padding(.vertical, -3)
                                         .transition(.opacity)
@@ -762,7 +762,7 @@ struct ChatView: View {
                         .foregroundStyle(palette.onAccent)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 14)
-                        .background(palette.accent, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+                        .background(palette.accent, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
                 }
                 .buttonStyle(.squish)
             }
@@ -832,7 +832,7 @@ struct ChatView: View {
                         VoiceTrimStrip(duration: voicePreviewDuration, start: $trimStart, end: $trimEnd)
                             .padding(.horizontal, 14).padding(.vertical, 8)
                             .frame(maxWidth: .infinity)
-                            .liquidGlass(RoundedRectangle(cornerRadius: 21, style: .continuous))
+                            .liquidGlass(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
                         }
                     case .idle, .arming:
                         // Полоса ввода. Плашки ответа/редактирования — внутри той же
@@ -861,7 +861,7 @@ struct ChatView: View {
                                 }
                         }
                         .frame(maxWidth: .infinity)
-                        .liquidGlass(RoundedRectangle(cornerRadius: 21, style: .continuous))
+                        .liquidGlass(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
                         .padding(.horizontal, inputFocused ? 0 : 8)
                         .animation(AetherUI.sendAnimation, value: replyTo?.id)
                         .animation(AetherUI.sendAnimation, value: editing?.id)
@@ -908,6 +908,8 @@ struct ChatView: View {
                 if circleMode {
                     // Кружок в локе: красный стоп-квадрат — стоп и предпросмотр.
                     Button { finishCircle(preview: true) } label: {
+                        // Глиф стоп-квадрата 17×17 внутри круга — радиус привязан
+                        // к его собственному размеру, а не к шкале контейнеров.
                         RoundedRectangle(cornerRadius: 5, style: .continuous)
                             .fill(.white)
                             .frame(width: 17, height: 17)
@@ -1517,7 +1519,7 @@ struct TypingBubble: View {
             }
         }
         .padding(.horizontal, 14).padding(.vertical, 11)
-        .background(palette.bubbleIn, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(palette.bubbleIn, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
         .frame(maxWidth: .infinity, alignment: .leading)
         .onAppear {
             withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { phase = .pi * 2 }
@@ -1545,7 +1547,7 @@ struct ReactionPicker: View {
 // поверх которой стоит контент поля/кнопок. Не во всю ширину — отступы снаружи.
 // Уважает glassOnInput: при выключенном стекле на инпуте — плоская surface-капсула.
 private struct IslandBackground: ViewModifier {
-    var cornerRadius: CGFloat = 22
+    var cornerRadius: CGFloat = Radius.panel
     @EnvironmentObject var appearance: AppearanceSettings
     @Environment(\.palette) private var palette
 
@@ -1562,7 +1564,7 @@ private struct IslandBackground: ViewModifier {
 }
 
 private extension View {
-    func islandBackground(cornerRadius: CGFloat = 22) -> some View {
+    func islandBackground(cornerRadius: CGFloat = Radius.panel) -> some View {
         modifier(IslandBackground(cornerRadius: cornerRadius))
     }
 }
