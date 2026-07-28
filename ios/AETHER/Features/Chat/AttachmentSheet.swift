@@ -461,10 +461,10 @@ struct AttachmentThumb: View {
                 if let image { Image(uiImage: image).resizable().scaledToFill() }
                 else { Rectangle().fill(palette.surfaceElevated) }
             }
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .clipShape(RoundedRectangle(cornerRadius: Radius.nested, style: .continuous))
             .overlay {
                 if order != nil {
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.nested, style: .continuous)
                         .fill(Color.black.opacity(0.15))
                 }
             }

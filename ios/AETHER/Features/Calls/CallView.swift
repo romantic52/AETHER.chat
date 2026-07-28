@@ -84,8 +84,8 @@ struct CallView: View {
                 Spacer()
                 LocalVideoView(call: call)
                     .frame(width: 110, height: 160)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.3), lineWidth: 1))
+                    .clipShape(RoundedRectangle(cornerRadius: Radius.card, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: Radius.card).stroke(.white.opacity(0.3), lineWidth: 1))
                     .padding(.top, 60).padding(.trailing, 16)
             }
             Spacer()

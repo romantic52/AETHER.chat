@@ -62,7 +62,7 @@ extension View {
     func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false, surfaceWhenOff: Bool = true) -> some View {
         modifier(LiquidGlass(shape: shape, interactive: interactive, surfaceWhenOff: surfaceWhenOff))
     }
-    func liquidGlass(cornerRadius: CGFloat = 20, interactive: Bool = false) -> some View {
+    func liquidGlass(cornerRadius: CGFloat = Radius.panel, interactive: Bool = false) -> some View {
         modifier(LiquidGlass(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), interactive: interactive))
     }
 }

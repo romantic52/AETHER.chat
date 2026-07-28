@@ -165,7 +165,7 @@ struct QRScannerSheet: View {
 
                 // Прицел: показывает, куда наводить, и прикрывает то, что рамка
                 // сканирования на самом деле во весь кадр.
-                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                RoundedRectangle(cornerRadius: Radius.panel, style: .continuous)
                     .stroke(.white.opacity(0.9), lineWidth: 3)
                     .frame(width: 240, height: 240)
                     .shadow(radius: 8)

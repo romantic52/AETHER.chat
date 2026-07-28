@@ -151,7 +151,7 @@ struct GroupCallInviteBanner: View {
                     .buttonStyle(.squish)
                 }
                 .padding(.horizontal, 14).padding(.vertical, 10)
-                .liquidGlass(RoundedRectangle(cornerRadius: 20, style: .continuous))
+                .liquidGlass(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
                 .padding(.horizontal, 16)
                 .padding(.top, 8)
                 Spacer()

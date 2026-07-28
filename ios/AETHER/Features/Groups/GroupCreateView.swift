@@ -80,7 +80,7 @@ struct GroupCreateView: View {
                 Image(systemName: icon).font(.system(size: 28))
                     .foregroundStyle(palette.onAccent)
                     .frame(width: 60, height: 60)
-                    .background(palette.accent, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+                    .background(palette.accent, in: RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(title).font(.headline).foregroundStyle(palette.textPrimary)
                     Text(subtitle).font(.subheadline).foregroundStyle(palette.textSecondary)
@@ -90,7 +90,7 @@ struct GroupCreateView: View {
                 Image(systemName: "chevron.right").foregroundStyle(palette.textSecondary)
             }
             .padding(16)
-            .liquidGlass(cornerRadius: 18, interactive: true)
+            .liquidGlass(cornerRadius: Radius.control, interactive: true)
         }
         .buttonStyle(.squish)
     }

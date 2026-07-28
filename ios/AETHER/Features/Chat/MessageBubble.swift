@@ -75,7 +75,7 @@ struct MessageBubble: View {
                     if let rid = p.replyToId, !rid.isEmpty {
                         replyQuote(p.replyToText ?? "")
                             .padding(.horizontal, 10).padding(.vertical, 4)
-                            .background(palette.bubbleIn, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(palette.bubbleIn, in: RoundedRectangle(cornerRadius: Radius.nested, style: .continuous))
                     }
                     MediaBubbleContent(message: message, payload: p, outgoing: outgoing)
                 }
@@ -168,7 +168,7 @@ struct MessageBubble: View {
         .padding(.horizontal, 8).padding(.vertical, 6)
         .background(
             (outgoing ? Color.white.opacity(0.12) : palette.accent.opacity(0.10)),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+            in: RoundedRectangle(cornerRadius: Radius.nested, style: .continuous)
         )
         .contentShape(Rectangle())
         .onTapGesture { onQuoteTap?() }

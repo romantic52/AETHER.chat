@@ -89,7 +89,7 @@ struct SettingsView: View {
                                     .padding(.vertical, 4)
                                     .background(session.myStatusEmoji == e
                                                 ? palette.accent.opacity(0.22) : .clear,
-                                                in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                                in: RoundedRectangle(cornerRadius: Radius.nested, style: .continuous))
                             }
                             .buttonStyle(.plain)
                         }
@@ -323,6 +323,8 @@ struct SettingsView: View {
                         Image(uiImage: img)
                             .resizable().scaledToFill()
                             .frame(width: 34, height: 34)
+                            // Радиус пропорционален миниатюре (34×34), не карточке:
+                            // общий Radius.card превратил бы её в кляксу.
                             .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                     } else {
                         Text("Стандартные")
@@ -535,6 +537,8 @@ struct SettingsLabel: View {
                 .font(.system(size: 14, weight: .semibold))
                 .foregroundStyle(.white)
                 .frame(width: 28, height: 28)
+                // Иконочная плитка 28×28: пропорция 0.25 стороны, как у системных
+                // squircle-иконок. Вне общей шкалы намеренно.
                 .background(color, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
             Text(title)
         }
@@ -551,7 +555,7 @@ struct ThemeSwatch: View {
         Button(action: action) {
             VStack(spacing: 6) {
                 ZStack {
-                    RoundedRectangle(cornerRadius: 14, style: .continuous).fill(p.background)
+                    RoundedRectangle(cornerRadius: Radius.card, style: .continuous).fill(p.background)
                     VStack(spacing: 4) {
                         Capsule().fill(p.bubbleIn).frame(width: 34, height: 10)
                         Capsule().fill(p.accent).frame(width: 34, height: 10)
@@ -559,7 +563,7 @@ struct ThemeSwatch: View {
                 }
                 .frame(width: 58, height: 58)
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    RoundedRectangle(cornerRadius: Radius.card, style: .continuous)
                         .stroke(selected ? p.accent : .clear, lineWidth: 2.5)
                 )
                 Text(theme.title).font(.system(size: 11, weight: selected ? .semibold : .regular))
