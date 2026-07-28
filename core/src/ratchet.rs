@@ -25,6 +25,18 @@ pub struct OlmPublishSigned {
     pub otk_signatures_json: String,
 }
 
+/// Fallback-ключ устройства (P10 / SEC MED-3): выдаётся вместо одноразового,
+/// когда те кончились. Переиспользуемый, поэтому forward secrecy слабее — зато
+/// исчерпание OTK больше не глушит переписку.
+#[derive(uniffi::Record)]
+pub struct OlmFallbackPublish {
+    pub account_pickle: String,
+    pub identity_key_b64: String,
+    pub key_id: String,
+    pub key_b64: String,
+    pub sig_b64: String,
+}
+
 #[derive(uniffi::Record)]
 pub struct OlmEncrypted {
     pub session_pickle: String,
@@ -93,6 +105,37 @@ pub fn olm_account_generate_otks_signed(
         one_time_keys_json: result.one_time_keys_json,
         otk_signatures_json: result.otk_signatures_json,
     })
+}
+
+#[uniffi::export]
+pub fn olm_account_generate_fallback_signed(
+    account_pickle: String,
+    user_id: String,
+    device_id: String,
+) -> Result<OlmFallbackPublish, CoreError> {
+    let result =
+        aether_ratchet_core::account_generate_fallback_signed(&account_pickle, &user_id, &device_id)
+            .map_err(err)?;
+    Ok(OlmFallbackPublish {
+        account_pickle: result.account_pickle,
+        identity_key_b64: result.identity_key_b64,
+        key_id: result.key_id,
+        key_b64: result.key_b64,
+        sig_b64: result.sig_b64,
+    })
+}
+
+/// Идентификатор сессии — ключ строки в таблице `olm_sessions` (мультисессии, P10).
+#[uniffi::export]
+pub fn olm_session_id(session_pickle: String) -> Result<String, CoreError> {
+    aether_ratchet_core::session_id(&session_pickle).map_err(err)
+}
+
+/// Идентификатор сессии, которую завёл бы входящий prekey-конверт. Совпал с
+/// имеющейся — конверт принадлежит ей, новую сессию заводить не надо.
+#[uniffi::export]
+pub fn olm_prekey_session_id(body_b64: String) -> Result<String, CoreError> {
+    aether_ratchet_core::prekey_session_id(&body_b64).map_err(err)
 }
 
 #[uniffi::export]

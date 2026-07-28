@@ -37,6 +37,21 @@ pub struct PublishSigned {
     pub otk_signatures_json: String,
 }
 
+/// Опубликованный fallback-ключ (P10 / SEC MED-3): «последний рубеж» на случай,
+/// когда одноразовые ключи на сервере кончились. В отличие от OTK переиспользуем,
+/// поэтому даёт более слабую forward secrecy — но альтернатива хуже: без него
+/// исчерпание OTK (случайное или намеренное) полностью глушит переписку.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FallbackPublish {
+    pub account_pickle: String,
+    pub identity_key_b64: String,
+    pub key_id: String,
+    pub key_b64: String,
+    /// Подпись каноном `AETHER-OTK-1` — тем же, что у обычных OTK, поэтому
+    /// получатель проверяет бандл прежним `verify_prekey_bundle`.
+    pub sig_b64: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Encrypted {
     pub session_pickle: String,
@@ -188,6 +203,44 @@ pub fn account_generate_otks_signed(
         identity_sig_b64,
         one_time_keys_json: serde_json::Value::Object(keys).to_string(),
         otk_signatures_json: serde_json::Value::Object(sigs).to_string(),
+        account_pickle: account_to(&account)?,
+    })
+}
+
+/// Сгенерировать и подписать fallback-ключ (SEC MED-3). Канон подписи — тот же
+/// `AETHER-OTK-1`, что у одноразовых: для получателя fallback неотличим от OTK,
+/// и проверка бандла остаётся одной кодовой веткой.
+///
+/// `mark_keys_as_published` здесь НЕ вызывается намеренно: он помечает
+/// опубликованными заодно и одноразовые ключи, поэтому вызов до отправки OTK
+/// на сервер потерял бы их безвозвратно. Свежесгенерированный fallback и так
+/// лежит в неопубликованных — читаем его сразу.
+///
+/// Аккаунт хранит две приватные части подряд идущих fallback-ключей, поэтому
+/// ротация не рвёт сессии по сообщениям, застрявшим в пути на старом ключе.
+pub fn account_generate_fallback_signed(
+    account_pickle: &str,
+    user_id: &str,
+    device_id: &str,
+) -> Result<FallbackPublish> {
+    let mut account = account_from(account_pickle)?;
+    account.generate_fallback_key();
+    let curve_b64 = account.curve25519_key().to_base64();
+    let (key_id, key) = account
+        .fallback_key()
+        .into_iter()
+        .next()
+        .ok_or_else(|| err("fallback-ключ не сгенерировался"))?;
+    let key_id = key_id.to_base64();
+    let key_b64 = key.to_base64();
+    let sig_b64 = account
+        .sign(otk_canon(user_id, device_id, &curve_b64, &key_id, &key_b64).as_bytes())
+        .to_base64();
+    Ok(FallbackPublish {
+        identity_key_b64: curve_b64,
+        key_id,
+        key_b64,
+        sig_b64,
         account_pickle: account_to(&account)?,
     })
 }
@@ -367,6 +420,26 @@ pub fn create_outbound(
     session_to(&session)
 }
 
+/// Идентификатор сессии — ключ строки в локальном хранилище сессий (P10).
+pub fn session_id(session_pickle: &str) -> Result<String> {
+    Ok(session_from(session_pickle)?.session_id())
+}
+
+/// Идентификатор сессии, которую ЗАВЁЛ БЫ входящий prekey-конверт.
+///
+/// Совпадение с `session_id` уже имеющейся сессии означает, что конверт
+/// относится к ней, а не открывает новую: пир просто ещё не получил наш ответ и
+/// продолжает слать prekey. Без этой проверки каждый такой конверт создавал бы
+/// параллельную сессию и жёг одноразовый ключ (при исчерпании OTK — тем более
+/// критично, см. fallback-ключ).
+pub fn prekey_session_id(body_b64: &str) -> Result<String> {
+    let message = OlmMessage::from_parts(0, &decode_b64(body_b64)?).map_err(err)?;
+    match message {
+        OlmMessage::PreKey(message) => Ok(message.session_id()),
+        OlmMessage::Normal(_) => Err(err("ожидался prekey-конверт")),
+    }
+}
+
 pub fn encrypt(session_pickle: &str, plaintext: &str) -> Result<Encrypted> {
     let mut session = session_from(session_pickle)?;
     let message = session.encrypt(plaintext.as_bytes()).map_err(err)?;
@@ -513,6 +586,125 @@ mod tests {
         let msg = encrypt(&session, "проверка").unwrap();
         let inbound = create_inbound(&bob.account_pickle, &account_identity(&alice).unwrap(), &msg.body_b64).unwrap();
         assert_eq!(inbound.plaintext, "проверка");
+    }
+
+    /// SEC MED-3: fallback-ключ подписан тем же каноном, что OTK, и годен для X3DH
+    /// повторно — именно этим он и спасает переписку при исчерпании одноразовых.
+    #[test]
+    fn fallback_key_is_signed_and_reusable() {
+        let bob = account_generate_otks_signed(&account_new().unwrap(), 1, "Bob", "ios-1").unwrap();
+        let fb = account_generate_fallback_signed(&bob.account_pickle, "Bob", "ios-1").unwrap();
+        assert_eq!(fb.identity_key_b64, bob.identity_key_b64, "identity не меняется");
+
+        // Получатель проверяет fallback обычной проверкой бандла.
+        verify_prekey_bundle(
+            "bob", "ios-1", &fb.identity_key_b64, &bob.ed25519_key_b64,
+            &bob.identity_sig_b64, &fb.key_id, &fb.key_b64, &fb.sig_b64,
+        )
+        .unwrap();
+        // Подмена самого ключа при валидной подписи от другого id — ловится.
+        assert!(verify_prekey_bundle(
+            "bob", "ios-1", &fb.identity_key_b64, &bob.ed25519_key_b64,
+            &bob.identity_sig_b64, &fb.key_id, &bob.identity_key_b64, &fb.sig_b64,
+        )
+        .is_err());
+
+        // Два РАЗНЫХ отправителя строят сессии на одном и том же fallback —
+        // одноразовый ключ так бы не смог, в этом весь смысл.
+        let mut account = fb.account_pickle.clone();
+        for who in ["алиса", "карл"] {
+            let sender = account_new().unwrap();
+            let session = create_outbound(&sender, &fb.identity_key_b64, &fb.key_b64).unwrap();
+            let msg = encrypt(&session, who).unwrap();
+            let inbound =
+                create_inbound(&account, &account_identity(&sender).unwrap(), &msg.body_b64).unwrap();
+            assert_eq!(inbound.plaintext, who);
+            account = inbound.account_pickle;
+        }
+
+        // Ротация: прошлый fallback остаётся расшифровываемым (аккаунт держит две
+        // приватные части), иначе сообщения в пути терялись бы при каждой ротации.
+        let rotated = account_generate_fallback_signed(&account, "Bob", "ios-1").unwrap();
+        assert_ne!(rotated.key_b64, fb.key_b64, "ключ действительно сменился");
+        let late = account_new().unwrap();
+        let session = create_outbound(&late, &fb.identity_key_b64, &fb.key_b64).unwrap();
+        let msg = encrypt(&session, "успел до ротации").unwrap();
+        let inbound = create_inbound(&rotated.account_pickle, &account_identity(&late).unwrap(),
+                                     &msg.body_b64).unwrap();
+        assert_eq!(inbound.plaintext, "успел до ротации");
+    }
+
+    /// SEC MED-4: обе стороны начали переписку одновременно (glare). Раньше
+    /// входящий prekey затирал единственную сессию — и сообщения, зашифрованные
+    /// собеседником в исходящей, становились невскрываемыми навсегда.
+    /// Мультисессии решают это: обе живут, каждая расшифровывает своё.
+    #[test]
+    fn simultaneous_initiation_keeps_both_sessions() {
+        let alice_acc = account_new().unwrap();
+        let alice_id = account_identity(&alice_acc).unwrap();
+        let bob_pub = account_generate_otks(&account_new().unwrap(), 4).unwrap();
+        let bob_id = bob_pub.identity_key_b64.clone();
+        let mut bob_acc = bob_pub.account_pickle.clone();
+        let mut otks = serde_json::from_str::<serde_json::Value>(&bob_pub.one_time_keys_json)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .values()
+            .map(|v| v.as_str().unwrap().to_owned())
+            .collect::<Vec<_>>();
+
+        // Алиса завела исходящую сессию и отправила prekey.
+        let alice_out = create_outbound(&alice_acc, &bob_id, &otks.pop().unwrap()).unwrap();
+        let a1 = encrypt(&alice_out, "от алисы").unwrap();
+
+        // Боб, не увидев его, завёл СВОЮ исходящую (нужен OTK алисы — берём у неё).
+        let alice_pub = account_generate_otks(&alice_acc, 2).unwrap();
+        let alice_acc = alice_pub.account_pickle.clone();
+        let alice_otk = serde_json::from_str::<serde_json::Value>(&alice_pub.one_time_keys_json)
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let bob_out = create_outbound(&bob_acc, &alice_id, &alice_otk).unwrap();
+        let b1 = encrypt(&bob_out, "от боба").unwrap();
+
+        // Боб принимает конверт алисы — заводится ВТОРАЯ сессия у боба.
+        let bob_in = create_inbound(&bob_acc, &alice_id, &a1.body_b64).unwrap();
+        assert_eq!(bob_in.plaintext, "от алисы");
+        bob_acc = bob_in.account_pickle;
+        assert_ne!(session_id(&bob_in.session_pickle).unwrap(), session_id(&bob_out).unwrap());
+
+        // Алиса принимает конверт боба — тоже вторая сессия.
+        let alice_in = create_inbound(&alice_acc, &bob_id, &b1.body_b64).unwrap();
+        assert_eq!(alice_in.plaintext, "от боба");
+        assert_eq!(session_id(&alice_in.session_pickle).unwrap(), session_id(&bob_out).unwrap(),
+                   "session_id одной сессии совпадает у обеих сторон");
+
+        // Ключевое: алисина ИСХОДЯЩАЯ жива и продолжает работать. Именно её раньше
+        // затирал входящий prekey, после чего чат вставал намертво.
+        let a2 = encrypt(&a1.session_pickle, "второе от алисы").unwrap();
+        let dec = decrypt(&bob_in.session_pickle, a2.message_type, &a2.body_b64).unwrap();
+        assert_eq!(dec.plaintext, "второе от алисы");
+
+        // Повторный prekey в ту же сессию распознаётся по session_id и НЕ должен
+        // заводить новую (иначе каждый такой конверт жёг бы одноразовый ключ).
+        assert_eq!(prekey_session_id(&a1.body_b64).unwrap(), session_id(&bob_in.session_pickle).unwrap());
+        let a3 = encrypt(&a2.session_pickle, "третье от алисы").unwrap();
+        assert_eq!(a3.message_type, 0, "пир ещё не ответил — всё ещё prekey");
+        assert_eq!(prekey_session_id(&a3.body_b64).unwrap(), session_id(&dec.session_pickle).unwrap());
+        assert_eq!(decrypt(&dec.session_pickle, a3.message_type, &a3.body_b64).unwrap().plaintext,
+                   "третье от алисы");
+
+        // normal-конверт не выдаёт себя за prekey.
+        let reply = encrypt(&bob_in.session_pickle, "ответ").unwrap();
+        assert_eq!(reply.message_type, 1);
+        assert!(prekey_session_id(&reply.body_b64).is_err());
+        let _ = bob_acc;
     }
 
     #[test]

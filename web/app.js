@@ -482,6 +482,12 @@ let peerDevicesCache = Object.create(null); // peerId -> {devices, ts}
 let ratchetModulePromise = null;
 let ratchetQueue = Promise.resolve();
 let keyRotationInterval = null;
+// Как часто ротируем fallback-ключ (P10 / SEC MED-3). Он переиспользуемый,
+// поэтому чем дольше живёт, тем больше начал переписок вскрывается разом при
+// его компрометации; неделя — компромисс с расходом публикаций. То же значение
+// в iOS (CoreClient.fallbackRotateInterval) — расхождение не сломает протокол,
+// но даст платформам разную стойкость.
+const FALLBACK_ROTATE_SECONDS = 7 * 24 * 3600;
 
 function authHeaders(extra = {}) {
     return Object.assign({
@@ -563,24 +569,59 @@ async function resolveMyDeviceId() {
     localStorage.setItem(`device_id_${myId}`, myDeviceId);
 }
 
-function ratchetSlots(peerId) {
-    const value = olmSessions[peerId];
-    if (!value) return { inbound: null, outbound: null, current: null };
-    if (typeof value === 'string') return { inbound: null, outbound: null, current: value };
-    return {
-        inbound: typeof value.inbound === 'string' ? value.inbound : null,
-        outbound: typeof value.outbound === 'string' ? value.outbound : null,
-        current: typeof value.current === 'string' ? value.current : null
-    };
+// Канонический вид хранилища сессий устройства (P10 / SEC MED-4):
+// { [session_id]: {s: pickle, t: updated_ms} }. Ключ — session_id из ядра, он
+// совпадает у обеих сторон одной сессии, поэтому входящий prekey сопоставляется
+// с УЖЕ имеющейся сессией, а не заводит дубль (дубль сжёг бы одноразовый ключ).
+function isSessionMap(value) {
+    return !!value && typeof value === 'object'
+        && !('inbound' in value) && !('outbound' in value) && !('current' in value);
 }
 
-function saveRatchetSlots(peerId, slots) {
-    const next = {};
-    if (slots.inbound) next.inbound = slots.inbound;
-    if (slots.outbound) next.outbound = slots.outbound;
-    if (slots.current) next.current = slots.current;
-    if (Object.keys(next).length) olmSessions[peerId] = next;
-    else delete olmSessions[peerId];
+/// Сессии устройства в каноническом виде, с миграцией прежних форматов: строка
+/// (одна сессия) и слоты {inbound,outbound,current}. session_id вычисляется из
+/// самого pickle — иначе установленные сессии не пережили бы апгрейд, и первый
+/// же входящий prekey завёл бы дубль. Нерасшифруемые pickle'ы отбрасываем.
+function ratchetSessionMap(api, key) {
+    const value = olmSessions[key];
+    if (isSessionMap(value)) return value;
+    const map = {};
+    // Порядок = приоритет прежней схемы (для отправки первым брался inbound).
+    // Метки убывают, чтобы после миграции отправка выбрала ту же сессию, что и до неё.
+    const legacy = typeof value === 'string' ? [value]
+        : value ? [value.inbound, value.outbound, value.current] : [];
+    let stamp = legacy.length;
+    for (const pickle of legacy) {
+        const t = stamp--;
+        if (typeof pickle !== 'string' || !pickle) continue;
+        try { map[api.session_id(pickle)] = { s: pickle, t }; } catch (_) { /* битый pickle */ }
+    }
+    if (value !== undefined) olmSessions[key] = map;
+    return map;
+}
+
+/// Свежая первой; при равном ts — по session_id, чтобы выбор отправляющей сессии
+/// был детерминирован. Тот же порядок, что в ядре (core/src/store.rs).
+function ratchetSessionsFor(api, key) {
+    const map = ratchetSessionMap(api, key);
+    return Object.keys(map)
+        .filter(id => map[id] && typeof map[id].s === 'string')
+        .sort((a, b) => (map[b].t || 0) - (map[a].t || 0) || (a < b ? -1 : a > b ? 1 : 0))
+        .map(id => ({ sessionId: id, session: map[id].s }));
+}
+
+// Сколько сессий держим на устройство пира. Больше одной нужно из-за
+// одновременной инициации с двух сторон; потолок — чтобы поток prekey-конвертов
+// не раздувал стейт (он целиком лежит в localStorage). Совпадает с ядром.
+const MAX_SESSIONS_PER_PEER = 5;
+
+function ratchetSessionPut(api, key, sessionId, pickle) {
+    const map = ratchetSessionMap(api, key);
+    map[sessionId] = { s: pickle, t: Date.now() };
+    const ids = Object.keys(map)
+        .sort((a, b) => (map[b].t || 0) - (map[a].t || 0) || (a < b ? -1 : a > b ? 1 : 0));
+    for (const id of ids.slice(MAX_SESSIONS_PER_PEER)) delete map[id];
+    olmSessions[key] = map;
 }
 
 async function saveRatchetState(updateServerBackup = false) {
@@ -681,7 +722,15 @@ async function ensureRatchetKeys() {
     // устройства, пережившие предыдущую версию, останутся без новых полей.
     const signedFlagKey = `olm_published_v2_${myId}`;
     const signedPublished = localStorage.getItem(signedFlagKey) === '1';
-    if (serverCount >= 20 && signedPublished && serverIdentity === olmIdentityB64) {
+    // Fallback-ключ (P10 / SEC MED-3) — «последний рубеж», когда одноразовые
+    // кончились. Он переиспользуемый, поэтому ротируем: чем дольше живёт один и
+    // тот же ключ, тем больше начал переписок вскрывается разом при его
+    // компрометации. Ядро держит две приватные части подряд, так что сообщения,
+    // отправленные на прежний, ещё какое-то время читаются.
+    const fallbackTsKey = `olm_fallback_ts_${myId}`;
+    const fallbackTs = Number(localStorage.getItem(fallbackTsKey)) || 0;
+    const fallbackStale = Date.now() / 1000 - fallbackTs > FALLBACK_ROTATE_SECONDS;
+    if (serverCount >= 20 && signedPublished && serverIdentity === olmIdentityB64 && !fallbackStale) {
         peerDevicesCache = Object.create(null);
         return;
     }
@@ -689,6 +738,12 @@ async function ensureRatchetKeys() {
         olmAccountPickle, Math.max(50 - serverCount, 20), myId, myDeviceId));
     olmAccountPickle = publish.account_pickle;
     olmIdentityB64 = publish.identity_key_b64;
+    // Fallback генерируем ПОСЛЕ одноразовых: он выводится из того же аккаунта,
+    // и порядок гарантирует, что публикуем актуальный pickle.
+    const fallback = fallbackStale
+        ? JSON.parse(api.account_generate_fallback_signed(olmAccountPickle, myId, myDeviceId))
+        : null;
+    if (fallback) olmAccountPickle = fallback.account_pickle;
     const oneTimeKeys = JSON.parse(publish.one_time_keys_json);
     const otkSignatures = JSON.parse(publish.otk_signatures_json);
 
@@ -709,11 +764,22 @@ async function ensureRatchetKeys() {
             otk_signatures: otkSignatures,
             device_id: myDeviceId,
             master_key_b64: masterKeyB64,
-            device_sig_b64: deviceSigB64
+            device_sig_b64: deviceSigB64,
+            ...(fallback ? {
+                fallback_key: {
+                    key_id: fallback.key_id,
+                    key_b64: fallback.key_b64,
+                    sig_b64: fallback.sig_b64
+                }
+            } : {})
         })
     });
     if (!uploadRes.ok) throw new Error('Не удалось опубликовать prekeys');
     localStorage.setItem(signedFlagKey, '1');
+    // Метку ставим только после успешной публикации: иначе сорвавшийся upload
+    // считался бы состоявшимся и следующая попытка ушла бы на неделю вперёд —
+    // с fallback-ключом, которого сервер не видел.
+    if (fallback) localStorage.setItem(fallbackTsKey, String(Date.now() / 1000));
     peerDevicesCache = Object.create(null);
     await saveRatchetState(true);
 }
@@ -961,9 +1027,10 @@ async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
     return runRatchetSerial(async () => {
         const api = await loadRatchetApi();
         const key = deviceKey(peerId, deviceId);
-        const slots = ratchetSlots(key);
-        let slot = slots.inbound ? 'inbound' : slots.outbound ? 'outbound' : 'current';
-        let session = slots[slot];
+        // Сессий может быть несколько (SEC MED-4) — шифруем самой свежей.
+        const known = ratchetSessionsFor(api, key);
+        let sessionId = known.length ? known[0].sessionId : '';
+        let session = known.length ? known[0].session : null;
         if (!session) {
             const claimRes = await fetch(
                 `${serverUrl}/keys/claim/${pathSegment(peerId)}?device_id=${pathSegment(deviceId)}`,
@@ -1008,12 +1075,13 @@ async function ratchetEnvelopeForDevice(peerId, deviceId, plaintext) {
                 bundle.identity_key_b64,
                 bundle.one_time_key.key_b64
             );
-            slot = 'outbound';
+            sessionId = api.session_id(session);
         }
 
+        // session_id не меняется при шифровании — сессия обновляется на месте,
+        // а не плодит строку на каждое отправленное сообщение.
         const encrypted = JSON.parse(api.encrypt(session, plaintext));
-        slots[slot] = encrypted.session_pickle;
-        saveRatchetSlots(key, slots);
+        ratchetSessionPut(api, key, sessionId, encrypted.session_pickle);
         await saveRatchetState();
         return {
             ratchet: '1',
@@ -1094,15 +1162,24 @@ async function openRatchetEnvelope(peerId, envelope) {
         olmIdentityPins[key] = identity;
 
         let plaintext;
-        const slots = ratchetSlots(key);
-        const candidates = [['inbound', slots.inbound], ['outbound', slots.outbound], ['current', slots.current]];
+        // Сессий с устройством может быть НЕСКОЛЬКО (SEC MED-4): когда обе стороны
+        // начали переписку одновременно, у каждой своя исходящая. Пробуем все.
+        const known = ratchetSessionsFor(api, key);
+        // prekey (type 0) при живой сессии — обычное дело: пир ещё не увидел наш
+        // ответ и продолжает слать prekey. Такой конверт принадлежит УЖЕ
+        // существующей сессии — узнаём её по session_id и пробуем первой.
+        let prekeySessionId = '';
+        if (Number(envelope.type) === 0) {
+            try { prekeySessionId = api.prekey_session_id(envelope.body_b64); } catch (_) { /* не prekey */ }
+        }
+        const ordered = known.slice();
+        const hit = prekeySessionId ? ordered.findIndex(s => s.sessionId === prekeySessionId) : -1;
+        if (hit > 0) ordered.unshift(ordered.splice(hit, 1)[0]);
         let lastError = null;
-        for (const [slot, session] of candidates) {
-            if (!session) continue;
+        for (const entry of ordered) {
             try {
-                const result = JSON.parse(api.decrypt(session, Number(envelope.type), envelope.body_b64));
-                slots[slot] = result.session_pickle;
-                saveRatchetSlots(key, slots);
+                const result = JSON.parse(api.decrypt(entry.session, Number(envelope.type), envelope.body_b64));
+                ratchetSessionPut(api, key, entry.sessionId, result.session_pickle);
                 plaintext = result.plaintext;
                 break;
             } catch (error) {
@@ -1113,14 +1190,19 @@ async function openRatchetEnvelope(peerId, envelope) {
             if (Number(envelope.type) !== 0) {
                 throw lastError || new Error('Нет сессии для normal Ratchet-сообщения');
             }
+            // Prekey ЗНАКОМОЙ сессии, который она не расшифровала — это дубль
+            // доставки или битый конверт, а не новая сессия. Заводить её нельзя:
+            // create_inbound впустую спалил бы одноразовый ключ.
+            if (prekeySessionId && known.some(s => s.sessionId === prekeySessionId)) {
+                throw lastError || new Error('Prekey уже известной сессии не расшифровался');
+            }
             const result = JSON.parse(api.create_inbound(
                 olmAccountPickle,
                 identity,
                 envelope.body_b64
             ));
             olmAccountPickle = result.account_pickle;
-            slots.inbound = result.session_pickle;
-            saveRatchetSlots(key, slots);
+            ratchetSessionPut(api, key, api.session_id(result.session_pickle), result.session_pickle);
             plaintext = result.plaintext;
             await saveRatchetState(true);
             try { await ensureRatchetKeys(); }

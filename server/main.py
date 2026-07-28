@@ -493,6 +493,34 @@ def init_db() -> None:
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE signed_devices ADD COLUMN cross_signed INTEGER NOT NULL DEFAULT 0")
 
+        # P10 / SEC MED-3: fallback-ключ — «последний рубеж», когда одноразовые
+        # кончились. Один на устройство, переиспользуемый (forward secrecy слабее,
+        # чем у OTK), зато исчерпание одноразовых больше не глушит переписку.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS fallback_keys (
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                key_id TEXT NOT NULL,
+                key_b64 TEXT NOT NULL,
+                sig_b64 TEXT,
+                created_at TEXT NOT NULL,
+                PRIMARY KEY (user_id, device_id)
+            )"""
+        )
+        # Счётчик claim'ов «кто у кого» — против выжигания чужих одноразовых
+        # ключей (SEC MED-3). Честному отправителю на устройство нужен один OTK;
+        # сверх квоты выдаём fallback вместо расхода нового одноразового.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS otk_claims (
+                claimer_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                device_id TEXT NOT NULL,
+                claims INTEGER NOT NULL DEFAULT 0,
+                window_start TEXT NOT NULL,
+                PRIMARY KEY (claimer_id, user_id, device_id)
+            )"""
+        )
+
         # P9: резервная копия истории. Сервер хранит ТОЛЬКО шифротекст
         # (AES-256-GCM ключом, выведенным из приватного ключа аккаунта) —
         # прочитать его он не может, как и конверты сообщений.
@@ -673,6 +701,9 @@ class UploadKeysRequest(BaseModel):
     # Cross-signing (P8): мастер-ключ аккаунта и его подпись этого устройства.
     master_key_b64: Optional[str] = Field(default=None, min_length=16, max_length=128)
     device_sig_b64: Optional[str] = Field(default=None, min_length=16, max_length=256)
+    # P10 / SEC MED-3: fallback-ключ {key_id, key_b64, sig_b64}. Подписан тем же
+    # каноном AETHER-OTK-1, что и одноразовые — клиент проверяет его как обычный OTK.
+    fallback_key: Optional[dict[str, str]] = Field(default=None)
 
 
 class UpdateOlmBackupRequest(BaseModel):
@@ -955,6 +986,11 @@ async def kick_device(device_id: str, authorization: str = Header(None),
         cur.execute(
             "DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
             (current_user, device_id))
+        # Fallback выкинутого устройства тоже убираем: иначе claim продолжал бы
+        # отдавать «последний рубеж» для ключей, которых уже нет в директории.
+        cur.execute(
+            "DELETE FROM fallback_keys WHERE user_id = LOWER(%s) AND device_id = %s",
+            (current_user, device_id))
         if device_id == "primary":
             # Легаси-поля primary тоже гасим, иначе старый клиент продолжит claim.
             cur.execute("UPDATE users SET olm_identity_key = NULL WHERE LOWER(user_id) = LOWER(%s)",
@@ -1037,6 +1073,9 @@ async def wipe_account(body: WipeRequest, authorization: str = Header(None),
         left_groups = cur.rowcount
         # «Удалить всё» обязано забирать и резервную копию истории.
         cur.execute("DELETE FROM history_backups WHERE user_id = LOWER(%s)", (current_user,))
+        # ...и счётчики claim'ов: это след «кто кому писал» в обе стороны.
+        cur.execute("DELETE FROM otk_claims WHERE claimer_id = LOWER(%s) OR user_id = LOWER(%s)",
+                    (current_user, current_user))
         cur.execute(
             "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND token != %s RETURNING token",
             (current_user, token))
@@ -1114,6 +1153,19 @@ def _validate_sig_b64(value: object, field: str) -> None:
         raise HTTPException(400, f"{field} must encode 64 bytes")
 
 
+def _validated_fallback(fallback: object) -> dict:
+    """Разобрать поле fallback_key: {key_id, key_b64, sig_b64}."""
+    if not isinstance(fallback, dict):
+        raise HTTPException(400, "fallback_key must be an object")
+    key_id, key_b64 = fallback.get("key_id"), fallback.get("key_b64")
+    if not isinstance(key_id, str) or not 0 < len(key_id) <= 128:
+        raise HTTPException(400, "Invalid fallback key id")
+    if not isinstance(key_b64, str) or len(key_b64) > 128:
+        raise HTTPException(400, "Invalid fallback key")
+    _validate_key_b64(key_b64, "fallback key")
+    return {"key_id": key_id, "key_b64": key_b64, "sig_b64": fallback.get("sig_b64")}
+
+
 def _verify_upload_signatures(user_id: str, body: "UploadKeysRequest") -> None:
     """Проверка подписей бандла (SEC HIGH-2). Канон должен побайтно совпадать
     с ядром (core/ratchet-core): AETHER-IDKEY-1 / AETHER-OTK-1.
@@ -1127,17 +1179,24 @@ def _verify_upload_signatures(user_id: str, body: "UploadKeysRequest") -> None:
         vk.verify(ident_canon.encode(), _decode_b64url(body.identity_sig_b64, "identity_sig_b64"))
     except BadSignatureError:
         raise HTTPException(400, "identity signature invalid")
-    for key_id, key_b64 in body.one_time_keys.items():
-        sig = body.otk_signatures.get(key_id)
+    def verify_otk(key_id: str, key_b64: str, sig: object, what: str) -> None:
         if sig is None:
-            raise HTTPException(400, f"one-time key {key_id} lacks signature")
+            raise HTTPException(400, f"{what} {key_id} lacks signature")
         _validate_sig_b64(sig, "otk signature")
         otk_canon = (f"AETHER-OTK-1|{user_id.lower()}|{body.device_id}|"
                      f"{body.identity_key_b64}|{key_id}|{key_b64}")
         try:
             vk.verify(otk_canon.encode(), _decode_b64url(sig, "otk signature"))
         except BadSignatureError:
-            raise HTTPException(400, f"one-time key {key_id} signature invalid")
+            raise HTTPException(400, f"{what} {key_id} signature invalid")
+
+    for key_id, key_b64 in body.one_time_keys.items():
+        verify_otk(key_id, key_b64, body.otk_signatures.get(key_id), "one-time key")
+    # Fallback-ключ (P10) подписан тем же каноном: получатель проверяет его той же
+    # веткой, что и обычный OTK, и подмена «последнего рубежа» сервером не проходит.
+    if body.fallback_key is not None:
+        fb = _validated_fallback(body.fallback_key)
+        verify_otk(fb["key_id"], fb["key_b64"], fb.get("sig_b64"), "fallback key")
     # Cross-signing (P8): подпись записи устройства мастер-ключом аккаунта. Именно
     # она мешает подсадить пиру фантомное устройство с самоподписанным бандлом —
     # решающая проверка снова у получателя, который пинит мастер-ключ.
@@ -1189,6 +1248,10 @@ def upload_keys(body: UploadKeysRequest, request: Request,
         # Мастер подписывает канон, включающий ed25519 устройства: без подписанного
         # бандла такая подпись бессмысленна и раньше принималась без проверки.
         raise HTTPException(400, "Cross-signing requires a signed bundle")
+    if body.fallback_key is not None and not signed:
+        # Fallback переиспользуется, поэтому неподписанный был бы идеальной точкой
+        # подмены: один раз подсунул — и читаешь начало всех новых переписок.
+        raise HTTPException(400, "Fallback key requires a signed bundle")
     if signed:
         # Подписанный бандл — оба поля обязательны и подписи должны сходиться.
         if not (body.ed25519_key_b64 and body.identity_sig_b64):
@@ -1234,6 +1297,10 @@ def upload_keys(body: UploadKeysRequest, request: Request,
             # OTKs are bound to the identity that generated them. A rotated
             # account must not leave stale OTKs for the next claimant.
             cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
+                        (current_user, device_id))
+            # То же и для fallback: он привязан к прежнему identity, и сессия
+            # на нём после ротации у отправителя не соберётся.
+            cur.execute("DELETE FROM fallback_keys WHERE user_id = LOWER(%s) AND device_id = %s",
                         (current_user, device_id))
         cur.execute(
             """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64,
@@ -1287,6 +1354,17 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                 "ON CONFLICT (user_id, device_id, key_id) DO NOTHING",
                 (current_user.lower(), device_id, str(key_id), str(key_b64),
                  body.otk_signatures.get(key_id) if signed else None))
+        if body.fallback_key is not None:
+            fb = _validated_fallback(body.fallback_key)
+            # Один fallback на устройство: ротация замещает прежний. Клиент при
+            # этом ещё какое-то время умеет расшифровать сообщения на старом.
+            cur.execute(
+                """INSERT INTO fallback_keys (user_id, device_id, key_id, key_b64, sig_b64, created_at)
+                   VALUES (LOWER(%s), %s, %s, %s, %s, %s)
+                   ON CONFLICT (user_id, device_id) DO UPDATE
+                   SET key_id = EXCLUDED.key_id, key_b64 = EXCLUDED.key_b64,
+                       sig_b64 = EXCLUDED.sig_b64, created_at = EXCLUDED.created_at""",
+                (current_user, device_id, fb["key_id"], fb["key_b64"], fb["sig_b64"], _utc_now()))
     return {"ok": True}
 
 
@@ -1431,9 +1509,18 @@ def list_devices(user_id: str, current_user: str = Depends(get_current_user)) ->
                          "device_sig_b64": r.get("device_sig_b64")} for r in rows]}
 
 
+# Сколько одноразовых ключей ОДИН отправитель вправе израсходовать у ОДНОГО
+# устройства за окно. Честному нужен ровно один (плюс запас на переустановки и
+# сброс сессии); всё сверх — выжигание чужих ключей (SEC MED-3). Сверх квоты
+# выдаём fallback, не трогая запас одноразовых.
+CLAIM_OTK_QUOTA = 5
+CLAIM_QUOTA_WINDOW_HOURS = 24
+
+
 # Забрать prekey-bundle пира: identity + ОДИН one-time key, который тут же
 # удаляется (одноразовость → forward secrecy). Атомарно, чтобы двум клиентам не
-# достался один и тот же OTK.
+# достался один и тот же OTK. Когда одноразовые кончились — отдаём fallback
+# (переиспользуемый, forward secrecy слабее, но переписка не встаёт).
 @app.post("/keys/claim/{user_id}")
 @limiter.limit("60/minute")
 def claim_keys(user_id: str, request: Request, device_id: str = "primary",
@@ -1451,11 +1538,43 @@ def claim_keys(user_id: str, request: Request, device_id: str = "primary",
         if row is None:
             raise HTTPException(404, "No Olm identity for user")
         cur.execute(
-            "DELETE FROM one_time_keys WHERE ctid IN "
-            "(SELECT ctid FROM one_time_keys WHERE user_id = %s AND device_id = %s LIMIT 1) "
-            "RETURNING key_id, key_b64, sig_b64",
-            (user_id.lower(), device_id))
-        otk = cur.fetchone()
+            "SELECT key_id, key_b64, sig_b64 FROM fallback_keys "
+            "WHERE user_id = LOWER(%s) AND device_id = %s",
+            (user_id, device_id))
+        fallback = cur.fetchone()
+        # Квота считается по паре (кто claim'ит, чьё устройство): общий лимит на
+        # эндпоинт от выжигания не спасает — атакующему хватает и 60 запросов
+        # в минуту, чтобы за час осушить запас конкретной жертвы.
+        cutoff = (datetime.now(timezone.utc)
+                  - timedelta(hours=CLAIM_QUOTA_WINDOW_HOURS)).isoformat()
+        # Просроченные окна этого отправителя чистим сразу: счётчики — это след
+        # «кто кому писал», и хранить его дольше, чем работает квота, незачем.
+        cur.execute("DELETE FROM otk_claims WHERE claimer_id = LOWER(%s) AND window_start < %s",
+                    (current_user, cutoff))
+        # Просроченную строку удалил шаг выше, поэтому уцелевшая заведомо внутри
+        # окна — здесь достаточно инкремента, без разбора «а не истекло ли».
+        cur.execute(
+            """INSERT INTO otk_claims (claimer_id, user_id, device_id, claims, window_start)
+               VALUES (LOWER(%s), LOWER(%s), %s, 1, %s)
+               ON CONFLICT (claimer_id, user_id, device_id) DO UPDATE
+               SET claims = otk_claims.claims + 1
+               RETURNING claims""",
+            (current_user, user_id, device_id, _utc_now()))
+        claims = cur.fetchone()["claims"]
+        # Сверх квоты одноразовый не расходуем — но только если есть чем заменить.
+        # У устройства без fallback (клиент до P10) отказ означал бы, что ему
+        # просто нельзя написать; там остаёмся на прежнем поведении.
+        otk = None
+        if claims <= CLAIM_OTK_QUOTA or fallback is None:
+            cur.execute(
+                "DELETE FROM one_time_keys WHERE ctid IN "
+                "(SELECT ctid FROM one_time_keys WHERE user_id = %s AND device_id = %s LIMIT 1) "
+                "RETURNING key_id, key_b64, sig_b64",
+                (user_id.lower(), device_id))
+            otk = cur.fetchone()
+    used_fallback = otk is None
+    if used_fallback:
+        otk = fallback
     if otk is None:
         raise HTTPException(409, "No one-time keys available")
     return {"user_id": user_id.lower(), "device_id": device_id,
@@ -1464,6 +1583,9 @@ def claim_keys(user_id: str, request: Request, device_id: str = "primary",
             "identity_sig_b64": row.get("identity_sig_b64"),
             "master_key_b64": row.get("master_key_b64"),
             "device_sig_b64": row.get("device_sig_b64"),
+            # fallback=true — сигнал клиенту, что ключ переиспользуемый; проверка
+            # подписи одинаковая, канон у fallback тот же AETHER-OTK-1.
+            "fallback": used_fallback,
             "one_time_key": {"key_id": otk["key_id"], "key_b64": otk["key_b64"],
                              "sig_b64": otk.get("sig_b64")}}
 

@@ -46,6 +46,10 @@ box для 1:1 — если у получателя нет prekeys, сообще
   deviceId) -> OlmPublishSigned{+ed25519KeyB64, identitySigB64, otkSignaturesJson}`;
   `olmVerifyPrekeyBundle(...)`, `olmVerifyIdentity(...)`; TOFU-пины в store:
   `olmPinGet/Check/Accept/SetVerified/Delete` (peer_key = "peer" или "peer::device")
+- **P10 (fallback + мультисессии):** `olmAccountGenerateFallbackSigned(accountPickle, userId,
+  deviceId) -> OlmFallbackPublish{accountPickle, identityKeyB64, keyId, keyB64, sigB64}`;
+  `olmSessionId(sessionPickle)`, `olmPrekeySessionId(bodyB64)`; store:
+  `olmSessionsFor(peerId) -> [OlmSession]`, `olmSessionPut(peerId, sessionId, sessionJson)`
 - `olmCreateOutbound(accountPickle, theirIdentityB64, theirOneTimeKeyB64) -> sessionPickle`
 - `olmEncrypt(sessionPickle, plaintext) -> {sessionPickle, messageType, bodyB64}`
 - `olmCreateInbound(accountPickle, theirIdentityB64, bodyB64) -> {accountPickle, sessionPickle, plaintext}`
@@ -71,11 +75,15 @@ type: 0 = prekey (ставит сессию), 1 = normal. Отправляетс
 ## 5. Серверные эндпоинты (prekey + сообщения)
 
 - `PUT /keys/upload {identity_key_b64, one_time_keys:{id:key}, device_id,
-  ed25519_key_b64?, identity_sig_b64?, otk_signatures?:{id:sig}}` — P7: сервер
-  верифицирует подписи (PyNaCl), анти-даунгрейд после первой подписанной публикации
+  ed25519_key_b64?, identity_sig_b64?, otk_signatures?:{id:sig},
+  fallback_key?:{key_id,key_b64,sig_b64}}` — P7: сервер верифицирует подписи (PyNaCl),
+  анти-даунгрейд после первой подписанной публикации; P10: fallback принимается
+  ТОЛЬКО в подписанном бандле, один на устройство (ротация замещает прежний)
 - `GET /keys/count -> {count, identity_key_b64}`
 - `POST /keys/claim/{user_id}?device_id= -> {identity_key_b64, ed25519_key_b64?,
-  identity_sig_b64?, one_time_key:{key_id,key_b64,sig_b64?}}` (OTK удаляется атомарно)
+  identity_sig_b64?, fallback: bool, one_time_key:{key_id,key_b64,sig_b64?}}`
+  (OTK удаляется атомарно; `fallback:true` — ключ переиспользуемый, отдан вместо
+  одноразового: они кончились ИЛИ отправитель выбрал квоту `CLAIM_OTK_QUOTA`)
 - `POST /messages {sender_id, recipient_id, envelope, client_id}` — валидация конверта
   ветвится по `envelope.ratchet` (ratchet: {olm_identity,type,body_b64}; иначе legacy box).
 - `GET /messages/inbox/{user_id}?since=`, `POST /messages/ack`
@@ -95,10 +103,22 @@ box-ключей, темы, RU/EN.
   ключа аккаунта; пиры пинят мастер в `master_pins`) — сервер не может подсадить пиру
   фантомное устройство. Сверка отпечатков переведена на мастер (`AetherSafety#2`).
   См. `P7_SIGNED_PREKEYS_DESIGN.md`. Осталось: QR-сверка.
-- **SEC MED-3:** claim без rate-limit → исчерпание чужих OTK (DoS). Нужен fallback-key +
-  лимит. (vodozemac умеет `generate_fallback_key`.)
-- **SEC MED-4:** одна Olm-сессия на пира, входящий prekey её затирает → форс-сброс.
-  Нужны мультисессии (выбор по session_id).
+- ~~SEC MED-3~~ **ЗАКРЫТ (P10):** fallback-ключ (`olm_account_generate_fallback_signed`,
+  канон подписи тот же `AETHER-OTK-1`) + квота claim'ов. Сервер: таблицы `fallback_keys`
+  и `otk_claims`, `CLAIM_OTK_QUOTA=5` на пару (кто claim'ит, чьё устройство) за 24 ч;
+  сверх квоты выдаётся fallback, одноразовые не расходуются. В ответе `/keys/claim`
+  появилось поле `fallback: bool`. Ротация fallback — раз в неделю (iOS
+  `CoreClient.fallbackRotateInterval`, web `FALLBACK_ROTATE_SECONDS`).
+  Регистрация открыта, поэтому квота не отменяет выжигание с N аккаунтов — но
+  исчерпание OTK больше не глушит переписку, в этом и смысл fallback.
+- ~~SEC MED-4~~ **ЗАКРЫТ (P10):** мультисессии. `olm_sessions` перешла на ключ
+  `(peer_id, session_id)`, до 5 сессий на устройство (`MAX_SESSIONS_PER_PEER`),
+  приём перебирает все, отправка берёт свежую. Prekey уже известной сессии узнаётся
+  по `olm_prekey_session_id` и не заводит дубль (не жжёт лишний OTK). Миграция
+  старой таблицы вычисляет `session_id` из самого pickle. Веб переведён на ту же
+  модель (`ratchetSessionsFor`/`ratchetSessionPut`, тот же потолок 5, миграция
+  прежних слотов `inbound`/`outbound`/`current` по вычисленному session_id).
+  **Не портировано на Android** (ветка `android`).
 - **SEC LOW-5:** pickle'ы хранятся плейнтекст-JSON внутри SQLCipher (DiD, если ключ БД утечёт).
 - Группы без forward secrecy (статический ключ).
 - Нет пушей: APNs/VoIP заблокированы платным Apple Developer ($99/год).
