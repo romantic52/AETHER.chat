@@ -5,6 +5,19 @@
 прод по умолчанию не берём):
     AETHER_URL=http://127.0.0.1:8000 python3 server/test_prekeys.py
 
+Локально можно обойтись без системного PostgreSQL — пакет `pgserver` приносит
+свои бинарники и поднимает БД в указанном каталоге:
+
+    pip install pgserver python-multipart -r requirements.txt
+    python -c "import pgserver; print(pgserver.get_server('/tmp/aether-pg', cleanup_mode=None).get_uri())"
+    # host = каталог сокета из URI, БД и пользователь — postgres, пароль пустой
+    DB_NAME=postgres DB_USER=postgres DB_PASS= DB_HOST=<каталог-сокета> \
+        uvicorn server.main:app --port 8099
+    AETHER_URL=http://127.0.0.1:8099 python3 server/test_prekeys.py
+
+cleanup_mode=None обязателен: иначе БД гаснет вместе с процессом, который её
+поднял, и сервер не найдёт сокет.
+
 Нужен PyNaCl (он и так требуется серверу). Проверяет:
   * upload подписанного + cross-signed бандла и отдачу подписей в claim/devices;
   * отказ при битой подписи identity, OTK и устройства;
