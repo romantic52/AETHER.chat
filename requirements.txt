@@ -8,6 +8,9 @@ cryptography>=42.0
 kivy>=2.3.0
 psycopg2-binary==2.9.9
 slowapi>=0.1.9
+# ОБЯЗАТЕЛЬНО: /upload и /avatars объявлены как UploadFile=File(...), а FastAPI
+# проверяет multipart на импорте — без пакета приложение не стартует вообще.
+python-multipart>=0.0.9
 # APNs-пуши (опционально: без APNS_* переменных окружения не используются)
 PyJWT>=2.8
 httpx[http2]>=0.27
