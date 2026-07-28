@@ -62,6 +62,16 @@ pub struct OlmPin {
     pub changed_ts: Option<i64>,
 }
 
+/// Olm-сессия с устройством пира (мультисессии, P10 / SEC MED-4).
+/// `session_id` совпадает у обеих сторон одной сессии — по нему входящий
+/// prekey-конверт сопоставляется с уже имеющейся сессией.
+#[derive(uniffi::Record, Clone)]
+pub struct OlmSession {
+    pub session_id: String,
+    pub session_json: String,
+    pub updated_ts: i64,
+}
+
 /// TOFU-пин мастер-ключа аккаунта пира (cross-signing, P8). Один на пользователя:
 /// все его устройства проверяются этим ключом, поэтому добавление устройства
 /// владельцем не требует нового доверия, а подсадка сервером — не проходит.
@@ -100,6 +110,11 @@ pub struct CoreStore {
     conn: Mutex<Connection>,
     listener: Mutex<Option<Box<dyn StoreListener>>>,
 }
+
+/// Сколько Olm-сессий держим на одно устройство пира. Больше одной нужно из-за
+/// одновременной инициации с двух сторон (SEC MED-4); потолок — чтобы поток
+/// prekey-конвертов не раздувал базу. Живых сессий в норме одна-две.
+const MAX_SESSIONS_PER_PEER: i64 = 5;
 
 const SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS messages (
@@ -140,9 +155,11 @@ CREATE TABLE IF NOT EXISTS pins (
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS olm_sessions (
-    peer_id TEXT PRIMARY KEY,
+    peer_id TEXT NOT NULL,
+    session_id TEXT NOT NULL,
     session_json TEXT NOT NULL,
-    updated_ts INTEGER NOT NULL DEFAULT 0
+    updated_ts INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (peer_id, session_id)
 );
 CREATE TABLE IF NOT EXISTS master_pins (
     peer_id TEXT PRIMARY KEY,
@@ -240,6 +257,7 @@ impl CoreStore {
             .map_err(CoreError::store)?;
         }
         conn.execute_batch(SCHEMA).map_err(CoreError::store)?;
+        Self::migrate_olm_sessions(&conn)?;
         Ok(CoreStore { conn: Mutex::new(conn), listener: Mutex::new(None) })
     }
 
@@ -824,17 +842,59 @@ impl CoreStore {
         Ok(())
     }
 
-    /// Olm-сессия (Double Ratchet) с пиром: pickle-JSON. Одна сессия на пира —
-    /// при входящем prekey перезаписываем на новую (см. ratchet-интеграцию).
-    /// ponytail: одна сессия/пир; при одновременной инициации с двух сторон
-    /// возможна пересборка — апгрейд до мультисессий, если станет мешать.
-    pub fn olm_session_get(&self, peer_id: String) -> Result<Option<String>, CoreError> {
+    /// Все Olm-сессии с устройством пира, свежая первой (SEC MED-4).
+    ///
+    /// Сессий несколько намеренно. Когда обе стороны начинают переписку
+    /// одновременно, каждая заводит свою исходящую — раньше входящий prekey
+    /// затирал единственную строку, и всё, что собеседник уже зашифровал в
+    /// затёртой сессии, становилось невскрываемым навсегда. Теперь живут обе:
+    /// приём перебирает их, отправка берёт самую свежую.
+    ///
+    /// Порядок: свежая первой, при равном ts — по session_id, чтобы выбор
+    /// отправляющей сессии был детерминирован и не «дрожал» между запусками.
+    pub fn olm_sessions_for(&self, peer_id: String) -> Result<Vec<OlmSession>, CoreError> {
         let c = self.conn.lock().unwrap();
-        Ok(c.query_row("SELECT session_json FROM olm_sessions WHERE peer_id=?1",
-                       params![peer_id.to_lowercase()], |r| r.get(0)).optional()?)
+        let mut st = c.prepare(
+            "SELECT session_id, session_json, updated_ts FROM olm_sessions WHERE peer_id=?1
+             ORDER BY updated_ts DESC, session_id ASC",
+        )?;
+        let rows = st.query_map(params![peer_id.to_lowercase()], |r| {
+            Ok(OlmSession { session_id: r.get(0)?, session_json: r.get(1)?, updated_ts: r.get(2)? })
+        })?;
+        Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
     }
-    /// Забыть сессию (принятие нового ключа пира: старая сессия мертва, новая
-    /// установится свежим prekey-обменом).
+
+    /// Сохранить/обновить сессию. Помимо записи подрезает историю до
+    /// `MAX_SESSIONS_PER_PEER`: без лимита пир (или сервер от его имени) мог бы
+    /// потоком prekey-конвертов раздувать базу без ограничений.
+    pub fn olm_session_put(
+        &self,
+        peer_id: String,
+        session_id: String,
+        session_json: String,
+    ) -> Result<(), CoreError> {
+        let peer = peer_id.to_lowercase();
+        let ts = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO olm_sessions (peer_id, session_id, session_json, updated_ts)
+             VALUES (?1,?2,?3,?4)
+             ON CONFLICT (peer_id, session_id) DO UPDATE
+             SET session_json=excluded.session_json, updated_ts=excluded.updated_ts",
+            params![peer, session_id, session_json, ts],
+        )?;
+        c.execute(
+            "DELETE FROM olm_sessions WHERE peer_id=?1 AND session_id NOT IN
+             (SELECT session_id FROM olm_sessions WHERE peer_id=?1
+              ORDER BY updated_ts DESC, session_id ASC LIMIT ?2)",
+            params![peer, MAX_SESSIONS_PER_PEER],
+        )?;
+        Ok(())
+    }
+
+    /// Забыть ВСЕ сессии с устройством (принятие нового ключа пира: старые
+    /// сессии мертвы, новая установится свежим prekey-обменом).
     pub fn olm_session_delete(&self, peer_id: String) -> Result<(), CoreError> {
         self.conn.lock().unwrap().execute(
             "DELETE FROM olm_sessions WHERE peer_id=?1",
@@ -843,13 +903,19 @@ impl CoreStore {
         Ok(())
     }
 
+    /// Самая свежая сессия. Совместимость с однососессионными вызывающими
+    /// (ветка android до порта мультисессий) — новый код ходит через
+    /// `olm_sessions_for`, чтобы перебрать все.
+    pub fn olm_session_get(&self, peer_id: String) -> Result<Option<String>, CoreError> {
+        Ok(self.olm_sessions_for(peer_id)?.into_iter().next().map(|s| s.session_json))
+    }
+
+    /// Совместимая запись: session_id вычисляется из самого pickle, поэтому
+    /// старый вызывающий не затирает чужую сессию, а обновляет свою.
     pub fn olm_session_set(&self, peer_id: String, session_json: String) -> Result<(), CoreError> {
-        let ts = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
-        self.conn.lock().unwrap().execute(
-            "INSERT OR REPLACE INTO olm_sessions (peer_id, session_json, updated_ts) VALUES (?1,?2,?3)",
-            params![peer_id.to_lowercase(), session_json, ts])?;
-        Ok(())
+        let session_id = aether_ratchet_core::session_id(&session_json)
+            .map_err(|msg| CoreError::Crypto { msg })?;
+        self.olm_session_put(peer_id, session_id, session_json)
     }
 }
 
@@ -870,6 +936,59 @@ fn hex_key(key_b64: &str) -> Result<String, CoreError> {
 }
 
 impl CoreStore {
+    /// Миграция: olm_sessions(peer_id PRIMARY KEY) → (peer_id, session_id) для
+    /// мультисессий (P10). `CREATE TABLE IF NOT EXISTS` существующую таблицу не
+    /// трогает, поэтому пересобираем вручную.
+    ///
+    /// session_id уже установленных сессий вычисляется из самого pickle — иначе
+    /// первый же входящий prekey не нашёл бы соответствия и завёл дубль, впустую
+    /// спалив одноразовый ключ. Нерасшифруемые (битые) pickle'ы уезжают под
+    /// 'legacy': ключ таблицы был peer_id, так что столкнуться они не могут.
+    fn migrate_olm_sessions(conn: &Connection) -> Result<(), CoreError> {
+        let already: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('olm_sessions') WHERE name='session_id'",
+                [],
+                |r| r.get::<_, i64>(0),
+            )
+            .map(|n| n > 0)
+            .unwrap_or(false);
+        if already {
+            return Ok(());
+        }
+        let rows: Vec<(String, String, i64)> = {
+            let mut st = conn
+                .prepare("SELECT peer_id, session_json, updated_ts FROM olm_sessions")
+                .map_err(CoreError::store)?;
+            let it = st
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map_err(CoreError::store)?;
+            it.collect::<rusqlite::Result<Vec<_>>>().map_err(CoreError::store)?
+        };
+        conn.execute_batch(
+            "DROP TABLE olm_sessions;
+             CREATE TABLE olm_sessions (
+                 peer_id TEXT NOT NULL,
+                 session_id TEXT NOT NULL,
+                 session_json TEXT NOT NULL,
+                 updated_ts INTEGER NOT NULL DEFAULT 0,
+                 PRIMARY KEY (peer_id, session_id)
+             );",
+        )
+        .map_err(CoreError::store)?;
+        for (peer, json, ts) in rows {
+            let session_id = aether_ratchet_core::session_id(&json)
+                .unwrap_or_else(|_| "legacy".to_owned());
+            conn.execute(
+                "INSERT OR REPLACE INTO olm_sessions (peer_id, session_id, session_json, updated_ts)
+                 VALUES (?1,?2,?3,?4)",
+                params![peer, session_id, json, ts],
+            )
+            .map_err(CoreError::store)?;
+        }
+        Ok(())
+    }
+
     /// Если по пути лежит НЕзашифрованная база (создана до SQLCipher) —
     /// перешифровать её ключом через sqlcipher_export и подменить файл.
     fn migrate_plaintext_if_needed(path: &str, key_b64: &str) -> Result<(), CoreError> {
@@ -920,6 +1039,110 @@ mod tests {
         }
     }
 
+    /// Настоящий pickle сессии — миграция и olm_session_set вычисляют из него
+    /// session_id, поэтому подсунуть строку-заглушку тут нельзя.
+    fn real_session(text: &str) -> String {
+        let bob = aether_ratchet_core::account_generate_otks(
+            &aether_ratchet_core::account_new().unwrap(), 1).unwrap();
+        let otk: serde_json::Value = serde_json::from_str(&bob.one_time_keys_json).unwrap();
+        let otk = otk.as_object().unwrap().values().next().unwrap().as_str().unwrap().to_owned();
+        let session = aether_ratchet_core::create_outbound(
+            &aether_ratchet_core::account_new().unwrap(), &bob.identity_key_b64, &otk).unwrap();
+        // Шифруем, чтобы у разных вызовов гарантированно отличалось содержимое.
+        aether_ratchet_core::encrypt(&session, text).unwrap().session_pickle
+    }
+
+    /// SEC MED-4: сессий на пира несколько, самая свежая — первой, и лимит держит
+    /// таблицу от разрастания.
+    #[test]
+    fn olm_sessions_are_multi_and_capped() {
+        let s = store();
+        let a = real_session("a");
+        let b = real_session("b");
+        let a_id = aether_ratchet_core::session_id(&a).unwrap();
+        let b_id = aether_ratchet_core::session_id(&b).unwrap();
+        assert_ne!(a_id, b_id);
+
+        // updated_ts в миллисекундах, поэтому подряд идущие записи попадают в одну
+        // и ту же метку, и «свежая» становится неотличима от «прошлой» — порядок
+        // тогда решает тай-брейк по session_id. Разводим записи по времени там,
+        // где проверяется именно свежесть, иначе тест зависит от скорости машины.
+        let tick = || std::thread::sleep(std::time::Duration::from_millis(2));
+
+        s.olm_session_put("Bob::ios-1".into(), a_id.clone(), a.clone()).unwrap();
+        tick();
+        s.olm_session_put("bob::ios-1".into(), b_id.clone(), b.clone()).unwrap();
+        let all = s.olm_sessions_for("bob::ios-1".into()).unwrap();
+        assert_eq!(all.len(), 2, "входящая сессия не затирает исходящую");
+        // Свежая первой — её и возьмёт отправка (olm_session_get).
+        assert_eq!(all[0].session_id, b_id);
+        assert_eq!(s.olm_session_get("bob::ios-1".into()).unwrap().as_deref(), Some(b.as_str()));
+
+        // Обновление существующей сессии не плодит строк.
+        tick();
+        s.olm_session_put("bob::ios-1".into(), a_id.clone(), a.clone()).unwrap();
+        assert_eq!(s.olm_sessions_for("bob::ios-1".into()).unwrap().len(), 2);
+
+        // Лимит: сверх MAX_SESSIONS_PER_PEER самые старые вытесняются.
+        for i in 0..MAX_SESSIONS_PER_PEER + 3 {
+            let p = real_session(&format!("s{i}"));
+            tick();
+            s.olm_session_set("bob::ios-1".into(), p).unwrap();
+        }
+        let all = s.olm_sessions_for("bob::ios-1".into()).unwrap();
+        assert_eq!(all.len() as i64, MAX_SESSIONS_PER_PEER);
+        assert!(!all.iter().any(|x| x.session_id == a_id), "вытеснены самые старые");
+
+        // Соседний пир не задет, delete сносит все сессии устройства.
+        s.olm_session_set("carol".into(), real_session("c")).unwrap();
+        s.olm_session_delete("bob::ios-1".into()).unwrap();
+        assert!(s.olm_sessions_for("bob::ios-1".into()).unwrap().is_empty());
+        assert_eq!(s.olm_sessions_for("carol".into()).unwrap().len(), 1);
+    }
+
+    /// Апгрейд с однососессионной схемы: существующая сессия должна пережить
+    /// миграцию С ПРАВИЛЬНЫМ session_id, иначе первый же входящий prekey не нашёл
+    /// бы её и завёл дубль, впустую спалив одноразовый ключ.
+    #[test]
+    fn legacy_session_table_migrates_with_real_session_id() {
+        let dir = std::env::temp_dir().join(format!("aether-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.sqlite");
+        let path_s = path.to_string_lossy().to_string();
+
+        let pickle = real_session("до миграции");
+        let expected = aether_ratchet_core::session_id(&pickle).unwrap();
+        {
+            let c = Connection::open(&path).unwrap();
+            c.execute_batch(
+                "CREATE TABLE olm_sessions (peer_id TEXT PRIMARY KEY,
+                                            session_json TEXT NOT NULL,
+                                            updated_ts INTEGER NOT NULL DEFAULT 0);",
+            )
+            .unwrap();
+            c.execute("INSERT INTO olm_sessions VALUES ('bob::ios-1', ?1, 42)", params![pickle])
+                .unwrap();
+            // Битый pickle: session_id не вычислить — строка не должна ронять миграцию.
+            c.execute("INSERT INTO olm_sessions VALUES ('carol', 'не-pickle', 7)", []).unwrap();
+        }
+
+        let s = CoreStore::open(path_s.clone(), None).unwrap();
+        let migrated = s.olm_sessions_for("bob::ios-1".into()).unwrap();
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].session_id, expected, "session_id восстановлен из pickle");
+        assert_eq!(migrated[0].session_json, pickle);
+        assert_eq!(migrated[0].updated_ts, 42);
+        assert_eq!(s.olm_sessions_for("carol".into()).unwrap()[0].session_id, "legacy");
+
+        // Повторное открытие уже мигрированной базы ничего не ломает.
+        drop(s);
+        let s = CoreStore::open(path_s, None).unwrap();
+        assert_eq!(s.olm_sessions_for("bob::ios-1".into()).unwrap()[0].session_id, expected);
+        drop(s);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn olm_pin_tofu_semantics() {
         let s = store();
@@ -953,9 +1176,10 @@ mod tests {
         s.olm_pin_check("bob".into(), "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU".into(), None, 1).unwrap();
         s.olm_pin_check("bob::ios-1".into(), "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY".into(), None, 1).unwrap();
         s.olm_pin_check("bobby::ios-9".into(), "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc".into(), None, 1).unwrap();   // другой пир
-        s.olm_session_set("bob".into(), "s1".into()).unwrap();
-        s.olm_session_set("bob::ios-1".into(), "s2".into()).unwrap();
-        s.olm_session_set("bobby::ios-9".into(), "s3".into()).unwrap();
+        let untouched = real_session("s3");
+        s.olm_session_set("bob".into(), real_session("s1")).unwrap();
+        s.olm_session_set("bob::ios-1".into(), real_session("s2")).unwrap();
+        s.olm_session_set("bobby::ios-9".into(), untouched.clone()).unwrap();
         s.master_pin_check("bob".into(), "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg".into(), 1).unwrap();
 
         s.peer_trust_reset("Bob".into()).unwrap();
@@ -966,7 +1190,7 @@ mod tests {
         assert!(s.olm_session_get("bob::ios-1".into()).unwrap().is_none());
         // Похожий по префиксу пир не задет, мастер-пин остаётся (его принимают отдельно).
         assert!(s.olm_pin_get("bobby::ios-9".into()).unwrap().is_some());
-        assert_eq!(s.olm_session_get("bobby::ios-9".into()).unwrap().as_deref(), Some("s3"));
+        assert_eq!(s.olm_session_get("bobby::ios-9".into()).unwrap().as_deref(), Some(untouched.as_str()));
         assert!(s.master_pin_get("bob".into()).unwrap().is_some());
     }
 
@@ -977,13 +1201,14 @@ mod tests {
         let s = store();
         s.olm_pin_check("bob_1::ios".into(), "BQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQU".into(), None, 1).unwrap();
         s.olm_pin_check("bobx1::ios".into(), "BgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgYGBgY".into(), None, 1).unwrap();
-        s.olm_session_set("bobx1::ios".into(), "s2".into()).unwrap();
+        let untouched = real_session("s2");
+        s.olm_session_set("bobx1::ios".into(), untouched.clone()).unwrap();
 
         s.peer_trust_reset("bob_1".into()).unwrap();
 
         assert!(s.olm_pin_get("bob_1::ios".into()).unwrap().is_none());
         assert!(s.olm_pin_get("bobx1::ios".into()).unwrap().is_some(), "чужой пир не тронут");
-        assert_eq!(s.olm_session_get("bobx1::ios".into()).unwrap().as_deref(), Some("s2"));
+        assert_eq!(s.olm_session_get("bobx1::ios".into()).unwrap().as_deref(), Some(untouched.as_str()));
     }
 
     #[test]

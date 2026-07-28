@@ -24,6 +24,40 @@ export function account_ed25519(account_pickle) {
 }
 
 /**
+ * Fallback-ключ (P10 / SEC MED-3) — «последний рубеж», когда одноразовые ключи
+ * на сервере кончились. Переиспользуемый, поэтому forward secrecy у первой
+ * сессии слабее; подписан тем же каноном `AETHER-OTK-1`, что и обычные OTK.
+ * @param {string} account_pickle
+ * @param {string} user_id
+ * @param {string} device_id
+ * @returns {string}
+ */
+export function account_generate_fallback_signed(account_pickle, user_id, device_id) {
+    let deferred5_0;
+    let deferred5_1;
+    try {
+        const ptr0 = passStringToWasm0(account_pickle, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ptr1 = passStringToWasm0(user_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len1 = WASM_VECTOR_LEN;
+        const ptr2 = passStringToWasm0(device_id, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len2 = WASM_VECTOR_LEN;
+        const ret = wasm.account_generate_fallback_signed(ptr0, len0, ptr1, len1, ptr2, len2);
+        var ptr4 = ret[0];
+        var len4 = ret[1];
+        if (ret[3]) {
+            ptr4 = 0; len4 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred5_0 = ptr4;
+        deferred5_1 = len4;
+        return getStringFromWasm0(ptr4, len4);
+    } finally {
+        wasm.__wbindgen_free(deferred5_0, deferred5_1, 1);
+    }
+}
+
+/**
  * @param {string} account_pickle
  * @param {number} count
  * @returns {string}
@@ -272,6 +306,61 @@ export function master_public(account_secret_b64) {
         const ptr0 = passStringToWasm0(account_secret_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
         const len0 = WASM_VECTOR_LEN;
         const ret = wasm.master_public(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Идентификатор сессии, которую ЗАВЁЛ БЫ входящий prekey-конверт. Совпал с уже
+ * имеющейся — конверт принадлежит ей, новую заводить не надо (иначе каждый
+ * повторный prekey жёг бы одноразовый ключ).
+ * @param {string} body_b64
+ * @returns {string}
+ */
+export function prekey_session_id(body_b64) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(body_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.prekey_session_id(ptr0, len0);
+        var ptr2 = ret[0];
+        var len2 = ret[1];
+        if (ret[3]) {
+            ptr2 = 0; len2 = 0;
+            throw takeFromExternrefTable0(ret[2]);
+        }
+        deferred3_0 = ptr2;
+        deferred3_1 = len2;
+        return getStringFromWasm0(ptr2, len2);
+    } finally {
+        wasm.__wbindgen_free(deferred3_0, deferred3_1, 1);
+    }
+}
+
+/**
+ * Идентификатор сессии — ключ в локальном хранилище сессий (P10 / SEC MED-4).
+ * Совпадает у обеих сторон одной сессии.
+ * @param {string} session_pickle
+ * @returns {string}
+ */
+export function session_id(session_pickle) {
+    let deferred3_0;
+    let deferred3_1;
+    try {
+        const ptr0 = passStringToWasm0(session_pickle, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+        const len0 = WASM_VECTOR_LEN;
+        const ret = wasm.session_id(ptr0, len0);
         var ptr2 = ret[0];
         var len2 = ret[1];
         if (ret[3]) {

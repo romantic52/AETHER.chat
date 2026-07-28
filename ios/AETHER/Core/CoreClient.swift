@@ -52,6 +52,11 @@ actor CoreClient {
     // сборках симулятора ненадёжен, а потеря ключа = потеря локальной истории.
     private static let kDbKey = "db_encryption_key"
 
+    /// Как часто ротируем fallback-ключ (P10 / SEC MED-3). Он переиспользуемый,
+    /// поэтому чем дольше живёт, тем больше начал переписок вскрывается разом при
+    /// его компрометации; неделя — компромисс с расходом публикаций.
+    private static let fallbackRotateInterval: TimeInterval = 7 * 24 * 3600
+
     /// Сохранённый ключ БД, если он ДОСТУПЕН прямо сейчас. Ничего не генерирует:
     /// nil может означать и «первый запуск», и «Keychain ещё заперт» — решает вызывающий.
     private static func storedDbKey() -> String? {
@@ -399,11 +404,27 @@ actor CoreClient {
             // Версия флага бумпается при КАЖДОМ изменении формата публикации,
             // иначе устройства, пережившие предыдущую версию, останутся без неё.
             let alreadyPublished = ((try? store.metaGet(key: "olm_published_v2")) ?? nil) == "1"
-            guard count < 20 || !alreadyPublished else { return }
+            // Fallback-ключ (P10 / SEC MED-3) — «последний рубеж», когда одноразовые
+            // кончились. Он переиспользуемый, поэтому ротируем: чем дольше живёт
+            // один и тот же ключ, тем больше начал переписок вскрывается разом при
+            // его компрометации. Ядро держит две приватные части подряд, так что
+            // сообщения, отправленные на прежний, ещё какое-то время читаются.
+            let fallbackTs = Double(((try? store.metaGet(key: "olm_fallback_ts")) ?? nil) ?? "") ?? 0
+            let fallbackStale = Date().timeIntervalSince1970 - fallbackTs > Self.fallbackRotateInterval
+            guard count < 20 || !alreadyPublished || fallbackStale else { return }
             let published = try olmAccountGenerateOtksSigned(accountPickle: acct, count: 40,
                                                              userId: myId, deviceId: device)
             try store.metaSet(key: "olm_account", value: published.accountPickle)
             myOlmIdentity = published.identityKeyB64
+            // Fallback генерируем ПОСЛЕ одноразовых: он выводится из того же
+            // аккаунта, и порядок гарантирует, что публикуем актуальный pickle.
+            let fallback = fallbackStale
+                ? try? olmAccountGenerateFallbackSigned(accountPickle: published.accountPickle,
+                                                        userId: myId, deviceId: device)
+                : nil
+            if let fallback {
+                try store.metaSet(key: "olm_account", value: fallback.accountPickle)
+            }
             // Cross-signing (P8): устройство подписывается мастер-ключом аккаунта,
             // выведенным из приватного ключа — он есть на каждом устройстве после логина.
             let masterKey = try olmMasterPublic(accountSecretB64: myPrivateKey)
@@ -418,7 +439,16 @@ actor CoreClient {
                                            otkSignaturesJson: published.otkSignaturesJson,
                                            deviceId: device,
                                            masterKeyB64: masterKey,
-                                           deviceSigB64: deviceSig)
+                                           deviceSigB64: deviceSig,
+                                           fallbackKeyId: fallback?.keyId,
+                                           fallbackKeyB64: fallback?.keyB64,
+                                           fallbackSigB64: fallback?.sigB64)
+            // Метку ставим только после успешного upload: иначе сорвавшаяся
+            // публикация считалась бы состоявшейся и следующая попытка ушла бы
+            // на неделю вперёд — с fallback-ключом, которого сервер не видел.
+            if fallback != nil {
+                try store.metaSet(key: "olm_fallback_ts", value: String(Date().timeIntervalSince1970))
+            }
             deviceCache.removeAll()
             // Флаг ставим ТОЛЬКО когда сервер реально сохранил подписи: старая
             // версия сервера молча игнорирует незнакомые поля и отвечает 200 —
@@ -858,26 +888,45 @@ actor CoreClient {
             // доказывает подлинность, а блокировка потеряла бы переписку зря.
         }
 
-        // Есть сессия — пробуем ею. prekey (type 0) при живой сессии — обычное дело
-        // (пир ещё не увидел наш ответ), сессия его тоже расшифрует.
-        if let session = try? store.olmSessionGet(peerId: key) {
-            if let dec = try? olmDecrypt(sessionPickle: session, messageType: type, bodyB64: body) {
-                try store.olmSessionSet(peerId: key, sessionJson: dec.sessionPickle)
+        // Сессий с устройством может быть НЕСКОЛЬКО (SEC MED-4): когда обе стороны
+        // начали переписку одновременно, у каждой своя исходящая. Раньше входящий
+        // prekey затирал единственную строку, и всё, что собеседник уже зашифровал
+        // в затёртой сессии, становилось невскрываемым навсегда. Пробуем все.
+        let sessions = ((try? store.olmSessionsFor(peerId: key)) ?? [])
+        // prekey (type 0) при живой сессии — обычное дело: пир ещё не увидел наш
+        // ответ и продолжает слать prekey. Такой конверт принадлежит УЖЕ
+        // существующей сессии — узнаём её по session_id и пробуем первой.
+        let prekeySessionId = type == 0 ? try? olmPrekeySessionId(bodyB64: body) : nil
+        var ordered = sessions
+        if let sid = prekeySessionId, let i = ordered.firstIndex(where: { $0.sessionId == sid }) {
+            ordered.insert(ordered.remove(at: i), at: 0)
+        }
+        for session in ordered {
+            if let dec = try? olmDecrypt(sessionPickle: session.sessionJson,
+                                         messageType: type, bodyB64: body) {
+                try store.olmSessionPut(peerId: key, sessionId: session.sessionId,
+                                        sessionJson: dec.sessionPickle)
                 return Opened(senderPubB64: senderIdentity, plaintext: dec.plaintext, isGroup: false)
             }
-            // Не расшифровалось существующей сессией: только prekey может завести новую.
-            if type != 0 {
-                throw CoreError.Crypto(msg: "ratchet: normal-сообщение не расшифровалось сессией")
-            }
         }
-        // Нет сессии (или расхождение) + prekey → установить входящую (расходует OTK).
+        // Ни одна не подошла. Завести новую может только prekey.
         guard type == 0 else {
-            throw CoreError.Crypto(msg: "ratchet: нет сессии для normal-сообщения")
+            throw CoreError.Crypto(msg: sessions.isEmpty
+                ? "ratchet: нет сессии для normal-сообщения"
+                : "ratchet: normal-сообщение не расшифровалось ни одной сессией")
+        }
+        // Prekey ЗНАКОМОЙ сессии, который она не расшифровала — это дубль доставки
+        // или битый конверт, а не новая сессия. Заводить её нельзя: create_inbound
+        // впустую спалил бы одноразовый ключ (а при их дефиците — и fallback).
+        if let sid = prekeySessionId, sessions.contains(where: { $0.sessionId == sid }) {
+            throw CoreError.Crypto(msg: "ratchet: prekey уже известной сессии не расшифровался")
         }
         let inb = try olmCreateInbound(accountPickle: olmAccount(),
                                        theirIdentityB64: senderIdentity, bodyB64: body)
         try store.metaSet(key: "olm_account", value: inb.accountPickle)   // OTK списан
-        try store.olmSessionSet(peerId: key, sessionJson: inb.sessionPickle)
+        try store.olmSessionPut(peerId: key,
+                                sessionId: try olmSessionId(sessionPickle: inb.sessionPickle),
+                                sessionJson: inb.sessionPickle)
         ensureOlmKeys()   // пополнить OTK на сервере
         return Opened(senderPubB64: senderIdentity, plaintext: inb.plaintext, isGroup: false)
     }

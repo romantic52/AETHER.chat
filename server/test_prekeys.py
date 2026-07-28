@@ -63,11 +63,17 @@ def register(prefix):
     return user, data["token"]
 
 
-def signed_bundle(user, device, *, master: SigningKey = None, otk_count=2):
+def signed_bundle(user, device, *, master: SigningKey = None, otk_count=2, fallback=False):
     """Собрать тело /keys/upload по канонам ядра."""
     device_key = SigningKey.generate()
     ed_b64 = b64(bytes(device_key.verify_key))
     identity_b64 = b64(secrets.token_bytes(32))
+
+    def otk_sig(key_id, key_b64):
+        return b64(device_key.sign(
+            f"AETHER-OTK-1|{user.lower()}|{device}|{identity_b64}|{key_id}|{key_b64}"
+            .encode()).signature)
+
     body = {
         "identity_key_b64": identity_b64,
         "ed25519_key_b64": ed_b64,
@@ -81,9 +87,12 @@ def signed_bundle(user, device, *, master: SigningKey = None, otk_count=2):
         key_id = secrets.token_hex(4)
         key_b64 = b64(secrets.token_bytes(32))
         body["one_time_keys"][key_id] = key_b64
-        body["otk_signatures"][key_id] = b64(device_key.sign(
-            f"AETHER-OTK-1|{user.lower()}|{device}|{identity_b64}|{key_id}|{key_b64}"
-            .encode()).signature)
+        body["otk_signatures"][key_id] = otk_sig(key_id, key_b64)
+    if fallback:
+        # Fallback подписан тем же каноном AETHER-OTK-1, что и одноразовые.
+        key_id, key_b64 = secrets.token_hex(4), b64(secrets.token_bytes(32))
+        body["fallback_key"] = {"key_id": key_id, "key_b64": key_b64,
+                                "sig_b64": otk_sig(key_id, key_b64)}
     if master is not None:
         body["master_key_b64"] = b64(bytes(master.verify_key))
         body["device_sig_b64"] = b64(master.sign(
@@ -196,6 +205,70 @@ def main():
     entry = next((d for d in devices["devices"] if d["device_id"] == device), None)
     assert entry and entry.get("master_key_b64") == bundle["master_key_b64"], "devices без мастера"
     print("директория устройств: мастер-поля на месте")
+
+    # 8. Fallback-ключ (P10 / SEC MED-3): выдаётся, когда одноразовые кончились.
+    fb_device = "fb-" + secrets.token_hex(3)
+    fb_body = signed_bundle(bob, fb_device, master=master, otk_count=1, fallback=True)
+    status, data = call("PUT", "/keys/upload", bob_token, fb_body)
+    assert status == 200, f"upload с fallback: {status} {data}"
+    published_fb = fb_body["fallback_key"]
+
+    # Битая подпись fallback и fallback без подписанного бандла — отвергаются.
+    bad = signed_bundle(bob, "fb-bad-" + secrets.token_hex(3), master=master, fallback=True)
+    bad["fallback_key"]["sig_b64"] = b64(secrets.token_bytes(64))
+    status, _ = call("PUT", "/keys/upload", bob_token, bad)
+    assert status == 400, f"битая подпись fallback принята: {status}"
+    status, _ = call("PUT", "/keys/upload", bob_token, {
+        "identity_key_b64": b64(secrets.token_bytes(32)),
+        "one_time_keys": {},
+        "device_id": "fb-unsigned-" + secrets.token_hex(3),
+        "fallback_key": {"key_id": secrets.token_hex(4), "key_b64": b64(secrets.token_bytes(32))},
+    })
+    assert status == 400, f"неподписанный fallback принят: {status}"
+    print("fallback: битая подпись и публикация без подписанного бандла отвергнуты")
+
+    # Первый claim забирает единственный одноразовый, второй — уже fallback,
+    # и он же приходит повторно (переиспользуемый — в этом весь смысл).
+    status, first = call("POST", f"/keys/claim/{bob}?device_id={fb_device}", alice_token)
+    assert status == 200, f"claim одноразового: {status}"
+    assert first.get("fallback") is False, "первый claim не должен быть fallback"
+    assert first["one_time_key"]["key_b64"] in fb_body["one_time_keys"].values()
+    for attempt in (1, 2):
+        status, later = call("POST", f"/keys/claim/{bob}?device_id={fb_device}", alice_token)
+        assert status == 200, f"claim #{attempt} после исчерпания OTK: {status} {later}"
+        assert later.get("fallback") is True, f"claim #{attempt}: ожидался fallback"
+        assert later["one_time_key"]["key_b64"] == published_fb["key_b64"], "чужой fallback"
+        assert later["one_time_key"]["sig_b64"] == published_fb["sig_b64"], "fallback без подписи"
+    print("fallback: выдаётся при исчерпании одноразовых и переиспользуется")
+
+    # 9. Квота (SEC MED-3): один отправитель не может выжечь чужой запас OTK.
+    quota_device = "q-" + secrets.token_hex(3)
+    quota_body = signed_bundle(bob, quota_device, master=master, otk_count=20, fallback=True)
+    status, _ = call("PUT", "/keys/upload", bob_token, quota_body)
+    assert status == 200, f"upload для теста квоты: {status}"
+    status, before = call("GET", f"/keys/count?device_id={quota_device}", bob_token)
+    assert status == 200 and before["count"] == 20, f"ожидалось 20 OTK: {before}"
+
+    switched_at = None
+    for i in range(1, 13):
+        status, data = call("POST", f"/keys/claim/{bob}?device_id={quota_device}", alice_token)
+        assert status == 200, f"claim {i}: {status} {data}"
+        if data.get("fallback"):
+            switched_at = switched_at or i
+            assert data["one_time_key"]["key_b64"] == quota_body["fallback_key"]["key_b64"]
+    assert switched_at, "квота не сработала: OTK расходуются без ограничения"
+    status, after = call("GET", f"/keys/count?device_id={quota_device}", bob_token)
+    spent = before["count"] - after["count"]
+    assert spent == switched_at - 1, f"после перехода на fallback OTK ещё тратились: {spent}"
+    assert after["count"] > 0, "запас одноразовых выжжен одним отправителем"
+    print(f"квота claim: одноразовые кончились для отправителя на {switched_at}-м, "
+          f"израсходовано {spent} из {before['count']} — остальные целы")
+
+    # Квота — на пару (отправитель, устройство): другой отправитель не наказан.
+    status, other = call("POST", f"/keys/claim/{bob}?device_id={quota_device}", bob_token)
+    assert status == 200, f"claim другим отправителем: {status}"
+    assert other.get("fallback") is False, "чужая квота задела другого отправителя"
+    print("квота claim: считается по паре (отправитель, устройство)")
 
     print("\nВСЁ ЗЕЛЁНОЕ")
 

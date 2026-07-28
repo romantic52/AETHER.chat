@@ -49,6 +49,21 @@ pub fn account_generate_otks_signed(
     )
 }
 
+/// Fallback-ключ (P10 / SEC MED-3) — «последний рубеж», когда одноразовые ключи
+/// на сервере кончились. Переиспользуемый, поэтому forward secrecy у первой
+/// сессии слабее; подписан тем же каноном `AETHER-OTK-1`, что и обычные OTK.
+#[wasm_bindgen]
+pub fn account_generate_fallback_signed(
+    account_pickle: &str,
+    user_id: &str,
+    device_id: &str,
+) -> Result<String, JsValue> {
+    json(
+        &aether_ratchet_core::account_generate_fallback_signed(account_pickle, user_id, device_id)
+            .map_err(js_err)?,
+    )
+}
+
 #[wasm_bindgen]
 pub fn verify_identity(
     user_id: &str,
@@ -147,6 +162,21 @@ pub fn create_outbound(
         their_one_time_key_b64,
     )
     .map_err(js_err)
+}
+
+/// Идентификатор сессии — ключ в локальном хранилище сессий (P10 / SEC MED-4).
+/// Совпадает у обеих сторон одной сессии.
+#[wasm_bindgen]
+pub fn session_id(session_pickle: &str) -> Result<String, JsValue> {
+    aether_ratchet_core::session_id(session_pickle).map_err(js_err)
+}
+
+/// Идентификатор сессии, которую ЗАВЁЛ БЫ входящий prekey-конверт. Совпал с уже
+/// имеющейся — конверт принадлежит ей, новую заводить не надо (иначе каждый
+/// повторный prekey жёг бы одноразовый ключ).
+#[wasm_bindgen]
+pub fn prekey_session_id(body_b64: &str) -> Result<String, JsValue> {
+    aether_ratchet_core::prekey_session_id(body_b64).map_err(js_err)
 }
 
 #[wasm_bindgen]

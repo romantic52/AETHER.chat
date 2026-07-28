@@ -63,6 +63,7 @@ fn parse_bundle(v: &serde_json::Value) -> PrekeyBundle {
         one_time_key_sig_b64: opt_str(&v["one_time_key"], "sig_b64"),
         master_key_b64: opt_str(v, "master_key_b64"),
         device_sig_b64: opt_str(v, "device_sig_b64"),
+        fallback: v["fallback"].as_bool().unwrap_or(false),
     }
 }
 
@@ -77,6 +78,10 @@ pub struct PrekeyBundle {
     pub ed25519_key_b64: Option<String>,
     pub identity_sig_b64: Option<String>,
     pub one_time_key_sig_b64: Option<String>,
+    /// P10 / SEC MED-3: выдан fallback-ключ, а не одноразовый — у пира кончились
+    /// OTK (или мы исчерпали свою квоту на его устройство). Ключ переиспользуемый,
+    /// поэтому forward secrecy у первой сессии слабее; подписи проверяются так же.
+    pub fallback: bool,
     /// Cross-signing (P8): мастер-ключ аккаунта пира и подпись им этого устройства.
     pub master_key_b64: Option<String>,
     pub device_sig_b64: Option<String>,
@@ -450,6 +455,8 @@ impl ApiClient {
 
     /// Публикация подписанного бандла (SEC HIGH-2): ed25519 + подпись identity +
     /// per-OTK подписи (JSON {key_id: sig_b64}, ключи совпадают с one_time_keys_json).
+    /// `fallback_*` (P10) — необязательный «последний рубеж» на случай исчерпания
+    /// одноразовых; подписан тем же каноном, что и OTK.
     #[allow(clippy::too_many_arguments)]
     pub fn upload_keys_device_signed(
         &self,
@@ -461,10 +468,13 @@ impl ApiClient {
         device_id: String,
         master_key_b64: String,
         device_sig_b64: String,
+        fallback_key_id: Option<String>,
+        fallback_key_b64: Option<String>,
+        fallback_sig_b64: Option<String>,
     ) -> Result<(), CoreError> {
         let otks: serde_json::Value = serde_json::from_str(&one_time_keys_json).map_err(CoreError::bad)?;
         let sigs: serde_json::Value = serde_json::from_str(&otk_signatures_json).map_err(CoreError::bad)?;
-        self.put("/keys/upload", serde_json::json!({
+        let mut body = serde_json::json!({
             "identity_key_b64": identity_key_b64,
             "ed25519_key_b64": ed25519_key_b64,
             "identity_sig_b64": identity_sig_b64,
@@ -473,8 +483,15 @@ impl ApiClient {
             "device_id": device_id,
             "master_key_b64": master_key_b64,
             "device_sig_b64": device_sig_b64,
-        }))
-        .map(|_| ())
+        });
+        // Все три поля или ни одного: сервер отвергает fallback без подписи, а
+        // частично заполненный бандл уронил бы публикацию ключей целиком.
+        if let (Some(id), Some(key), Some(sig)) = (fallback_key_id, fallback_key_b64, fallback_sig_b64) {
+            body["fallback_key"] = serde_json::json!({
+                "key_id": id, "key_b64": key, "sig_b64": sig,
+            });
+        }
+        self.put("/keys/upload", body).map(|_| ())
     }
 
     pub fn keys_count_device(&self, device_id: String) -> Result<u32, CoreError> {
