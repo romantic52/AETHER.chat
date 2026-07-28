@@ -23,6 +23,14 @@ struct KeyVerificationView: View {
     @State private var myMaster = ""
     /// Непринятый мастер пира: во время тревоги сверяем ЕГО, а не старый.
     @State private var pendingMaster: String?
+    // QR-сверка: точнее чтения вслух — ошибиться при сравнении нечем.
+    // Картинку держим готовой: генерация тянет CIContext, а body пересчитывается часто.
+    @State private var myQrImage: UIImage?
+    @State private var showScanner = false
+    @State private var scanResult: ScanOutcome?
+    /// Отсканированное значение обрабатываем ПОСЛЕ закрытия листа: алерт,
+    /// поднятый одновременно с его дисмиссом, SwiftUI проглатывает.
+    @State private var pendingScan: String?
 
     // 64 «словарных» эмодзи — легко назвать вслух по телефону.
     private static let emojiTable: [String] = [
@@ -100,6 +108,12 @@ struct KeyVerificationView: View {
                             .font(.system(size: 15, weight: .medium, design: .monospaced))
                             .foregroundStyle(palette.textSecondary)
                             .padding(.horizontal, 24)
+
+                        // QR доступен только для мастер-канона: сверять им box-ключ
+                        // бессмысленно — он не аутентифицирует Double Ratchet.
+                        if usingMaster, let myQrImage {
+                            qrBlock(myQrImage)
+                        }
                     } else if loading {
                         ProgressView().tint(palette.accent).padding(.vertical, 40)
                     } else {
@@ -180,7 +194,91 @@ struct KeyVerificationView: View {
         } message: {
             Text("Кто-то может подменять ключи (MITM) — не отправляй чувствительное. Сверься с собеседником по другому каналу и попроси его перелогиниться, затем проверь снова.")
         }
+        .sheet(isPresented: $showScanner, onDismiss: {
+            guard let scanned = pendingScan else { return }
+            pendingScan = nil
+            Task { await handleScan(scanned) }
+        }) {
+            QRScannerSheet(peerName: peerName) { pendingScan = $0 }
+        }
+        .alert(scanResult?.title ?? "", isPresented: showingScanResult, presenting: scanResult) { _ in
+            Button("Понятно", role: .cancel) {}
+        } message: { outcome in
+            Text(outcome.message)
+        }
         .task { await reload() }
+    }
+
+    /// Итог сканирования — для алерта.
+    private struct ScanOutcome: Identifiable {
+        let id = UUID()
+        let title: String
+        let message: String
+    }
+
+    @ViewBuilder
+    private func qrBlock(_ image: UIImage) -> some View {
+        VStack(spacing: 12) {
+            Image(uiImage: image)
+                // Без интерполяции: сглаживание размывает модули, и код
+                // перестаёт считываться с чужого экрана.
+                .interpolation(.none)
+                .resizable()
+                .scaledToFit()
+                .frame(width: 190, height: 190)
+                .padding(12)
+                // Белая подложка всегда, независимо от темы — иначе в тёмной
+                // теме прозрачный фон метки сливается с модулями.
+                .background(.white, in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            Text("Покажите код собеседнику или отсканируйте его — это надёжнее, чем сверять эмодзи вслух.")
+                .font(.footnote)
+                .foregroundStyle(palette.textSecondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 30)
+
+            Button { showScanner = true } label: {
+                Label("Сканировать код", systemImage: "qrcode.viewfinder")
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(palette.accent)
+            }
+            .buttonStyle(.squish)
+        }
+        .padding(.top, 6)
+    }
+
+    private var showingScanResult: Binding<Bool> {
+        Binding(get: { scanResult != nil }, set: { if !$0 { scanResult = nil } })
+    }
+
+    private func handleScan(_ scanned: String) async {
+        do {
+            switch try await session.core.verifyByQr(peerId: peerId, scanned: scanned) {
+            case .verified:
+                await reload()
+                UINotificationFeedbackGenerator().notificationOccurred(.success)
+                scanResult = ScanOutcome(
+                    title: "Ключ подтверждён",
+                    message: "Код совпал с ключом \(peerName) — шифрование точно между вами.")
+            case .mismatch:
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                scanResult = ScanOutcome(
+                    title: "Ключи не совпадают",
+                    message: "Код не сходится с тем ключом \(peerName), который знает приложение. Кто-то может подменять ключи — не отправляйте чувствительное и свяжитесь с собеседником по другому каналу.")
+            case .wrongPeer(let scanned):
+                scanResult = ScanOutcome(
+                    title: "Код другого аккаунта",
+                    message: "Это код @\(scanned), а сверяется чат с \(peerName).")
+            case .noPin:
+                scanResult = ScanOutcome(
+                    title: "Ключ ещё не получен",
+                    message: "Приложение пока не видело ключ \(peerName). Напишите сообщение и вернитесь — подтвердить можно только тот ключ, который пришёл по защищённому каналу, а не с чужого экрана.")
+            }
+        } catch {
+            scanResult = ScanOutcome(
+                title: "Не удалось прочитать код",
+                message: "Это не код сверки Æther или он повреждён.")
+        }
     }
 
     private func reload() async {
@@ -190,6 +288,7 @@ struct KeyVerificationView: View {
         masterPin = await session.core.masterPin(peerId)
         pendingMaster = await session.core.pendingMasterKey(for: peerId)
         myMaster = await session.core.myMasterKeyB64() ?? ""
+        myQrImage = await session.core.myVerifyQr().flatMap { QRCode.image(from: $0) }
         loading = false
     }
 

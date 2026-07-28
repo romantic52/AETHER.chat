@@ -342,6 +342,81 @@ fn device_canon(user_id: &str, device_id: &str, curve_b64: &str, ed_b64: &str) -
     )
 }
 
+/// Префикс QR-сверки. Версия «2» — та же, что у отпечатка `AetherSafety#2`:
+/// сверяется МАСТЕР-ключ аккаунта, которым подписаны все устройства пира.
+/// Версия‑1 (box-ключи) в QR не поддерживается намеренно: она не аутентифицирует
+/// Double Ratchet, а QR — это как раз тот канал, где хочется сильную гарантию.
+const VERIFY_QR_PREFIX: &str = "aether:verify?v=2";
+
+/// Разобранная QR-метка сверки.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VerifyQr {
+    pub user_id: String,
+    pub master_key_b64: String,
+}
+
+/// Проверить, что мастер-ключ — валидная 32-байтная точка ed25519, пригодная как
+/// корень доверия. Те же требования, что в `verify_device`: иначе QR мог бы
+/// «подтвердить» ключ, который проверка подписи устройства потом отвергнет.
+fn checked_master(master_key_b64: &str) -> Result<()> {
+    let bytes: [u8; 32] = decode_b64(master_key_b64)?
+        .try_into()
+        .map_err(|_| err("мастер-ключ: ожидалось 32 байта"))?;
+    let key = ed25519_dalek::VerifyingKey::from_bytes(&bytes).map_err(err)?;
+    if key.is_weak() {
+        return Err(err("мастер-ключ малого порядка — недопустим как корень доверия"));
+    }
+    Ok(())
+}
+
+/// Юзернеймы ограничены сервером до `[A-Za-z0-9_]`, поэтому в QR они уезжают
+/// как есть — без percent-кодирования. Проверяем это здесь: символ `&` или `=`
+/// в имени позволил бы подсунуть лишний параметр и сбить разбор.
+fn checked_user_id(user_id: &str) -> Result<String> {
+    let id = user_id.trim().to_lowercase();
+    if id.is_empty() || id.len() > 64 || !id.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err(err("недопустимый идентификатор пользователя в QR"));
+    }
+    Ok(id)
+}
+
+/// Собрать содержимое QR-метки для сверки ключей.
+pub fn verify_qr_build(user_id: &str, master_key_b64: &str) -> Result<String> {
+    checked_master(master_key_b64)?;
+    Ok(format!(
+        "{VERIFY_QR_PREFIX}&u={}&m={}",
+        checked_user_id(user_id)?,
+        master_key_b64
+    ))
+}
+
+/// Разобрать отсканированную QR-метку. Строгий разбор: чужие QR-коды (ссылки,
+/// визитки, метки другой версии) должны отваливаться, а не толковаться вольно.
+pub fn verify_qr_parse(text: &str) -> Result<VerifyQr> {
+    let rest = text
+        .trim()
+        .strip_prefix(VERIFY_QR_PREFIX)
+        .ok_or_else(|| err("это не QR-код сверки Æther"))?;
+    let (mut user_id, mut master_key_b64) = (None, None);
+    for part in rest.split('&').filter(|p| !p.is_empty()) {
+        let (name, value) = part.split_once('=').ok_or_else(|| err("испорченный QR-код"))?;
+        match name {
+            // Повтор параметра отвергаем: иначе два `m=` дали бы разным
+            // реализациям разный ответ, а сверка ключей — не то место для этого.
+            "u" if user_id.is_none() => user_id = Some(checked_user_id(value)?),
+            "m" if master_key_b64.is_none() => {
+                checked_master(value)?;
+                master_key_b64 = Some(value.to_owned());
+            }
+            _ => return Err(err("испорченный QR-код")),
+        }
+    }
+    Ok(VerifyQr {
+        user_id: user_id.ok_or_else(|| err("в QR-коде нет пользователя"))?,
+        master_key_b64: master_key_b64.ok_or_else(|| err("в QR-коде нет мастер-ключа"))?,
+    })
+}
+
 /// Публичный мастер-ключ аккаунта (его пинят собеседники).
 pub fn master_public(account_secret_b64: &str) -> Result<String> {
     let key = master_signing_key(account_secret_b64)?;
@@ -588,6 +663,47 @@ mod tests {
         assert_eq!(inbound.plaintext, "проверка");
     }
 
+    /// QR-сверка: метка собирается из мастер-ключа и разбирается обратно, а чужие
+    /// и подпорченные коды отвергаются. Разбор строгий намеренно — это канал, по
+    /// которому пользователь ПОДТВЕРЖДАЕТ корень доверия.
+    #[test]
+    fn verify_qr_roundtrip_and_strict_parsing() {
+        let secret = URL_SAFE_NO_PAD.encode([7u8; 32]);
+        let master = master_public(&secret).unwrap();
+        let qr = verify_qr_build("Bob", &master).unwrap();
+        assert!(qr.starts_with("aether:verify?v=2"));
+
+        let parsed = verify_qr_parse(&qr).unwrap();
+        assert_eq!(parsed.user_id, "bob", "имя нормализовано в нижний регистр");
+        assert_eq!(parsed.master_key_b64, master);
+        // Пробелы по краям (сканеры их иногда добавляют) не мешают.
+        assert_eq!(verify_qr_parse(&format!("  {qr}  ")).unwrap().master_key_b64, master);
+
+        // Чужие QR и другая версия канона.
+        for bad in ["https://example.com", "aether:verify?v=1&u=bob", "", "aether:verify"] {
+            assert!(verify_qr_parse(bad).is_err(), "принят чужой QR: {bad:?}");
+        }
+        // Мусор в параметрах, лишние и повторяющиеся поля.
+        for bad in [
+            format!("aether:verify?v=2&u=bob&m={master}&x=1"),
+            format!("aether:verify?v=2&u=bob&m={master}&m={master}"),
+            format!("aether:verify?v=2&m={master}"),
+            "aether:verify?v=2&u=bob".to_owned(),
+            format!("aether:verify?v=2&u=bo b&m={master}"),
+            "aether:verify?v=2&u=bob&m=не-ключ".to_owned(),
+        ] {
+            assert!(verify_qr_parse(&bad).is_err(), "принят испорченный QR: {bad:?}");
+        }
+
+        // Мастер малого порядка не должен ни собираться в QR, ни разбираться:
+        // для таких ключей подпись куётся без знания секрета.
+        let weak = URL_SAFE_NO_PAD.encode([0u8; 32]);
+        assert!(verify_qr_build("bob", &weak).is_err());
+        assert!(verify_qr_parse(&format!("aether:verify?v=2&u=bob&m={weak}")).is_err());
+        // Имя с разделителем не должно проскакивать в метку.
+        assert!(verify_qr_build("bo&b", &master).is_err());
+    }
+
     /// SEC MED-3: fallback-ключ подписан тем же каноном, что OTK, и годен для X3DH
     /// повторно — именно этим он и спасает переписку при исчерпании одноразовых.
     #[test]
@@ -742,3 +858,4 @@ mod tests {
         );
     }
 }
+

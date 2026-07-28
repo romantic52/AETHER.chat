@@ -585,6 +585,44 @@ actor CoreClient {
         return try? olmMasterPublic(accountSecretB64: myPrivateKey)
     }
 
+    /// Содержимое МОЕЙ QR-метки для сверки (канон ядра `aether:verify?v=2`).
+    /// nil, если мастер-ключа ещё нет — показывать нечего.
+    func myVerifyQr() -> String? {
+        guard let master = myMasterKeyB64(), !myId.isEmpty else { return nil }
+        return try? olmVerifyQrBuild(userId: myId, masterKeyB64: master)
+    }
+
+    /// Итог сканирования чужой QR-метки.
+    enum QrVerifyResult {
+        /// Ключ совпал с запиненным — пин помечен подтверждённым.
+        case verified
+        /// Отсканирован QR другого аккаунта (id не совпал с открытым чатом).
+        case wrongPeer(scanned: String)
+        /// Ключ НЕ совпал с тем, что мы знаем о пире, — возможен MITM.
+        case mismatch
+        /// Пира мы ещё не знаем: пинить с бумажки нельзя (см. ниже).
+        case noPin
+    }
+
+    /// Сверить отсканированную метку с запиненным мастер-ключом пира.
+    ///
+    /// QR только ПОДТВЕРЖДАЕТ уже известный ключ, но никогда не заводит новый пин:
+    /// иначе сканирование стало бы способом принять ключ, который ядро ни разу не
+    /// видело в подписанном бандле, — а это ровно та подмена, от которой сверка и
+    /// защищает. При тревоге сверяем непринятый мастер: подтверждаем именно тот
+    /// ключ, который пользователю предлагается принять.
+    func verifyByQr(peerId: String, scanned: String) throws -> QrVerifyResult {
+        let parsed = try olmVerifyQrParse(text: scanned)
+        let peer = peerId.lowercased()
+        guard parsed.userId == peer else { return .wrongPeer(scanned: parsed.userId) }
+        guard let known = pendingMasterKey(for: peer) ?? masterPin(peer)?.masterKeyB64 else {
+            return .noPin
+        }
+        guard known == parsed.masterKeyB64 else { return .mismatch }
+        try setMasterVerified(peer, true)
+        return .verified
+    }
+
     /// Запиненный мастер-ключ пира и статус его ручной сверки.
     func masterPin(_ peerId: String) -> MasterPin? {
         (try? store.masterPinGet(peerId: peerId.lowercased())) ?? nil
