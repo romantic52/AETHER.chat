@@ -138,6 +138,26 @@ pub fn olm_prekey_session_id(body_b64: String) -> Result<String, CoreError> {
     aether_ratchet_core::prekey_session_id(&body_b64).map_err(err)
 }
 
+/// Разобранная QR-метка сверки ключей.
+#[derive(uniffi::Record)]
+pub struct OlmVerifyQr {
+    pub user_id: String,
+    pub master_key_b64: String,
+}
+
+/// Содержимое QR-метки для сверки мастер-ключа (канон `aether:verify?v=2`).
+#[uniffi::export]
+pub fn olm_verify_qr_build(user_id: String, master_key_b64: String) -> Result<String, CoreError> {
+    aether_ratchet_core::verify_qr_build(&user_id, &master_key_b64).map_err(err)
+}
+
+/// Разобрать отсканированную метку. Ошибка = это не наш QR либо он испорчен.
+#[uniffi::export]
+pub fn olm_verify_qr_parse(text: String) -> Result<OlmVerifyQr, CoreError> {
+    let parsed = aether_ratchet_core::verify_qr_parse(&text).map_err(err)?;
+    Ok(OlmVerifyQr { user_id: parsed.user_id, master_key_b64: parsed.master_key_b64 })
+}
+
 #[uniffi::export]
 pub fn olm_verify_identity(
     user_id: String,
