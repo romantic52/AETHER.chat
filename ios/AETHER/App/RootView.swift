@@ -7,6 +7,20 @@ struct RootView: View {
     @StateObject private var lock = AppLock.shared
 
     var body: some View {
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["AETHER_BARNATIVE"] == "1" {
+            NativeBarReference()
+        } else if ProcessInfo.processInfo.environment["AETHER_BARONLY"] == "1" {
+            BarOnlyHarness()
+        } else {
+            main
+        }
+        #else
+        main
+        #endif
+    }
+
+    private var main: some View {
         ZStack {
             palette.background.ignoresSafeArea()
 
@@ -46,3 +60,68 @@ struct RootView: View {
         }
     }
 }
+
+#if DEBUG
+// ВРЕМЕННЫЙ СТЕНД — УДАЛИТЬ. Рисует только док поверх фона темы, минуя сессию и
+// экран входа: нужен, чтобы снять скриншот бара и сравнить с системным.
+// Запуск: SIMCTL_CHILD_AETHER_BARONLY=1 xcrun simctl launch <udid> com.rmkhc.aether
+// ВРЕМЕННЫЙ ЭТАЛОН — УДАЛИТЬ вместе со стендом. Системный TabView с теми же
+// четырьмя вкладками: переключаем выбор программно и снимаем видео, чтобы
+// получить эталонные тайминги и деформацию подложки. Тапать в симуляторе нечем,
+// а Photos программно не переключишь — поэтому эталон строим сами.
+private struct NativeBarReference: View {
+    @State private var sel = 0
+    private let titles = ["Контакты", "Звонки", "Чаты", "Настройки"]
+    private let icons = ["person.crop.circle", "phone.fill",
+                         "bubble.left.and.bubble.right.fill", "gearshape.fill"]
+
+    var body: some View {
+        TabView(selection: $sel) {
+            ForEach(0..<4, id: \.self) { i in
+                Color.black.ignoresSafeArea()
+                    .tabItem { Label(titles[i], systemImage: icons[i]) }
+                    .tag(i)
+            }
+        }
+        .task {
+            guard ProcessInfo.processInfo.environment["AETHER_BARCYCLE"] == "1" else { return }
+            var i = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                i += 1
+                sel = i % 4
+            }
+        }
+    }
+}
+
+private struct BarOnlyHarness: View {
+    @Environment(\.palette) private var palette
+    @StateObject private var chrome = ChromeState()
+
+    var body: some View {
+        ZStack(alignment: .bottom) {
+            palette.background.ignoresSafeArea()
+            TabBar(tab: $chrome.tab, unread: 3)
+        }
+        // Как в HomeView — иначе бар встаёт над safe area и замеры отступа врут.
+        .ignoresSafeArea(edges: .bottom)
+        .environmentObject(chrome)
+        // AETHER_BARCYCLE=1 — гоняет вкладки по кругу той же анимацией, что и тап.
+        // Нужно, чтобы снять переход серией скриншотов и увидеть, сливаются ли
+        // стёкла бара и подложки в движении: тапать в симуляторе нечем.
+        .task {
+            guard ProcessInfo.processInfo.environment["AETHER_BARCYCLE"] == "1" else { return }
+            let order: [AppTab] = [.contacts, .calls, .chats, .settings]
+            var i = 0
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 700_000_000)
+                i += 1
+                withAnimation(.snappy(duration: 0.25, extraBounce: 0.02)) {
+                    chrome.tab = order[i % order.count]
+                }
+            }
+        }
+    }
+}
+#endif

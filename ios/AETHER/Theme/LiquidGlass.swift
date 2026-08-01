@@ -11,6 +11,11 @@ struct LiquidGlass<S: Shape>: ViewModifier {
     /// false — при выключенном стекле НЕ рисовать surface-подложку (контент как есть):
     /// для элементов со своей заливкой (индикатор таб-бара), где подложка — «серое пятно».
     var surfaceWhenOff: Bool = true
+    /// Идентификатор стекла внутри GlassEffectContainer. Без него контейнер не знает,
+    /// что бар и едущий по нему индикатор — связанные формы, и рендерит два
+    /// независимых прохода блюра: стёкла не сливаются, картинка мутная.
+    var glassID: String? = nil
+    var namespace: Namespace.ID? = nil
     @EnvironmentObject var appearance: AppearanceSettings
     @Environment(\.palette) private var palette
 
@@ -24,16 +29,7 @@ struct LiquidGlass<S: Shape>: ViewModifier {
         } else {
             #if compiler(>=6.0)
             if #available(iOS 26.0, *) {
-                let base: Glass = appearance.glassStyle == .clear ? .clear : .regular
-                let tintColor = tintOverride ?? (appearance.glassTint > 0 ? palette.accent.opacity(appearance.glassTint) : nil)
-                let tinted = tintColor != nil ? base.tint(tintColor!) : base
-                content
-                    .glassEffect(
-                        interactive && appearance.glassInteractive ? tinted.interactive() : tinted,
-                        in: shape
-                    )
-                    .clipShape(shape)
-                    .overlay(shape.stroke(Color.white.opacity(0.14), lineWidth: 0.6))
+                native(content)
             } else {
                 fallback(content)
             }
@@ -43,24 +39,49 @@ struct LiquidGlass<S: Shape>: ViewModifier {
         }
     }
 
+    // Нативное стекло iOS 26+. Ни clipShape, ни ручной обводки: форму задаёт
+    // `in: shape`, а блик по краю Liquid Glass рисует сам и реагирует на контент
+    // под собой — статичная белая линия поверх его забивала.
+    @available(iOS 26.0, *)
+    @ViewBuilder
+    private func native(_ content: Content) -> some View {
+        let base: Glass = appearance.glassStyle == .clear ? .clear : .regular
+        let tintColor = tintOverride ?? (appearance.glassTint > 0 ? palette.accent.opacity(appearance.glassTint) : nil)
+        let tinted = tintColor != nil ? base.tint(tintColor!) : base
+        let glassed = content.glassEffect(
+            interactive && appearance.glassInteractive ? tinted.interactive() : tinted,
+            in: shape
+        )
+        if let glassID, let namespace {
+            glassed.glassEffectID(glassID, in: namespace)
+        } else {
+            glassed
+        }
+    }
+
     private func fallback(_ content: Content) -> some View {
+        // Тинт кладём ПОД контент вместе с материалом. Раньше он шёл .overlay,
+        // то есть поверх иконок и подписей — при ненулевом glassTint вкладки
+        // затягивало цветной плёнкой.
         content
-            .background(
-                appearance.glassStyle == .clear
-                    ? AnyShapeStyle(.thinMaterial)
-                    : AnyShapeStyle(.ultraThinMaterial),
-                in: shape
-            )
-            .overlay(shape.fill((tintOverride ?? palette.accent.opacity(appearance.glassTint))))
+            .background {
+                shape.fill(appearance.glassStyle == .clear
+                            ? AnyShapeStyle(.thinMaterial)
+                            : AnyShapeStyle(.ultraThinMaterial))
+                shape.fill(tintOverride ?? palette.accent.opacity(appearance.glassTint))
+            }
             .overlay(shape.stroke(Color.white.opacity(0.08), lineWidth: 0.5))
             .clipShape(shape)
     }
 }
 
 extension View {
-    /// Наложить жидкое стекло в заданной форме.
-    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false, surfaceWhenOff: Bool = true) -> some View {
-        modifier(LiquidGlass(shape: shape, interactive: interactive, surfaceWhenOff: surfaceWhenOff))
+    /// Наложить жидкое стекло в заданной форме. glassID + namespace — только для
+    /// стёкол внутри одного GlassGroup, которые должны сливаться при движении.
+    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false, surfaceWhenOff: Bool = true,
+                               glassID: String? = nil, namespace: Namespace.ID? = nil) -> some View {
+        modifier(LiquidGlass(shape: shape, interactive: interactive, surfaceWhenOff: surfaceWhenOff,
+                             glassID: glassID, namespace: namespace))
     }
     func liquidGlass(cornerRadius: CGFloat = Radius.panel, interactive: Bool = false) -> some View {
         modifier(LiquidGlass(shape: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous), interactive: interactive))
