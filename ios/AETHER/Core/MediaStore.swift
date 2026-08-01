@@ -1,5 +1,6 @@
 import UIKit
 import ImageIO
+import UniformTypeIdentifiers
 
 // Дисковый и memory-кэш расшифрованного медиа. Это отдельный actor: чтение файлов,
 // запись и декодирование изображений никогда не блокируют главный поток SwiftUI.
@@ -9,6 +10,7 @@ actor MediaStore {
     private let memCache = NSCache<NSString, UIImage>()
     private let fileCache: URL
     private var inflight: [String: Task<Data?, Never>] = [:]
+    private var materializedURLs: Set<URL> = []
     private var core: CoreClient?
     private var writesSinceTrim = 0
 
@@ -52,6 +54,14 @@ actor MediaStore {
         return result
     }
 
+    /// Единая точка чтения современного медиа и старых web-сообщений, где файл
+    /// лежал прямо в зашифрованном payload как data URL.
+    func data(payload: Wire.Payload) async -> Data? {
+        if let inline = payload.inlineData { return inline }
+        guard let fileId = payload.fileId else { return nil }
+        return await data(fileId: fileId, symKey: payload.symKey ?? "", nonce: payload.nonce ?? "")
+    }
+
     func seed(fileId: String, data: Data) {
         persist(data, fileId: fileId)
     }
@@ -74,6 +84,8 @@ actor MediaStore {
         let files = (try? FileManager.default.contentsOfDirectory(
             at: fileCache, includingPropertiesForKeys: nil)) ?? []
         for url in files { try? FileManager.default.removeItem(at: url) }
+        for url in materializedURLs { try? FileManager.default.removeItem(at: url) }
+        materializedURLs.removeAll()
     }
 
     private func persist(_ data: Data, fileId: String) {
@@ -97,6 +109,15 @@ actor MediaStore {
         return image
     }
 
+    func image(payload: Wire.Payload, maxPixel: CGFloat) async -> UIImage? {
+        if let inline = payload.inlineData {
+            return Self.downsample(data: inline, maxPixel: maxPixel) ?? UIImage(data: inline)
+        }
+        guard let fileId = payload.fileId else { return nil }
+        return await image(fileId: fileId, symKey: payload.symKey ?? "",
+                           nonce: payload.nonce ?? "", maxPixel: maxPixel)
+    }
+
     nonisolated static func downsample(data: Data, maxPixel: CGFloat) -> UIImage? {
         let opts = [kCGImageSourceShouldCache: false] as CFDictionary
         guard let source = CGImageSourceCreateWithData(data as CFData, opts) else { return nil }
@@ -116,9 +137,32 @@ actor MediaStore {
         guard let data = await data(fileId: fileId, symKey: symKey, nonce: nonce) else { return nil }
         let cleanName = URL(fileURLWithPath: fileName).lastPathComponent
         let safeName = cleanName.isEmpty ? fileId.replacingOccurrences(of: "/", with: "_") : cleanName
-        let url = FileManager.default.temporaryDirectory.appendingPathComponent(safeName)
+        let prefix = fileId.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)_\(safeName)")
         do {
             try data.write(to: url, options: .atomic)
+            materializedURLs.insert(url)
+            return url
+        } catch {
+            return nil
+        }
+    }
+
+    func materialize(payload: Wire.Payload, fallbackExtension: String) async -> URL? {
+        guard let data = await data(payload: payload) else { return nil }
+        let inferred = payload.mimeType.flatMap { UTType(mimeType: $0)?.preferredFilenameExtension }
+            ?? fallbackExtension
+        var name = payload.fileName ?? "aether_\(payload.fileId ?? UUID().uuidString).\(inferred)"
+        if URL(fileURLWithPath: name).pathExtension.isEmpty { name += ".\(inferred)" }
+        let safeName = URL(fileURLWithPath: name).lastPathComponent
+        let rawPrefix = payload.fileId ?? UUID().uuidString
+        let prefix = rawPrefix.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        let url = FileManager.default.temporaryDirectory.appendingPathComponent("\(prefix)_\(safeName)")
+        do {
+            try data.write(to: url, options: .atomic)
+            materializedURLs.insert(url)
             return url
         } catch {
             return nil

@@ -63,13 +63,13 @@ struct AttachmentSheet: View {
     @State private var previewSticky = false
     @State private var stickyTask: Task<Void, Never>?
 
-    private let columns = [GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2), GridItem(.flexible(), spacing: 2)]
+    private let columns = [GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4), GridItem(.flexible(), spacing: 4)]
     private let maxSelection = 99
 
     var body: some View {
         VStack(spacing: 0) {
-            grabber
             quickActions
+            mediaHeader
             content
         }
         // Панель отправки прижата к низу шторки, симметрично краям —
@@ -77,7 +77,6 @@ struct AttachmentSheet: View {
         .safeAreaInset(edge: .bottom) {
             if !library.selection.isEmpty { sendBar }
         }
-        .background(palette.surface.ignoresSafeArea())
         .overlay { holdPreviewOverlay }
         .task {
             await library.requestAndLoad()
@@ -95,56 +94,52 @@ struct AttachmentSheet: View {
         }
     }
 
-    private var grabber: some View {
-        Capsule().fill(palette.divider).frame(width: 40, height: 5).padding(.top, 8).padding(.bottom, 4)
-    }
-
     private var quickActions: some View {
-        HStack(spacing: 14) {
-            quickButton(icon: "camera.fill", title: "Камера") { dismiss(); onOpenCamera() }
-            quickButton(icon: "photo.on.rectangle", title: "Галерея") { dismiss(); onOpenFullGallery() }
-            quickButton(icon: "doc.fill", title: "Файл") { dismiss(); onOpenFilePicker() }
-            Spacer()
-            // Тумблер «Файлом» — сверху справа, появляется при выборе.
-            if !library.selection.isEmpty {
-                VStack(spacing: 4) {
-                    Button {
-                        withAnimation(.easeInOut(duration: 0.15)) { asFile.toggle() }
-                        UISelectionFeedbackGenerator().selectionChanged()
-                    } label: {
-                        HStack(spacing: 5) {
-                            Image(systemName: asFile ? "checkmark.circle.fill" : "doc.badge.arrow.up")
-                                .font(.system(size: 13, weight: .semibold))
-                            Text("Файлом")
-                                .font(.footnote.weight(.semibold))
-                        }
-                        .foregroundStyle(asFile ? palette.onAccent : palette.textSecondary)
-                        .padding(.horizontal, 12).padding(.vertical, 8)
-                        .background(asFile ? AnyShapeStyle(palette.accent) : AnyShapeStyle(palette.surfaceElevated), in: Capsule())
-                    }
-                    .buttonStyle(.squish)
-                    Text("\(library.selection.count)/\(maxSelection)")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(palette.textSecondary)
-                }
-                .transition(.scale(scale: 0.9).combined(with: .opacity))
+        GlassGroup(spacing: 8) {
+            HStack(spacing: 8) {
+                quickButton(icon: "camera.fill", title: "Камера") { dismiss(); onOpenCamera() }
+                quickButton(icon: "photo.on.rectangle", title: "Галерея") { dismiss(); onOpenFullGallery() }
+                quickButton(icon: "doc.fill", title: "Файл") { dismiss(); onOpenFilePicker() }
             }
         }
-        .animation(.easeInOut(duration: 0.15), value: library.selection.isEmpty)
-        .padding(.horizontal, 16).padding(.vertical, 10)
+        .padding(.horizontal, 12)
+        .padding(.top, 12)
+        .padding(.bottom, 10)
     }
 
     private func quickButton(icon: String, title: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 6) {
-                Image(systemName: icon).font(.system(size: 18))
+            VStack(spacing: 5) {
+                Image(systemName: icon)
+                    .font(.system(size: 19, weight: .medium))
                     .foregroundStyle(palette.accent)
-                    .frame(width: 48, height: 48)
-                    .liquidGlass(Circle(), interactive: true)
-                Text(title).font(.caption2).foregroundStyle(palette.textSecondary)
+                    .frame(height: 24)
+                Text(title)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(palette.textPrimary)
             }
+            .frame(maxWidth: .infinity)
+            .frame(height: 62)
+            .liquidGlass(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+            .contentShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
         }
         .buttonStyle(.squish)
+        .accessibilityLabel(title)
+    }
+
+    private var mediaHeader: some View {
+        HStack {
+            Text("Недавние")
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(palette.textPrimary)
+            Spacer()
+            Text(library.selection.isEmpty ? "Фото и видео" : "Выбрано: \(library.selection.count)")
+                .font(.caption.weight(.medium))
+                .foregroundStyle(library.selection.isEmpty ? palette.textSecondary : palette.accent)
+                .contentTransition(.numericText())
+        }
+        .padding(.horizontal, 16)
+        .padding(.bottom, 8)
     }
 
     @ViewBuilder private var content: some View {
@@ -154,7 +149,7 @@ struct AttachmentSheet: View {
             loadingState
         } else {
             ScrollView {
-                LazyVGrid(columns: columns, spacing: 2) {
+                LazyVGrid(columns: columns, spacing: 4) {
                     ForEach(library.assets, id: \.localIdentifier) { asset in
                         AttachmentThumb(
                             asset: asset,
@@ -163,22 +158,27 @@ struct AttachmentSheet: View {
                             duration: asset.duration
                         )
                         .onTapGesture { library.toggle(asset, limit: maxSelection) }
-                        // simultaneousGesture, а не gesture: иначе связка long-press+drag
-                        // перехватывала палец и глушила вертикальный скролл сетки
-                        // (а драг утекал в сам sheet — тот резко прыгал между детентами).
-                        .simultaneousGesture(
-                            LongPressGesture(minimumDuration: 0.3)
-                                .sequenced(before: DragGesture(minimumDistance: 0))
-                                .onChanged { value in
-                                    if case .second = value, previewAsset == nil {
-                                        beginPreview(asset)
-                                    }
+                        // Zero-distance DragGesture здесь забирал вертикальный жест
+                        // у ScrollView. Обычный long press отменяется при прокрутке.
+                        .onLongPressGesture(
+                            minimumDuration: 0.3,
+                            maximumDistance: 10,
+                            perform: {
+                                if previewAsset == nil { beginPreview(asset) }
+                            },
+                            onPressingChanged: { pressing in
+                                if !pressing,
+                                   previewAsset?.localIdentifier == asset.localIdentifier {
+                                    fingerLifted()
                                 }
-                                .onEnded { _ in fingerLifted() }
+                            }
                         )
                     }
                 }
+                .padding(.horizontal, 8)
+                .padding(.bottom, 8)
             }
+            .scrollIndicators(.hidden)
         }
     }
 
@@ -280,8 +280,7 @@ struct AttachmentSheet: View {
     }
 
     private var sendBar: some View {
-        HStack {
-            // Отмена — серый круг с крестиком.
+        HStack(spacing: 8) {
             Button {
                 withAnimation(.easeInOut(duration: 0.15)) {
                     library.selection.removeAll()
@@ -291,47 +290,54 @@ struct AttachmentSheet: View {
             } label: {
                 Image(systemName: "xmark")
                     .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                    .frame(width: 46, height: 46)
-                    .background(.ultraThinMaterial, in: Circle())
-                    .overlay(Circle().stroke(.white.opacity(0.1), lineWidth: 0.5))
+                    .foregroundStyle(palette.textSecondary)
+                    .frame(width: 44, height: 44)
+                    .contentShape(Circle())
             }
             .buttonStyle(.squish)
+            .accessibilityLabel("Снять выбор")
 
-            Spacer()
-
-            // Отправить — круглая акцентная кнопка с бейджем количества.
-            // Тап — выбранным способом (тумблер сверху); зажатие — меню способов.
-            Menu {
-                Button { send(asFile: false) } label: {
-                    Label("Сжать и отправить", systemImage: "square.and.arrow.up")
-                }
-                Button { send(asFile: true) } label: {
-                    Label("Оригинал файлом (без сжатия)", systemImage: "doc.fill")
-                }
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { asFile.toggle() }
+                UISelectionFeedbackGenerator().selectionChanged()
             } label: {
-                ZStack(alignment: .topTrailing) {
-                    Image(systemName: "paperplane.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundStyle(palette.onAccent)
-                        .frame(width: 52, height: 52)
-                        .background(palette.accent, in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.14), lineWidth: 0.6))
-                    Text("\(library.selection.count)")
-                        .font(.system(size: 12, weight: .bold))
-                        .foregroundStyle(palette.accent)
-                        .padding(.horizontal, 6).frame(minWidth: 20, minHeight: 20)
-                        .background(.white, in: Capsule())
-                        .offset(x: 5, y: -4)
-                }
-            } primaryAction: {
-                send(asFile: asFile)
+                Label(asFile ? "Файлом" : "Сжать",
+                      systemImage: asFile ? "doc.fill" : "arrow.down.right.and.arrow.up.left")
+                    .font(.footnote.weight(.semibold))
+                    .foregroundStyle(asFile ? palette.accent : palette.textPrimary)
+                    .padding(.horizontal, 10)
+                    .frame(height: 38)
+                    .background(palette.accent.opacity(asFile ? 0.14 : 0), in: Capsule())
+                    .contentShape(Capsule())
             }
+            .buttonStyle(.squish)
+            .accessibilityLabel(asFile ? "Отправить оригиналом" : "Сжать перед отправкой")
+
+            Spacer(minLength: 0)
+
+            Text("\(library.selection.count)")
+                .font(.system(size: 13, weight: .bold, design: .rounded))
+                .foregroundStyle(palette.accent)
+                .frame(minWidth: 30, minHeight: 30)
+                .background(palette.accent.opacity(0.14), in: Circle())
+                .contentTransition(.numericText())
+
+            Button { send(asFile: asFile) } label: {
+                Image(systemName: "paperplane.fill")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundStyle(palette.onAccent)
+                    .frame(width: 44, height: 44)
+                    .background(palette.accent, in: Circle())
+                    .overlay(Circle().stroke(.white.opacity(0.18), lineWidth: 0.6))
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.squish)
+            .accessibilityLabel("Отправить \(library.selection.count)")
         }
-        .padding(.horizontal, 16)
-        .padding(.bottom, 2)
-        // Без сплошной полосы-подложки: круглые кнопки просто плавают над сеткой,
-        // симметрично краям — как в Telegram.
+        .padding(6)
+        .liquidGlass(Capsule())
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
     }
 
     private func send(asFile: Bool) {
@@ -466,6 +472,13 @@ struct AttachmentThumb: View {
                 if order != nil {
                     RoundedRectangle(cornerRadius: Radius.nested, style: .continuous)
                         .fill(Color.black.opacity(0.15))
+                }
+            }
+            .overlay {
+                if order != nil {
+                    RoundedRectangle(cornerRadius: Radius.nested, style: .continuous)
+                        .stroke(palette.accent, lineWidth: 3)
+                        .padding(1)
                 }
             }
             .overlay(alignment: .bottomLeading) {
