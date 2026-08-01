@@ -309,7 +309,12 @@ struct ChatView: View {
                 onOpenFilePicker: { showFileImporter = true }
             )
             .presentationDetents([.fraction(0.62), .large])
-            .presentationDragIndicator(.hidden)
+            .presentationDragIndicator(.visible)
+            .presentationBackground(
+                appearance.glassEnabled
+                    ? AnyShapeStyle(.ultraThinMaterial)
+                    : AnyShapeStyle(palette.background)
+            )
             // Скролл сетки фото имеет приоритет над ресайзом шторки: тянешь фото —
             // листается контент, а не дёргается детент.
             .presentationContentInteraction(.scrolls)

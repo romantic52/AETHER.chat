@@ -1,14 +1,13 @@
 import SwiftUI
 import QuickLook
-import AVKit
+import AVFoundation
 
-// Контент медиа-пузыря: фото (даунсэмпл-превью + полноэкранный просмотр), файл (иконка+скачать),
-// голос/кружок — базовое отображение (полноценные плееры — итерация 4).
+// Контент медиа-пузыря: фото, видео и музыка открываются в едином просмотрщике
+// AETHER; документы остаются в QuickLook, голосовые — в компактном плеере чата.
 struct MediaBubbleContent: View {
     let message: ChatMessage
     let payload: Wire.Payload
     let outgoing: Bool
-    @Environment(\.palette) private var palette
 
     var body: some View {
         switch payload.mediaKind {
@@ -16,6 +15,8 @@ struct MediaBubbleContent: View {
             ImageBubble(payload: payload, outgoing: outgoing)
         case .video:
             VideoBubble(payload: payload)
+        case .audio:
+            AudioBubble(payload: payload, outgoing: outgoing)
         case .file:
             FileBubble(payload: payload, outgoing: outgoing)
         case .voice:
@@ -30,26 +31,21 @@ struct MediaBubbleContent: View {
 // только после явного тапа пользователя в полноэкранном просмотре.
 struct VideoBubble: View {
     let payload: Wire.Payload
-    @State private var url: URL?
     @State private var showPlayer = false
 
     var body: some View {
         ZStack {
             Rectangle().fill(Color.black.opacity(0.82))
-            if url == nil {
-                ProgressView().tint(.white)
-            } else {
-                Image(systemName: "play.fill")
-                    .font(.system(size: 28, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .frame(width: 58, height: 58)
-                    .background(.white.opacity(0.18), in: Circle())
-            }
+            Image(systemName: "play.fill")
+                .font(.system(size: 28, weight: .semibold))
+                .foregroundStyle(.white)
+                .frame(width: 58, height: 58)
+                .background(.white.opacity(0.18), in: Circle())
             VStack {
                 Spacer()
                 HStack {
                     Image(systemName: "film")
-                    Text(payload.duration.map(Self.durationText) ?? "Видео")
+                    Text("Видео")
                     Spacer()
                 }
                 .font(.caption.weight(.medium))
@@ -59,47 +55,10 @@ struct VideoBubble: View {
         }
         .frame(width: 260, height: 160)
         .contentShape(Rectangle())
-        .onTapGesture { if url != nil { showPlayer = true } }
-        .task(id: payload.fileId) {
-            guard let fileId = payload.fileId else { return }
-            url = await MediaStore.shared.materialize(fileId: fileId, fileName: "\(fileId).mp4",
-                                                      symKey: payload.symKey ?? "", nonce: payload.nonce ?? "")
-        }
+        .onTapGesture { showPlayer = true }
         .fullScreenCover(isPresented: $showPlayer) {
-            if let url { FullScreenVideoView(url: url) }
+            AetherMediaViewer(payload: payload)
         }
-    }
-
-    private static func durationText(_ duration: Double) -> String {
-        String(format: "%d:%02d", Int(duration) / 60, Int(duration) % 60)
-    }
-}
-
-private struct FullScreenVideoView: View {
-    let url: URL
-    @Environment(\.dismiss) private var dismiss
-    @State private var player: AVPlayer
-
-    init(url: URL) {
-        self.url = url
-        _player = State(initialValue: AVPlayer(url: url))
-    }
-
-    var body: some View {
-        ZStack(alignment: .topTrailing) {
-            Color.black.ignoresSafeArea()
-            VideoPlayer(player: player).ignoresSafeArea()
-            Button { dismiss() } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 17, weight: .bold))
-                    .foregroundStyle(.white)
-                    .padding(12)
-                    .background(.ultraThinMaterial, in: Circle())
-            }
-            .padding()
-        }
-        .onAppear { player.play() }
-        .onDisappear { player.pause() }
     }
 }
 
@@ -109,22 +68,32 @@ struct VideoNoteBubble: View {
     var outgoing: Bool = false
     @Environment(\.palette) private var palette
     @State private var url: URL?
+    @State private var failed = false
+    @State private var showViewer = false
 
     var body: some View {
         Group {
             if let url {
                 LoopingCirclePlayer(url: url, size: 200, muted: false, loop: false,
                                     chatAlignment: outgoing ? .trailing : .leading)
+            } else if failed {
+                Circle().fill(palette.surfaceElevated).frame(width: 200, height: 200)
+                    .overlay(Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.yellow))
             } else {
                 Circle().fill(palette.surfaceElevated).frame(width: 200, height: 200)
                     .overlay(ProgressView().tint(palette.accent))
             }
         }
+        .contentShape(Circle())
+        .onTapGesture { showViewer = true }
         .task(id: payload.fileId) {
-            guard let fid = payload.fileId else { return }
-            url = await MediaStore.shared.materialize(fileId: fid, fileName: "\(fid).mov",
-                                                      symKey: payload.symKey ?? "", nonce: payload.nonce ?? "")
+            guard let candidate = await MediaStore.shared.materialize(payload: payload, fallbackExtension: "mov") else {
+                failed = true; return
+            }
+            if (try? await AVURLAsset(url: candidate).load(.isPlayable)) == true { url = candidate }
+            else { failed = true }
         }
+        .fullScreenCover(isPresented: $showViewer) { AetherMediaViewer(payload: payload) }
     }
 }
 
@@ -163,7 +132,7 @@ struct ImageBubble: View {
         .onTapGesture { showFull = true }
         .task(id: payload.fileId) { await load() }
         .fullScreenCover(isPresented: $showFull) {
-            FullScreenImageView(payload: payload)
+            AetherMediaViewer(payload: payload)
         }
     }
 
@@ -174,61 +143,7 @@ struct ImageBubble: View {
     }
 
     private func load() async {
-        guard let fid = payload.fileId else { return }
-        thumb = await MediaStore.shared.image(fileId: fid, symKey: payload.symKey ?? "",
-                                              nonce: payload.nonce ?? "", maxPixel: 560)
-    }
-}
-
-// Полноэкранный просмотр фото с зумом и pan.
-struct FullScreenImageView: View {
-    let payload: Wire.Payload
-    @Environment(\.dismiss) private var dismiss
-    @State private var image: UIImage?
-    @State private var scale: CGFloat = 1
-    @State private var offset: CGSize = .zero
-
-    var body: some View {
-        ZStack {
-            Color.black.ignoresSafeArea()
-            if let image {
-                Image(uiImage: image)
-                    .resizable().scaledToFit()
-                    .scaleEffect(scale)
-                    .offset(offset)
-                    .gesture(
-                        MagnificationGesture()
-                            .onChanged { scale = max(1, $0) }
-                            .onEnded { _ in if scale < 1.05 { withAnimation { scale = 1; offset = .zero } } }
-                    )
-                    .simultaneousGesture(
-                        DragGesture()
-                            .onChanged { if scale > 1 { offset = $0.translation } }
-                            .onEnded { _ in if scale <= 1 { withAnimation { offset = .zero } } }
-                    )
-                    .onTapGesture(count: 2) {
-                        withAnimation(.easeOut(duration: 0.18)) { scale = scale > 1 ? 1 : 2.5; offset = .zero }
-                    }
-            } else {
-                ProgressView().tint(.white)
-            }
-            VStack {
-                HStack {
-                    Spacer()
-                    Button { dismiss() } label: {
-                        Image(systemName: "xmark").font(.system(size: 18, weight: .bold))
-                            .foregroundStyle(.white).padding(12)
-                            .background(.ultraThinMaterial, in: Circle())
-                    }.padding()
-                }
-                Spacer()
-            }
-        }
-        .task {
-            guard let fid = payload.fileId else { return }
-            image = await MediaStore.shared.image(fileId: fid, symKey: payload.symKey ?? "",
-                                                 nonce: payload.nonce ?? "", maxPixel: 2400)
-        }
+        thumb = await MediaStore.shared.image(payload: payload, maxPixel: 560)
     }
 }
 
@@ -278,6 +193,39 @@ private struct QLController: UIViewControllerRepresentable {
             url as NSURL
         }
     }
+}
+
+// Музыка и обычные аудиофайлы открываются в том же собственном плеере, что видео.
+struct AudioBubble: View {
+    let payload: Wire.Payload
+    let outgoing: Bool
+    @Environment(\.palette) private var palette
+    @State private var showPlayer = false
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "music.note")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(outgoing ? .white : palette.accent)
+                .frame(width: 46, height: 46)
+                .background((outgoing ? Color.white : palette.accent).opacity(0.16), in: Circle())
+            VStack(alignment: .leading, spacing: 3) {
+                Text(payload.fileName ?? "Аудио")
+                    .font(.system(size: 15, weight: .semibold)).lineLimit(1)
+                Text("Музыка")
+                    .font(.caption).foregroundStyle(outgoing ? .white.opacity(0.78) : palette.textSecondary)
+            }
+            Spacer(minLength: 6)
+            Image(systemName: "play.fill")
+                .foregroundStyle(outgoing ? .white : palette.accent)
+        }
+        .padding(.horizontal, 12).padding(.vertical, 10)
+        .frame(minWidth: 220, maxWidth: 290, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { showPlayer = true }
+        .fullScreenCover(isPresented: $showPlayer) { AetherMediaViewer(payload: payload) }
+    }
+
 }
 
 // Файл-документ: превью/иконка+имя+размер; тап → скачать/расшифровать → QuickLook.
@@ -333,9 +281,8 @@ struct FileBubble: View {
         .fullScreenCover(item: $previewURL) { item in QuickLookCover(url: item.url) }
         .task(id: payload.fileId) {
             // Мини-превью для файлов-картинок (кэшируется MediaStore).
-            guard isImageFile, thumb == nil, let fid = payload.fileId else { return }
-            thumb = await MediaStore.shared.image(fileId: fid, symKey: payload.symKey ?? "",
-                                                  nonce: payload.nonce ?? "", maxPixel: 96)
+            guard isImageFile, thumb == nil else { return }
+            thumb = await MediaStore.shared.image(payload: payload, maxPixel: 96)
         }
     }
 
@@ -345,10 +292,9 @@ struct FileBubble: View {
     }
 
     private func open() async {
-        guard let fid = payload.fileId, !loading else { return }
+        guard !loading else { return }
         loading = true
-        if let url = await MediaStore.shared.materialize(fileId: fid, fileName: payload.fileName ?? "file",
-                                                         symKey: payload.symKey ?? "", nonce: payload.nonce ?? "") {
+        if let url = await MediaStore.shared.materialize(payload: payload, fallbackExtension: "bin") {
             previewURL = IdentifiableURL(url: url)
         }
         loading = false
@@ -362,8 +308,13 @@ struct VoiceBubble: View {
     @Environment(\.palette) private var palette
     @ObservedObject private var audio = AudioPlaybackManager.shared
     @State private var loading = false
+    @State private var measuredDuration: TimeInterval?
+    @State private var showViewer = false
 
-    private var isPlaying: Bool { audio.playingId == payload.fileId }
+    private var playbackId: String {
+        payload.fileId ?? "inline_\((payload.raw["inline_data"] as? String)?.hashValue ?? 0)"
+    }
+    private var isPlaying: Bool { audio.playingId == playbackId }
     private var accent: Color { outgoing ? .white : palette.accent }
 
     var body: some View {
@@ -377,28 +328,42 @@ struct VoiceBubble: View {
                 }
             }.buttonStyle(.plain)
 
-            if isPlaying, let fileId = payload.fileId {
-                ActiveVoiceWaveform(fileId: fileId, accent: accent, audio: audio)
-            } else {
-                VoiceWaveform(fileId: payload.fileId ?? "x", accent: accent, progress: 0)
+            HStack(spacing: 8) {
+                if isPlaying {
+                    ActiveVoiceWaveform(fileId: playbackId, accent: accent, audio: audio)
+                } else {
+                    VoiceWaveform(fileId: payload.fileId ?? "x", accent: accent, progress: 0)
+                }
+                Text(durationText).font(.caption)
+                    .foregroundStyle(outgoing ? .white.opacity(0.85) : palette.textSecondary)
             }
-            Text(durationText).font(.caption)
-                .foregroundStyle(outgoing ? .white.opacity(0.85) : palette.textSecondary)
+            .contentShape(Rectangle())
+            .onTapGesture { showViewer = true }
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
+        .task(id: payload.fileId) {
+            guard measuredDuration == nil,
+                  let data = await MediaStore.shared.data(payload: payload),
+                  let player = try? AVAudioPlayer(data: data) else { return }
+            measuredDuration = player.duration
+        }
+        .fullScreenCover(isPresented: $showViewer) { AetherMediaViewer(payload: payload) }
     }
 
     private func toggle() async {
-        guard let fid = payload.fileId else { return }
-        if audio.playingId == fid { audio.stop(); return }
+        let id = playbackId
+        if audio.playingId == id { audio.stop(); return }
         loading = true
-        let data = await MediaStore.shared.data(fileId: fid, symKey: payload.symKey ?? "", nonce: payload.nonce ?? "")
+        let data = await MediaStore.shared.data(payload: payload)
         loading = false
-        if let data { audio.toggle(id: fid, data: data) }
+        if let data {
+            measuredDuration = (try? AVAudioPlayer(data: data))?.duration ?? measuredDuration
+            audio.toggle(id: id, data: data)
+        }
     }
 
     private var durationText: String {
-        guard let d = payload.duration else { return "0:00" }
+        guard let d = measuredDuration ?? payload.duration else { return "0:00" }
         return String(format: "%d:%02d", Int(d) / 60, Int(d) % 60)
     }
 }

@@ -588,7 +588,7 @@ struct UserProfileView: View {
         .toolbar(.hidden, for: .navigationBar)
         .safeAreaInset(edge: .top) { FloatingHeader(title: "Профиль", large: false) }
         .fullScreenCover(item: $imageViewer) { item in
-            FullScreenImageView(payload: item.payload)
+            AetherMediaViewer(payload: item.payload)
         }
         .fullScreenCover(item: $quickLookURL) { item in QuickLookCover(url: item.url) }
         .task {
@@ -658,7 +658,7 @@ struct UserProfileView: View {
             guard let p = Wire.parse(m.payloadJson), p.type == "media" else { continue }
             switch p.mediaKind {
             case .image, .video: media.append(SharedItem(id: m.id, payload: p))
-            case .file: files.append(SharedItem(id: m.id, payload: p))
+            case .audio, .file: files.append(SharedItem(id: m.id, payload: p))
             case .voice, .videoNote: break
             }
         }
@@ -717,34 +717,23 @@ struct UserProfileView: View {
     }
 
     private func openMedia(_ item: SharedItem) {
-        if item.payload.mediaKind == .image {
-            imageViewer = ViewerPayload(id: item.id, payload: item.payload)
-        } else {
-            // Видео: скачиваем/расшифровываем во временный файл и играем через QuickLook.
-            Task {
-                guard let fid = item.payload.fileId else { return }
-                if let url = await MediaStore.shared.materialize(
-                    fileId: fid, fileName: item.payload.fileName ?? "\(fid).mp4",
-                    symKey: item.payload.symKey ?? "", nonce: item.payload.nonce ?? "") {
-                    quickLookURL = IdentifiableURL(url: url)
-                }
-            }
-        }
+        imageViewer = ViewerPayload(id: item.id, payload: item.payload)
     }
 
     private func fileRow(_ item: SharedItem) -> some View {
         Button {
+            if item.payload.mediaKind == .audio {
+                imageViewer = ViewerPayload(id: item.id, payload: item.payload)
+                return
+            }
             Task {
-                guard let fid = item.payload.fileId else { return }
-                if let url = await MediaStore.shared.materialize(
-                    fileId: fid, fileName: item.payload.fileName ?? "file",
-                    symKey: item.payload.symKey ?? "", nonce: item.payload.nonce ?? "") {
+                if let url = await MediaStore.shared.materialize(payload: item.payload, fallbackExtension: "bin") {
                     quickLookURL = IdentifiableURL(url: url)
                 }
             }
         } label: {
             HStack(spacing: 12) {
-                Image(systemName: "doc.fill")
+                Image(systemName: item.payload.mediaKind == .audio ? "music.note" : "doc.fill")
                     .font(.system(size: 20))
                     .foregroundStyle(palette.accent)
                     .frame(width: 36, height: 36)
