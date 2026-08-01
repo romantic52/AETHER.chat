@@ -32,7 +32,7 @@ login_totp, dialogs) — перегенерить `sm_core.kt` — и сдела
 экран «Безопасность» (аналог iOS SecurityView / web-настроек).
 
 ## Сервер (прод)
-- https://YOUR-SERVER-HOST.nip.io , ssh root@YOUR_SERVER_IP (алиас `aether-vps` по ключу)
+- https://<SERVER_HOST> , ssh root@<SERVER_IP> (алиас `aether-vps` по ключу)
 - Код: /root/secure_messenger/server/main.py, рестарт: `systemctl restart secure_messenger`
 - БД: `sudo -u postgres psql secure_messenger`
 - Тест-аккаунт: web_test_rm / Qa-test-7391-web

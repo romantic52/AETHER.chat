@@ -2,7 +2,7 @@ use sm_core::api::ApiClient;
 use sm_core::protocol::unwrap_group_key;
 
 fn main() {
-    let base = "https://YOUR-SERVER-HOST.nip.io";
+    let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let api = ApiClient::new(base.to_string());
     let session = api.login("testuser".into(), "test-passphrase".into()).unwrap();
     let my_priv = sm_core::crypto::decrypt_private_key(session.encrypted_private_key_b64.clone(), "test-passphrase".into()).unwrap();

@@ -27,7 +27,7 @@
 # Health: в репозитории у сервера есть GET /health (server/main.py), маршрута GET / нет —
 # корень отдал бы 404 и не отличил бы живой сервис от упавшего. Поэтому по умолчанию
 # пробуем /health. Если нужен именно корень:
-#   HEALTH_URL=https://YOUR-SERVER-HOST.nip.io/ HEALTH_OK_CODES="200 404" ./deploy_server.sh
+#   HEALTH_URL=https://<SERVER_HOST>/ HEALTH_OK_CODES="200 404" ./deploy_server.sh
 #
 # Коды выхода: 0 — успех; 1 — локальная ошибка (файл/python3/ssh); 2 — деплой провалился,
 # откат выполнен, сервис поднят на старом файле; 3 — провалился и откат (нужны руки).
@@ -35,10 +35,10 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------- параметры
-SSH_HOST="${SSH_HOST:-aether-vps}"                      # алиас из ~/.ssh/config → root@YOUR_SERVER_IP
+SSH_HOST="${SSH_HOST:-aether-vps}"                      # алиас из ~/.ssh/config → root@<SERVER_IP>
 REMOTE_FILE="${REMOTE_FILE:-/root/secure_messenger/server/main.py}"
 SERVICE="${SERVICE:-secure_messenger}"
-HEALTH_URL="${HEALTH_URL:-https://YOUR-SERVER-HOST.nip.io/health}"
+HEALTH_URL="${HEALTH_URL:-https://<SERVER_HOST>/health}"
 HEALTH_OK_CODES="${HEALTH_OK_CODES:-200}"               # список через пробел
 HEALTH_RETRIES="${HEALTH_RETRIES:-12}"                  # 12 × 5 с ≈ 60 с на подъём
 HEALTH_INTERVAL="${HEALTH_INTERVAL:-5}"

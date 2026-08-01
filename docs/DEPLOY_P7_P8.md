@@ -11,7 +11,7 @@
 - `/Users/rmkhc/Desktop/Progects/AETHER.chat/server/test_prekeys.py` (новый смок-тест)
 - iOS — собирается локально, на сервер не катится
 
-Прод (из `docs/PROJECT_CONTEXT_FOR_AI.md`): `YOUR_SERVER_IP`, systemd `secure_messenger.service`, `/root/secure_messenger/server/main.py`, домен `https://YOUR-SERVER-HOST.nip.io`. scp/SFTP на VPS отключён — только `ssh + base64 + python3` или rsync; ssh-сессии держать по одной.
+Прод (из `docs/PROJECT_CONTEXT_FOR_AI.md`): `<SERVER_IP>`, systemd `secure_messenger.service`, `/root/secure_messenger/server/main.py`, домен `https://<SERVER_HOST>`. scp/SFTP на VPS отключён — только `ssh + base64 + python3` или rsync; ssh-сессии держать по одной.
 
 ## 1. Порядок: СНАЧАЛА сервер, ПОТОМ web. Почему
 
@@ -43,7 +43,7 @@ AETHER_URL=http://127.0.0.1:8000 python3 server/test_prekeys.py
 ### Шаг 1 — бэкап БД
 
 ```
-ssh root@YOUR_SERVER_IP 'pg_dump -U sm_user -h 127.0.0.1 secure_messenger | gzip > /root/backup_pre_p7p8_$(date +%F_%H%M).sql.gz && ls -la /root/backup_pre_p7p8_*'
+ssh root@<SERVER_IP> 'pg_dump -U sm_user -h 127.0.0.1 secure_messenger | gzip > /root/backup_pre_p7p8_$(date +%F_%H%M).sql.gz && ls -la /root/backup_pre_p7p8_*'
 ```
 (имя БД/пользователь — дефолты из `server/main.py:189-192`, если на проде не переопределены `DB_NAME`/`DB_USER`.)
 
@@ -54,30 +54,30 @@ ssh root@YOUR_SERVER_IP 'pg_dump -U sm_user -h 127.0.0.1 secure_messenger | gzip
 Залить `server/main.py` патч-скриптом (`ssh + base64 + python3`, scp не работает), сохранив прежнюю копию:
 
 ```
-ssh root@YOUR_SERVER_IP 'cp /root/secure_messenger/server/main.py /root/secure_messenger/server/main.py.bak_p6'
+ssh root@<SERVER_IP> 'cp /root/secure_messenger/server/main.py /root/secure_messenger/server/main.py.bak_p6'
 # передача base64-чанками, затем:
-ssh root@YOUR_SERVER_IP 'python3 -c "import ast;ast.parse(open(\"/root/secure_messenger/server/main.py\").read())" && systemctl restart secure_messenger && sleep 3 && systemctl is-active secure_messenger'
+ssh root@<SERVER_IP> 'python3 -c "import ast;ast.parse(open(\"/root/secure_messenger/server/main.py\").read())" && systemctl restart secure_messenger && sleep 3 && systemctl is-active secure_messenger'
 ```
 
 Миграции идут в `init_db()` на `@app.on_event("startup")` (`server/main.py:709-711`), отдельного шага нет. Добавляются: `crypto_devices.ed25519_key_b64/identity_sig_b64/master_key_b64/device_sig_b64`, `one_time_keys.sig_b64`, `sessions.device_bound_at`, таблица `signed_devices` (+колонка `cross_signed`). Все `ALTER TABLE ADD COLUMN` идут БЕЗ `IF NOT EXISTS`, под проверкой `information_schema`, которая в этом релизе переписана на `table_schema = current_schema()` — то есть тронуты ВСЕ старые гварды миграций, не только новые.
 
 Проверить сразу после рестарта:
 ```
-ssh root@YOUR_SERVER_IP 'journalctl -u secure_messenger -n 60 --no-pager'
-curl -s -o /dev/null -w "%{http_code}\n" https://YOUR-SERVER-HOST.nip.io/
+ssh root@<SERVER_IP> 'journalctl -u secure_messenger -n 60 --no-pager'
+curl -s -o /dev/null -w "%{http_code}\n" https://<SERVER_HOST>/
 ```
 Признаки успеха: `active (running)`, в логе нет `DuplicateColumn`/`UndefinedColumn`/`psycopg2`-трейсбека, статика отдаёт 200.
 Признаки провала: сервис в `failed`/рестарт-цикле, `column ... already exists` в логе, 502 от прокси. → немедленно §4.
 
 Схему подтвердить явно:
 ```
-ssh root@YOUR_SERVER_IP "psql -U sm_user -h 127.0.0.1 -d secure_messenger -c \"\\d crypto_devices\" -c \"\\d signed_devices\" -c \"\\d sessions\""
+ssh root@<SERVER_IP> "psql -U sm_user -h 127.0.0.1 -d secure_messenger -c \"\\d crypto_devices\" -c \"\\d signed_devices\" -c \"\\d sessions\""
 ```
 
 Смок-тест против прода — только осознанно: `server/test_prekeys.py` НЕ имеет дефолтного URL (`SystemExit`, если `AETHER_URL` пуст), потому что регистрирует постоянные аккаунты. Если гоняете по проду:
 ```
-AETHER_URL=https://YOUR-SERVER-HOST.nip.io python3 server/test_prekeys.py
-AETHER_URL=https://YOUR-SERVER-HOST.nip.io python3 server/test_logout.py
+AETHER_URL=https://<SERVER_HOST> python3 server/test_prekeys.py
+AETHER_URL=https://<SERVER_HOST> python3 server/test_logout.py
 ```
 Останутся мусорные аккаунты `prekey_a_*`, `prekey_b_*` и их устройства `test-*`/`legacy-*` — почистить потом руками или прогонять на стейджинге. Дополнительно: старые клиенты (ещё не обновлённый web в открытых вкладках, старый iOS-билд) должны продолжать переписываться — это и есть главная проверка легаси-пути.
 
@@ -87,7 +87,7 @@ AETHER_URL=https://YOUR-SERVER-HOST.nip.io python3 server/test_logout.py
 
 Wasm — 683 КБ бинарника (≈911 КБ в base64), передавать чанками; после заливки сверить размер и хеш:
 ```
-ssh root@YOUR_SERVER_IP 'ls -l /root/secure_messenger/web/vendor/ratchet/ && sha256sum /root/secure_messenger/web/vendor/ratchet/aether_ratchet_wasm_bg.wasm'
+ssh root@<SERVER_IP> 'ls -l /root/secure_messenger/web/vendor/ratchet/ && sha256sum /root/secure_messenger/web/vendor/ratchet/aether_ratchet_wasm_bg.wasm'
 shasum -a 256 /Users/rmkhc/Desktop/Progects/AETHER.chat/web/vendor/ratchet/aether_ratchet_wasm_bg.wasm
 ```
 Хеши обязаны совпасть, размер — 683341.
@@ -97,8 +97,8 @@ shasum -a 256 /Users/rmkhc/Desktop/Progects/AETHER.chat/web/vendor/ratchet/aethe
 
 Проверка после заливки:
 ```
-curl -sI https://YOUR-SERVER-HOST.nip.io/app.js | grep -i cache-control
-curl -sI https://YOUR-SERVER-HOST.nip.io/vendor/ratchet/aether_ratchet_wasm_bg.wasm | grep -iE 'content-length|cache-control'
+curl -sI https://<SERVER_HOST>/app.js | grep -i cache-control
+curl -sI https://<SERVER_HOST>/vendor/ratchet/aether_ratchet_wasm_bg.wasm | grep -iE 'content-length|cache-control'
 ```
 Затем вручную в браузере (жёсткая перезагрузка, две разные учётки):
 1. Логин → в консоли нет ошибок загрузки ratchet-модуля.

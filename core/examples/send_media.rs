@@ -4,7 +4,7 @@ use sm_core::crypto::{aes_encrypt, generate_keypair, random_key_b64};
 use sm_core::protocol::seal_direct;
 
 fn main() {
-    let base = "https://YOUR-SERVER-HOST.nip.io";
+    let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let a: Vec<String> = std::env::args().collect();
     let path = &a[1];
     let kind = a.get(2).cloned().unwrap_or("file".into());

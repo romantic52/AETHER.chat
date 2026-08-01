@@ -2,3 +2,6 @@
 CoreFFI/
 AETHER/Core/Generated/
 AETHER.xcodeproj/
+
+# Локальные секреты: адрес сервера и учётка TURN (шаблон — ios/Secrets.example.swift)
+AETHER/Core/Secrets.swift

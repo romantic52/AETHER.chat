@@ -12,7 +12,7 @@ impl WsListener for L {
 }
 
 fn main() {
-    let base = "https://YOUR-SERVER-HOST.nip.io";
+    let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let recipient = std::env::args().nth(1).unwrap_or("testuser".into());
     let video = std::env::args().nth(2).map(|s| s == "video").unwrap_or(false);
 
@@ -24,7 +24,7 @@ fn main() {
     println!("caller {uid}, token {}…", &session.token[..8]);
 
     let ws = Arc::new(WsClient::new());
-    let url = format!("wss://YOUR-SERVER-HOST.nip.io/ws?token={}", session.token);
+    let url = format!("{}/ws?token={}", base.replacen("http", "ws", 1), session.token);
     ws.connect(url, Box::new(L)).unwrap();
     std::thread::sleep(std::time::Duration::from_secs(2));
 

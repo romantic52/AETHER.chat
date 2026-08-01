@@ -8,7 +8,7 @@ use sm_core::crypto::generate_keypair;
 use sm_core::protocol::seal_direct;
 
 fn main() {
-    let base = "https://YOUR-SERVER-HOST.nip.io";
+    let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let text = std::env::args().nth(1).unwrap_or_else(|| "Привет с Android! ✓✓".to_string());
     let recipient = std::env::args().nth(2).unwrap_or_else(|| "testuser".to_string());
 

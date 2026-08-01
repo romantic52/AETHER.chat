@@ -13,7 +13,7 @@ import secrets
 import urllib.error
 import urllib.request
 
-BASE = os.environ.get("AETHER_URL", "https://YOUR-SERVER-HOST.nip.io")
+BASE = os.environ.get("AETHER_URL", "http://127.0.0.1:8000")
 
 
 def call(method, path, token=None, body=None):
