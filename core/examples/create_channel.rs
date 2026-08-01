@@ -4,7 +4,7 @@ use sm_core::crypto::{generate_keypair, random_key_b64, encrypt_private_key};
 use sm_core::protocol::wrap_group_key;
 
 fn main() {
-    let base = "https://YOUR-SERVER-HOST.nip.io";
+    let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let name = std::env::args().nth(1).unwrap_or("Тестовый канал".into());
     let member = std::env::args().nth(2).unwrap_or("testuser".into());
 

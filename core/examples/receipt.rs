@@ -5,7 +5,7 @@ use sm_core::api::ApiClient;
 use sm_core::protocol::seal_direct;
 
 fn main() {
-    let base = "https://YOUR-SERVER-HOST.nip.io";
+    let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let user = std::env::args().nth(1).expect("user_id");
     let pass = std::env::args().nth(2).unwrap_or_else(|| "test-passphrase".into());
     let recipient = std::env::args().nth(3).expect("recipient");

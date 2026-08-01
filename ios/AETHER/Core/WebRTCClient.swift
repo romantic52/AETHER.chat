@@ -32,12 +32,14 @@ final class WebRTCClient: NSObject {
 
     private let streamId = "AETHER_stream"
 
+    // Адрес и учётка TURN — в Secrets.swift (вне git). Хардкод отсюда уехал
+    // в публичный репозиторий вместе с рабочим паролем.
     static let iceServers: [RTCIceServer] = [
         RTCIceServer(urlStrings: ["stun:stun.l.google.com:19302"]),
-        RTCIceServer(urlStrings: ["stun:YOUR_SERVER_IP:3478"]),
-        RTCIceServer(urlStrings: ["turn:YOUR_SERVER_IP:3478?transport=udp",
-                                  "turn:YOUR_SERVER_IP:3478?transport=tcp"],
-                     username: "YOUR_TURN_USERNAME", credential: "YOUR_TURN_SECRET"),
+        RTCIceServer(urlStrings: ["stun:\(Secrets.turnHost):\(Secrets.turnPort)"]),
+        RTCIceServer(urlStrings: ["turn:\(Secrets.turnHost):\(Secrets.turnPort)?transport=udp",
+                                  "turn:\(Secrets.turnHost):\(Secrets.turnPort)?transport=tcp"],
+                     username: Secrets.turnUsername, credential: Secrets.turnCredential),
     ]
 
     init(isVideo: Bool) {

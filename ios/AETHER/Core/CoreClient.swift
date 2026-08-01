@@ -18,7 +18,7 @@ struct KeyTrustAlert: Error {
 }
 
 actor CoreClient {
-    static let baseURL = "https://YOUR-SERVER-HOST.nip.io"
+    static let baseURL = Secrets.baseURL
 
     private let api: ApiClient
     private lazy var store: CoreStore = CoreClient.openStoreRecovering(path: CoreClient.databasePath())
@@ -839,26 +839,95 @@ actor CoreClient {
         let obj = (env.data(using: .utf8)).flatMap {
             try? JSONSerialization.jsonObject(with: $0) as? [String: Any]
         }
-        // Ratchet-конверт 1:1?
-        if let obj, (obj["ratchet"] as? String) == "1" {
+        let directAddress = item.recipientId.lowercased() == myId.lowercased()
+        // Ранний web-клиент писал ratchet числом 1, канон пишет строкой "1".
+        // JSON true тоже мостится в NSNumber(1), поэтому boolean явно исключаем.
+        let numericRatchet = obj?["ratchet"] as? NSNumber
+        let isRatchet = (obj?["ratchet"] as? String) == "1"
+            || (numericRatchet.map {
+                CFGetTypeID($0) != CFBooleanGetTypeID() && $0.doubleValue == 1
+            } ?? false)
+        if let obj, isRatchet {
+            guard directAddress else {
+                throw CoreError.Crypto(msg: "ratchet-конверт адресован не в личный чат")
+            }
             return try ratchetOpen(item: item, obj: obj)
         }
-        // 1:1 ТОЛЬКО через Double Ratchet: статический box-конверт для личного
-        // чата — это даунгрейд, который обходит подписи P7 и cross-signing P8
-        // (в нём нет ни olm_identity, ни sender_device). Web такое отвергает —
-        // расхождение сделало бы iOS слабым звеном.
-        let isGroupEnvelope = obj.map { $0["is_group"] != nil } ?? false
-        if !isGroupEnvelope && item.recipientId.lowercased() == myId.lowercased() {
+        if directAddress {
+            // Временно принимаем static crypto_box до legacyDirectUntil (см. ниже):
+            // Android ещё не переведён на Double Ratchet. Граница обязана быть —
+            // без неё злоумышленник принудил бы к downgrade любой новый чат.
+            if Self.isLegacyDirectAllowed(item.createdAt) {
+                let opened = try openEnvelope(envelopeJson: env, myPrivB64: myPrivateKey, groupKeyB64: nil)
+                // created_at сообщает сервер и само по себе доверием не является.
+                // Поэтому автор старого box-конверта обязан совпасть с уже
+                // сохранённым TOFU-пином этого собеседника.
+                let senderId = item.senderId.lowercased()
+                let expected: String?
+                if senderId == myId.lowercased() {
+                    expected = myPublicKey
+                } else if let pin = try store.pinGet(peerId: senderId),
+                          Double(pin.firstSeen) <= Self.legacyDirectUntil * 1000 {
+                    // Пин должен быть не новее той же границы: свежий ключ от
+                    // недоверенного relay не годится как доказательство авторства.
+                    // Считаем в Double — firstSeen в миллисекундах.
+                    expected = pin.publicKeyB64
+                } else {
+                    expected = nil
+                }
+                guard let sender = opened.senderPubB64,
+                      let expected,
+                      try b64urlDecode(s: expected) == b64urlDecode(s: sender) else {
+                    throw CoreError.Crypto(msg: "ключ автора старого сообщения не совпадает с сохранённым")
+                }
+                return opened
+            }
             throw CoreError.Crypto(msg: "личное сообщение без Double Ratchet отвергнуто (даунгрейд)")
+        }
+        let groupMarker = obj?["is_group"]
+        let isGroupEnvelope = (groupMarker as? String) == "1" || (groupMarker as? Bool) == true
+        guard isGroupEnvelope else {
+            throw CoreError.Crypto(msg: "групповое сообщение без группового конверта отвергнуто")
         }
         // Групповое: адресуется на recipient_id = group_id.
         let groupKey = (try? store.getGroupKey(groupId: item.recipientId.lowercased())) ?? nil
         return try openEnvelope(envelopeJson: env, myPrivB64: myPrivateKey, groupKeyB64: groupKey)
     }
 
+    // ─── ВРЕМЕННАЯ МЕРА — СНЯТЬ ПОСЛЕ ПЕРЕВОДА ANDROID НА DOUBLE RATCHET ────────
+    // Поставлено 02.08.2026 осознанным решением.
+    //
+    // ЗАЧЕМ: Android шифрует личные сообщения статическим crypto_box
+    // (E2ECrypto.encrypt → uniffi.sm_core.boxEncrypt), Double Ratchet там не
+    // реализован вообще — ноль упоминаний на 51 файл. С прежней отсечкой
+    // 19.07.2026 личные сообщения Android → iOS перестали открываться.
+    //
+    // ЧЕМ ЗАПЛАЧЕНО: на этот срок снова возможен принудительный даунгрейд
+    // личного чата на статический бокс. Такой конверт не несёт olm_identity и
+    // sender_device, то есть обходит подписи P7 и cross-signing P8. Из защит
+    // остаётся только сверка автора с TOFU-пином ниже — она сохранена намеренно
+    // и ослаблению не подлежит.
+    //
+    // КАК СНЯТЬ: вернуть 1_784_398_876 (19.07.2026 01:21:16 +07) и стереть блок.
+    private static let legacyDirectUntil: TimeInterval = 1_793_491_200   // 01.11.2026 00:00 UTC
+    // ──────────────────────────────────────────────────────────────────────────
+
+    private static func isLegacyDirectAllowed(_ createdAt: String?) -> Bool {
+        guard let createdAt else { return false }
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let date = formatter.date(from: createdAt) ?? ISO8601DateFormatter().date(from: createdAt)
+        return date.map { $0.timeIntervalSince1970 <= legacyDirectUntil } ?? false
+    }
+
     private func ratchetOpen(item: InboxItem, obj: [String: Any]) throws -> Opened {
         let senderIdentity = obj["olm_identity"] as? String ?? ""
-        let type = UInt32(obj["type"] as? Int ?? 1)
+        let number = obj["type"] as? NSNumber
+        guard let number, CFGetTypeID(number) != CFBooleanGetTypeID(),
+              number.doubleValue == 0 || number.doubleValue == 1 else {
+            throw CoreError.Crypto(msg: "ratchet: неверный тип сообщения")
+        }
+        let type = UInt32(number.doubleValue)
         let body = obj["body_b64"] as? String ?? ""
         let peer = item.senderId.lowercased()
 

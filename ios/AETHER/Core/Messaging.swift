@@ -205,7 +205,7 @@ final class Messaging: ObservableObject {
         reconnectTask?.cancel()
         let generation = UUID()
         wsGeneration = generation
-        let url = "wss://YOUR-SERVER-HOST.nip.io/ws?token=\(token)"
+        let url = "\(Secrets.wsBaseURL)/ws?token=\(token)"
         let client = WsClient()
         let bridge = WsBridge(
             onOpen: { [weak self] in
@@ -884,7 +884,7 @@ final class Messaging: ObservableObject {
                 switch payload.mediaKind {
                 case .voice, .videoNote: voices.append(item)
                 case .image, .video: heavy.append(item)
-                case .file: break   // документы — только вручную
+                case .audio, .file: break   // музыка и документы — только вручную
                 }
             }
             for (fid, key, nonce) in voices {

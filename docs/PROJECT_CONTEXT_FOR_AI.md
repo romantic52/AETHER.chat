@@ -15,9 +15,9 @@
   - ветка `main` — iOS + ядро + сервер
   - ветка `android` — Android-клиент (коммит `758ed2a`), ещё НЕ смёржена в main
 - Структура: `core/` (Rust-ядро), `ios/`, `android/`, `web/`, `server/`, `docs/`
-- Сервер (прод): `YOUR_SERVER_IP`, systemd `secure_messenger.service`,
-  файл `/root/secure_messenger/server/main.py`, домен `https://YOUR-SERVER-HOST.nip.io`
-- WS: `wss://YOUR-SERVER-HOST.nip.io/ws?token=` — ТОЛЬКО HTTP/1.1
+- Сервер (прод): `<SERVER_IP>`, systemd `secure_messenger.service`,
+  файл `/root/secure_messenger/server/main.py`, домен `https://<SERVER_HOST>`
+- WS: `wss://<SERVER_HOST>/ws?token=` — ТОЛЬКО HTTP/1.1
 
 ## 3. Архитектура (ГЛАВНОЕ ПРАВИЛО)
 
