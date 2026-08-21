@@ -214,14 +214,26 @@ mod tests {
         assert!(decrypt_private_key(blob, "wrong".into()).is_err());
     }
 
-    /// Живой вектор с сервера: бэкап testuser, пароль test-passphrase.
+    /// Сверка с бэкапом, который выдал САМ СЕРВЕР: проверяет, что наш PBKDF2+AES
+    /// разбирает чужой конверт, а не только свой собственный — своё умеет
+    /// backup_roundtrip выше. Вектор в код не кладётся: он содержит рабочий
+    /// приватный ключ, и в репозитории это равносильно его публикации. Задаётся
+    /// снаружи, без переменных тест пропускается:
+    ///   AETHER_BACKUP_BLOB=... AETHER_BACKUP_PASS=... AETHER_BACKUP_PUB=... cargo test
     #[test]
     fn backup_live_vector() {
-        let blob = "REDACTED_KEY_VECTOR";
-        let priv_b64 = decrypt_private_key(blob.into(), "test-passphrase".into()).unwrap();
+        let (blob, pass, expect_pub) = match (
+            std::env::var("AETHER_BACKUP_BLOB"),
+            std::env::var("AETHER_BACKUP_PASS"),
+            std::env::var("AETHER_BACKUP_PUB"),
+        ) {
+            (Ok(b), Ok(p), Ok(k)) => (b, p, k),
+            _ => return,
+        };
+        let priv_b64 = decrypt_private_key(blob, pass).unwrap();
         let sk = SecretKey::from(key32(&priv_b64, "sk").unwrap());
         let pub_b64 = URL_SAFE_NO_PAD.encode(sk.public_key().as_bytes());
-        assert_eq!(pub_b64, "REDACTED_PUBKEY");
+        assert_eq!(pub_b64, expect_pub);
     }
 
     #[test]

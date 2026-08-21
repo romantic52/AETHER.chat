@@ -1,7 +1,7 @@
 //! Кросс-тест: эмулирует Android/web-отправителя. Регистрирует временный аккаунт,
-//! шлёт зашифрованный текст на testuser через канонический wire-протокол.
+//! шлёт зашифрованный текст получателю из AETHER_PEER через канонический wire-протокол.
 //! Запуск (нативно, на Mac): cargo run --example send_test -- "текст"
-//! Проверяет, что iOS-приложение (залогинено как testuser) расшифрует и покажет сообщение.
+//! Проверяет, что iOS-приложение (залогинено получателем из AETHER_PEER) расшифрует и покажет сообщение.
 
 use sm_core::api::ApiClient;
 use sm_core::crypto::generate_keypair;
@@ -10,15 +10,15 @@ use sm_core::protocol::seal_direct;
 fn main() {
     let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let text = std::env::args().nth(1).unwrap_or_else(|| "Привет с Android! ✓✓".to_string());
-    let recipient = std::env::args().nth(2).unwrap_or_else(|| "testuser".to_string());
+    let recipient = std::env::args().nth(2).unwrap_or_else(|| std::env::var("AETHER_PEER").unwrap_or_else(|_| "peer".into()));
 
     let api = ApiClient::new(base.to_string());
     let kp = generate_keypair();
     let uid = format!("xtest_{}", &sm_core::crypto::random_key_b64()[..8].to_lowercase());
-    let enc_priv = sm_core::crypto::encrypt_private_key(kp.private_b64.clone(), "test-passphrase".into()).unwrap();
+    let enc_priv = sm_core::crypto::encrypt_private_key(kp.private_b64.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into())).unwrap();
 
     let session = api
-        .register(uid.clone(), "test-passphrase".into(), kp.public_b64.clone(), enc_priv)
+        .register(uid.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into()), kp.public_b64.clone(), enc_priv)
         .expect("register");
     println!("registered {} (token {}…)", session.user_id, &session.token[..8]);
 

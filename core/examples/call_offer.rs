@@ -13,14 +13,14 @@ impl WsListener for L {
 
 fn main() {
     let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
-    let recipient = std::env::args().nth(1).unwrap_or("testuser".into());
+    let recipient = std::env::args().nth(1).unwrap_or(std::env::var("AETHER_PEER").unwrap_or_else(|_| "peer".into()));
     let video = std::env::args().nth(2).map(|s| s == "video").unwrap_or(false);
 
     let api = ApiClient::new(base.to_string());
     let kp = sm_core::crypto::generate_keypair();
     let uid = format!("xcall_{}", &sm_core::crypto::random_key_b64()[..6].to_lowercase());
-    let enc = sm_core::crypto::encrypt_private_key(kp.private_b64.clone(), "test-passphrase".into()).unwrap();
-    let session = api.register(uid.clone(), "test-passphrase".into(), kp.public_b64.clone(), enc).unwrap();
+    let enc = sm_core::crypto::encrypt_private_key(kp.private_b64.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into())).unwrap();
+    let session = api.register(uid.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into()), kp.public_b64.clone(), enc).unwrap();
     println!("caller {uid}, token {}…", &session.token[..8]);
 
     let ws = Arc::new(WsClient::new());
