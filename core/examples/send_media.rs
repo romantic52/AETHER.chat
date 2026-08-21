@@ -9,7 +9,7 @@ fn main() {
     let path = &a[1];
     let kind = a.get(2).cloned().unwrap_or("file".into());
     let mime = a.get(3).cloned().unwrap_or("application/octet-stream".into());
-    let recipient = a.get(4).cloned().unwrap_or("testuser".into());
+    let recipient = a.get(4).cloned().unwrap_or(std::env::var("AETHER_PEER").unwrap_or_else(|_| "peer".into()));
     let duration: f64 = a.get(5).and_then(|s| s.parse().ok()).unwrap_or(0.0);
     let bytes = std::fs::read(path).expect("read");
     let name = std::path::Path::new(path).file_name().unwrap().to_string_lossy().to_string();
@@ -17,8 +17,8 @@ fn main() {
     let api = ApiClient::new(base.to_string());
     let kp = generate_keypair();
     let uid = format!("xmed_{}", &random_key_b64()[..6].to_lowercase());
-    let enc = sm_core::crypto::encrypt_private_key(kp.private_b64.clone(), "test-passphrase".into()).unwrap();
-    api.register(uid.clone(), "test-passphrase".into(), kp.public_b64.clone(), enc).unwrap();
+    let enc = sm_core::crypto::encrypt_private_key(kp.private_b64.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into())).unwrap();
+    api.register(uid.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into()), kp.public_b64.clone(), enc).unwrap();
 
     let sym = random_key_b64();
     let sealed = aes_encrypt(sym.clone(), bytes).unwrap();

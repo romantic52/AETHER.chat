@@ -1,4 +1,4 @@
-//! Кросс-тест: создаёт группу (как Android/web), добавляет testuser участником.
+//! Кросс-тест: создаёт группу (как Android/web), добавляет участника из AETHER_PEER.
 //! cargo run --example create_group -- <name> [member2...]
 use sm_core::api::ApiClient;
 use sm_core::crypto::{generate_keypair, random_key_b64, encrypt_private_key};
@@ -8,13 +8,13 @@ fn main() {
     let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let name = std::env::args().nth(1).unwrap_or("Тестовая группа".into());
     let members: Vec<String> = std::env::args().skip(2).collect();
-    let members = if members.is_empty() { vec!["testuser".to_string()] } else { members };
+    let members = if members.is_empty() { vec![std::env::var("AETHER_PEER").unwrap_or_else(|_| "peer".into())] } else { members };
 
     let api = ApiClient::new(base.to_string());
     let kp = generate_keypair();
     let uid = format!("xgrp_{}", &random_key_b64()[..6].to_lowercase());
-    let enc = encrypt_private_key(kp.private_b64.clone(), "test-passphrase".into()).unwrap();
-    api.register(uid.clone(), "test-passphrase".into(), kp.public_b64.clone(), enc).unwrap();
+    let enc = encrypt_private_key(kp.private_b64.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into())).unwrap();
+    api.register(uid.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into()), kp.public_b64.clone(), enc).unwrap();
     println!("owner: {uid}");
 
     let group_key = random_key_b64();

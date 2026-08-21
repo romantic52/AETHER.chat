@@ -6,13 +6,13 @@ use sm_core::protocol::wrap_group_key;
 fn main() {
     let base = std::env::var("AETHER_URL").unwrap_or_else(|_| "http://127.0.0.1:8000".to_string());
     let name = std::env::args().nth(1).unwrap_or("Тестовый канал".into());
-    let member = std::env::args().nth(2).unwrap_or("testuser".into());
+    let member = std::env::args().nth(2).unwrap_or(std::env::var("AETHER_PEER").unwrap_or_else(|_| "peer".into()));
 
     let api = ApiClient::new(base.to_string());
     let kp = generate_keypair();
     let uid = format!("xchan_{}", &random_key_b64()[..6].to_lowercase());
-    let enc = encrypt_private_key(kp.private_b64.clone(), "test-passphrase".into()).unwrap();
-    api.register(uid.clone(), "test-passphrase".into(), kp.public_b64.clone(), enc).unwrap();
+    let enc = encrypt_private_key(kp.private_b64.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into())).unwrap();
+    api.register(uid.clone(), std::env::var("AETHER_PASS").unwrap_or_else(|_| "changeme".into()), kp.public_b64.clone(), enc).unwrap();
 
     let group_key = random_key_b64();
     let channel_id = format!("chn_{}", &random_key_b64()[..8].to_lowercase());
