@@ -481,6 +481,16 @@ private struct CallsContent: View {
                 }
             }
             .modifier(NativeHeaderChrome())
+            // Заголовка на экране звонков не было вовсе — единственная из
+            // четырёх вкладок без него.
+            .toolbar(.hidden, for: .navigationBar)
+            .safeAreaInset(edge: .top) {
+                FloatingHeader(title: "Звонки")
+                    .background(
+                        EdgeDim(edge: .top)
+                            .ignoresSafeArea(edges: .top)
+                    )
+            }
         }
     }
 

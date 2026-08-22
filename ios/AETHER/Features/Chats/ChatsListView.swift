@@ -265,18 +265,13 @@ struct ChatsListView: View {
                             folderRow
                         }
                     }
-                    .background {
-                        // Под шапкой — сплошной фон темы, и только поверх него
-                        // градиент. У List строки не доезжали до шапки, а в
-                        // ScrollView они уходят прямо под неё: сквозь один
-                        // полупрозрачный градиент их было видно, и шапка
-                        // читалась вперемешку со строками.
-                        ZStack {
-                            palette.background
-                            EdgeDim(edge: .top)
-                        }
-                        .ignoresSafeArea(edges: .top)
-                    }
+                    .background(
+                        // Только градиент, как на всех остальных экранах:
+                        // сплошная заливка превращала шапку в панель и ломала
+                        // общий вид с плавающими шапками.
+                        EdgeDim(edge: .top)
+                            .ignoresSafeArea(edges: .top)
+                    )
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
