@@ -624,11 +624,36 @@ struct SettingsView: View {
 
     private var accountSection: some View {
         Section {
+            // Переключение между сохранёнными аккаунтами. Мультиаккаунт в ядре
+            // был давно (Session.accounts / switchAccount), но в интерфейс
+            // выведен не был — сменить личность было нечем.
+            ForEach(session.accounts, id: \.self) { account in
+                Button {
+                    guard account != session.myId.lowercased() else { return }
+                    Task { await session.switchAccount(to: account) }
+                } label: {
+                    HStack(spacing: 12) {
+                        Avatar(id: account, name: account, size: 32)
+                        Text("@\(account)")
+                            .font(.system(size: 16))
+                            .foregroundStyle(palette.textPrimary)
+                        Spacer()
+                        if account == session.myId.lowercased() {
+                            Image(systemName: "checkmark")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundStyle(palette.accent)
+                        }
+                    }
+                }
+            }
+
             Button(role: .destructive) {
                 Task { await session.logout() }
             } label: {
                 SettingsLabel("Выйти", icon: "arrow.right.square.fill", color: .red)
             }
+        } header: {
+            Text(session.accounts.count > 1 ? "Аккаунты" : "Аккаунт")
         }
         .listRowBackground(palette.surface)
     }

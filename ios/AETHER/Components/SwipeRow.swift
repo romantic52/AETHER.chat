@@ -60,6 +60,8 @@ struct SwipeRow<Content: View>: View {
     /// Перетягивание влево-вправо выполняет крайнюю кнопку соответствующей стороны.
     var fullSwipeLeading = true
     var fullSwipeTrailing = true
+    /// В режиме правки список перетаскивают — свайп там только мешает.
+    var swipeEnabled = true
     var onTap: () -> Void
     @ViewBuilder var content: Content
 
@@ -87,10 +89,13 @@ struct SwipeRow<Content: View>: View {
     private var leadingWidth: CGFloat { rowWidth(leading.count) }
     private var trailingWidth: CGFloat { rowWidth(trailing.count) }
 
-    /// Насколько открыт ряд: по нему кнопки прорастают.
-    private var revealProgress: CGFloat {
-        let full = offset > 0 ? leadingWidth : trailingWidth
-        return min(abs(offset) / max(full, 1), 1)
+    /// Насколько открыт ряд СВОЕЙ стороны. Раньше величина была общей, и при
+    /// свайпе вправо противоположная группа тоже проявлялась — на экране
+    /// оказывались обе сразу, закрепление и удаление вперемешку.
+    private func revealProgress(fromLeading: Bool) -> CGFloat {
+        let travel = fromLeading ? max(offset, 0) : max(-offset, 0)
+        let full = fromLeading ? leadingWidth : trailingWidth
+        return min(travel / max(full, 1), 1)
     }
     /// 0 → обычное открытие, 1 → крайняя кнопка растянута и отпускание
     /// выполнит её действие. Величина НЕПРЕРЫВНАЯ, поэтому переход плавный.
@@ -105,8 +110,14 @@ struct SwipeRow<Content: View>: View {
 
     var body: some View {
         ZStack {
-            leadingLayer.frame(maxWidth: .infinity, alignment: .leading)
-            trailingLayer.frame(maxWidth: .infinity, alignment: .trailing)
+            // Рисуем только ту сторону, которую действительно тянут: так
+            // противоположная не может ни проступить, ни поймать нажатие.
+            if offset > 0 {
+                leadingLayer.frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if offset < 0 {
+                trailingLayer.frame(maxWidth: .infinity, alignment: .trailing)
+            }
 
             content
                 .background(palette.background)
@@ -120,6 +131,7 @@ struct SwipeRow<Content: View>: View {
         // Вся строка — площадь для свайпа: аватарка и время не «глухие».
         .contentShape(Rectangle())
         .modifier(PanAttach(
+            enabled: swipeEnabled,
             onChanged: { panChanged($0) },
             onEnded: { panEnded(translation: $0, velocity: $1) }
         ))
@@ -139,11 +151,17 @@ struct SwipeRow<Content: View>: View {
     private func layer(_ actions: [RowAction], fullWidth: CGFloat,
                        stretch: CGFloat, fromLeading: Bool) -> some View {
         let edgeIndex = fromLeading ? 0 : actions.count - 1
+        // Насколько удлинилась плашка — на столько же РАСТАЛКИВАЕТ соседей.
+        // Раньше она просто накрывала их сверху, и было видно, как иконки
+        // исчезают под ней.
+        let available = max(abs(offset) - 2 * inset, actionW)
+        let push = (available - actionW) * stretch
         return HStack(spacing: 0) {
             ForEach(Array(actions.enumerated()), id: \.element.id) { index, action in
                 let isEdge = index == edgeIndex
-                button(action, stretch: isEdge ? stretch : 0, fromLeading: fromLeading)
-                    .opacity(isEdge ? 1 : Double(1 - stretch))
+                button(action, stretch: isEdge ? stretch : 0, fromLeading: fromLeading,
+                       reveal: revealProgress(fromLeading: fromLeading))
+                    .offset(x: isEdge ? 0 : (fromLeading ? push : -push))
                     .zIndex(isEdge ? 1 : 0)
             }
         }
@@ -162,7 +180,7 @@ struct SwipeRow<Content: View>: View {
     /// кнопки плашка удлиняется наружу слота — выходить за него ей можно,
     /// обрезает только сама строка.
     private func button(_ a: RowAction, stretch: CGFloat = 0,
-                        fromLeading: Bool = true) -> some View {
+                        fromLeading: Bool = true, reveal: CGFloat = 1) -> some View {
         let available = max(abs(offset) - 2 * inset, actionW)
         let plateWidth = actionW + (available - actionW) * stretch
         return VStack(spacing: 4) {
@@ -184,14 +202,14 @@ struct SwipeRow<Content: View>: View {
                 .opacity(Double(1 - stretch))
         }
         .frame(width: slotW)
-        .modifier(GrowIn(progress: revealProgress))
+        .modifier(GrowIn(progress: reveal))
         .contentShape(Rectangle())
         .highPriorityGesture(TapGesture().onEnded { closeThenPerform(a) })
     }
 
     private func glyph(_ a: RowAction) -> some View {
         Image(systemName: a.icon)
-            .font(.system(size: 20, weight: .semibold))
+            .font(.system(size: 24, weight: .semibold))
             .foregroundStyle(.white)
             .frame(width: actionW, height: actionH)
     }
@@ -422,12 +440,15 @@ struct HorizontalPan: UIGestureRecognizerRepresentable {
 /// вертикали и не спорит с прокруткой. На 17 остаётся SwiftUI-жест.
 /// Вынесен из SwipeRow: там имя Content занято параметром самой строки.
 private struct PanAttach: ViewModifier {
+    var enabled: Bool = true
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
 
     @ViewBuilder
     func body(content: Content) -> some View {
-        if #available(iOS 18.0, *) {
+        if !enabled {
+            content
+        } else if #available(iOS 18.0, *) {
             content.gesture(HorizontalPan(onChanged: onChanged, onEnded: onEnded))
         } else {
             content.gesture(
