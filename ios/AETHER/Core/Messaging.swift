@@ -454,6 +454,10 @@ final class Messaging: ObservableObject {
 
     private func handleIncoming(_ item: InboxItem) async -> IncomingResult {
         if await core.messageExists(item.id) { return .duplicate }
+        // Заблокированный отправитель: сообщение не сохраняем, но считаем
+        // обработанным — иначе оно не подтвердится серверу и будет приходить
+        // при каждом опросе, застопорив очередь инбокса.
+        if BlockStore.shared.isBlocked(item.senderId) { return .processed(changed: false) }
         guard let opened = try? await core.open(item: item),
               let payload = Wire.parse(opened.plaintext) else { return .undecryptable }
 

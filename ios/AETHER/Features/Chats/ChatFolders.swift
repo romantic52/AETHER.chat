@@ -25,6 +25,11 @@ struct ChatFolder: Identifiable, Codable, Hashable {
     var rule: FolderRule = .custom
     /// Для правила .custom — идентификаторы выбранных чатов.
     var peers: [String] = []
+    /// Ключевые слова, как в Android-клиенте: чат попадает в папку, если его
+    /// имя или идентификатор содержит хотя бы одно из включающих, и не содержит
+    /// ни одного из исключающих. Работают поверх основного правила.
+    var includeKeywords: [String] = []
+    var excludeKeywords: [String] = []
 
     var label: String { emoji.isEmpty ? name : "\(emoji) \(name)" }
 }
@@ -69,12 +74,22 @@ final class ChatFoldersStore: ObservableObject {
     /// Подходит ли чат под папку. nil — папка «Все».
     func matches(_ chat: Chat, folder: ChatFolder?, isGroup: Bool) -> Bool {
         guard let folder else { return true }
+
+        let byRule: Bool
         switch folder.rule {
-        case .custom: return folder.peers.contains(chat.peerId)
-        case .unread: return chat.unread > 0
-        case .personal: return !isGroup
-        case .groups: return isGroup
+        case .custom: byRule = folder.peers.contains(chat.peerId)
+        case .unread: byRule = chat.unread > 0
+        case .personal: byRule = !isGroup
+        case .groups: byRule = isGroup
         }
+        guard byRule else { return false }
+
+        // Ключевые слова — поверх правила, по имени и идентификатору чата.
+        guard !folder.includeKeywords.isEmpty || !folder.excludeKeywords.isEmpty else { return true }
+        let haystack = (chat.title + " " + chat.peerId).lowercased()
+        if folder.excludeKeywords.contains(where: { haystack.contains($0.lowercased()) }) { return false }
+        if folder.includeKeywords.isEmpty { return true }
+        return folder.includeKeywords.contains { haystack.contains($0.lowercased()) }
     }
 }
 
@@ -172,6 +187,8 @@ struct FolderEditor: View {
     @State private var emoji = ""
     @State private var rule: FolderRule = .custom
     @State private var peers: Set<String> = []
+    @State private var includeText = ""
+    @State private var excludeText = ""
 
     var body: some View {
         NavigationStack {
@@ -191,6 +208,17 @@ struct FolderEditor: View {
                     .pickerStyle(.inline)
                     .labelsHidden()
                 }
+                Section {
+                    TextField("Включать: слова через запятую", text: $includeText)
+                        .textInputAutocapitalization(.never)
+                    TextField("Исключать: слова через запятую", text: $excludeText)
+                        .textInputAutocapitalization(.never)
+                } header: {
+                    Text("Ключевые слова")
+                } footer: {
+                    Text("Сверяются с именем и идентификатором чата. Работают поверх правила выше: например «channel_» соберёт каналы.")
+                }
+
                 if rule == .custom {
                     Section("Чаты") {
                         ForEach(allChats, id: \.peerId) { chat in
@@ -223,6 +251,8 @@ struct FolderEditor: View {
                         folder.emoji = emoji
                         folder.rule = rule
                         folder.peers = Array(peers)
+                        folder.includeKeywords = Self.words(includeText)
+                        folder.excludeKeywords = Self.words(excludeText)
                         if !folder.name.isEmpty || !folder.emoji.isEmpty { store.upsert(folder) }
                         dismiss()
                     }
@@ -235,11 +265,22 @@ struct FolderEditor: View {
                 emoji = existing.emoji
                 rule = existing.rule
                 peers = Set(existing.peers)
+                includeText = existing.includeKeywords.joined(separator: ", ")
+                excludeText = existing.excludeKeywords.joined(separator: ", ")
             }
         }
     }
 }
 
+
+extension FolderEditor {
+    /// «a, b ,, c» → ["a", "b", "c"].
+    static func words(_ text: String) -> [String] {
+        text.split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+}
 
 /// Порядок папок: перетаскиванием, как в Telegram. Отдельным листом, потому что
 /// в самой полосе для этого нет места.
