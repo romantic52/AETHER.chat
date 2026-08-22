@@ -37,6 +37,17 @@ enum SwipeTuning {
     static let resistance: CGFloat = 0.75
     /// Доля возврата, после которой отпускание закрывает строку.
     static let closeThreshold: CGFloat = 0.6
+
+    /// Доля ширины экрана по центру, отданная перелистыванию папок. Края строки
+    /// остаются под её действия. Одно горизонтальное движение не может значить
+    /// двух разных вещей, поэтому смыслы разведены по месту начала жеста, а не по
+    /// скорости или длине — так предсказуемо.
+    static let folderZone: CGFloat = 0.34
+
+    /// Попала ли точка (в координатах экрана) в среднюю полосу.
+    static func inFolderZone(_ x: CGFloat, width: CGFloat) -> Bool {
+        abs(x - width / 2) <= width * folderZone / 2
+    }
 }
 
 /// Действие, открывающееся свайпом строки.
@@ -62,6 +73,9 @@ struct SwipeRow<Content: View>: View {
     var fullSwipeTrailing = true
     /// В режиме правки список перетаскивают — свайп там только мешает.
     var swipeEnabled = true
+    /// Отдать середину строки перелистыванию папок. Включается списком и только
+    /// когда папки вообще есть: без них середина ничему не мешает.
+    var reserveMiddle = false
     var onTap: () -> Void
     #if DEBUG
     /// Стенд прогоняет жест сам: последовательность смещений в точках, потом
@@ -89,8 +103,11 @@ struct SwipeRow<Content: View>: View {
     private var actionH: CGFloat { SwipeTuning.actionHeight }
     private var inset: CGFloat { SwipeTuning.inset }
 
+    /// Поля с ОБЕИХ сторон: раньше отступ был только у края экрана, и группа
+    /// стояла криво — 19pt до края и 9pt до самой строки при 18pt между
+    /// кнопками. Замерено по снимку стенда, на глаз такое не ловится.
     private func rowWidth(_ count: Int) -> CGFloat {
-        CGFloat(count) * slotW + inset
+        CGFloat(count) * slotW + 2 * inset
     }
     private var leadingWidth: CGFloat { rowWidth(leading.count) }
     private var trailingWidth: CGFloat { rowWidth(trailing.count) }
@@ -142,6 +159,8 @@ struct SwipeRow<Content: View>: View {
         .contentShape(Rectangle())
         .modifier(PanAttach(
             enabled: swipeEnabled,
+            // У открытой строки середина снова рабочая: ею закрывают.
+            reserveMiddle: reserveMiddle && offset == 0,
             onChanged: { panChanged($0) },
             onEnded: { panEnded(translation: $0, velocity: $1) }
         ))
@@ -187,7 +206,7 @@ struct SwipeRow<Content: View>: View {
                     .zIndex(isEdge ? 1 : 0)
             }
         }
-        .padding(fromLeading ? .leading : .trailing, inset)
+        .padding(.horizontal, inset)
         .frame(width: fullWidth, alignment: fromLeading ? .leading : .trailing)
     }
 
@@ -429,6 +448,19 @@ private struct GrowIn: ViewModifier {
 /// SwiftUI-жест выигрывает у прокрутки: любой сдвиг пальцем убивал скролл,
 /// а на каждой строке висел свой распознаватель — отсюда и падение кадров.
 final class HorizontalPanRecognizer: UIPanGestureRecognizer {
+    /// Отдавать ли середину строки перелистыванию папок. Пока строка закрыта —
+    /// да; у открытой середина снова рабочая, иначе её нечем было бы задвинуть
+    /// обратно тем же движением, которым открыли.
+    var reserveMiddle = true
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
+        super.touchesBegan(touches, with: event)
+        guard reserveMiddle, state == .possible,
+              let touch = touches.first, let view else { return }
+        let width = view.window?.bounds.width ?? UIScreen.main.bounds.width
+        if SwipeTuning.inFolderZone(touch.location(in: nil).x, width: width) { state = .failed }
+    }
+
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent) {
         super.touchesMoved(touches, with: event)
         guard state == .possible || state == .began else { return }
@@ -440,11 +472,18 @@ final class HorizontalPanRecognizer: UIPanGestureRecognizer {
 
 @available(iOS 18.0, *)
 struct HorizontalPan: UIGestureRecognizerRepresentable {
+    var reserveMiddle: Bool
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
 
     func makeUIGestureRecognizer(context: Context) -> HorizontalPanRecognizer {
-        HorizontalPanRecognizer()
+        let recognizer = HorizontalPanRecognizer()
+        recognizer.reserveMiddle = reserveMiddle
+        return recognizer
+    }
+
+    func updateUIGestureRecognizer(_ recognizer: HorizontalPanRecognizer, context: Context) {
+        recognizer.reserveMiddle = reserveMiddle
     }
 
     func handleUIGestureRecognizerAction(_ recognizer: HorizontalPanRecognizer, context: Context) {
@@ -466,20 +505,32 @@ struct HorizontalPan: UIGestureRecognizerRepresentable {
 /// Вынесен из SwipeRow: там имя Content занято параметром самой строки.
 private struct PanAttach: ViewModifier {
     var enabled: Bool = true
+    var reserveMiddle: Bool = false
     var onChanged: (CGFloat) -> Void
     var onEnded: (CGFloat, CGFloat) -> Void
+
+    private func outsideZone(_ x: CGFloat) -> Bool {
+        !reserveMiddle || !SwipeTuning.inFolderZone(x, width: UIScreen.main.bounds.width)
+    }
 
     @ViewBuilder
     func body(content: Content) -> some View {
         if !enabled {
             content
         } else if #available(iOS 18.0, *) {
-            content.gesture(HorizontalPan(onChanged: onChanged, onEnded: onEnded))
+            content.gesture(HorizontalPan(reserveMiddle: reserveMiddle,
+                                          onChanged: onChanged, onEnded: onEnded))
         } else {
+            // На iOS 17 распознавателя нет, поэтому середину отсекаем по точке
+            // начала жеста уже в обработчике.
             content.gesture(
-                DragGesture(minimumDistance: 12)
-                    .onChanged { onChanged($0.translation.width) }
+                DragGesture(minimumDistance: 12, coordinateSpace: .global)
+                    .onChanged {
+                        guard outsideZone($0.startLocation.x) else { return }
+                        onChanged($0.translation.width)
+                    }
                     .onEnded {
+                        guard outsideZone($0.startLocation.x) else { return }
                         let predicted = $0.predictedEndTranslation.width - $0.translation.width
                         onEnded($0.translation.width, predicted / 0.15)
                     }
