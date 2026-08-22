@@ -4,6 +4,10 @@ import PhotosUI
 struct SettingsView: View {
     @EnvironmentObject var session: Session
     @EnvironmentObject var appearance: AppearanceSettings
+    /// Пуши ведём состоянием, а не NavigationLink: корень вкладки объявляет
+    /// видимость дока и должен знать, открыт ли поверх него экран.
+    @State private var showProfileEditor = false
+    @State private var showSecurity = false
     @Environment(\.palette) private var palette
 
     // Без собственного NavigationStack — общий стек HomeView (см. ChatsListView).
@@ -22,13 +26,22 @@ struct SettingsView: View {
                 navigationSection
                 reactionSection
                 storageSection
+                experimentalSection
                 accountSection
             }
             .listStyle(.insetGrouped)
             .scrollContentBackground(.hidden)
             .safeAreaPadding(.bottom, 100)
         }
+        // Явно объявляем док видимым в корне вкладки. Без этого он не
+        // прикрепляется при первом показе: соседнее сокрытие навбара
+        // снимает видимость всей нижней панели, и возвращает её только
+        // пуш с возвратом — отсюда «бар появляется после выхода из чата».
+        // Строго ДО navigationDestination: у запушенного экрана своё
+        // объявление (.hidden), и оно должно оставаться главнее.
         .toolbar(.hidden, for: .navigationBar)
+        .navigationDestination(isPresented: $showProfileEditor) { ProfileEditorView() }
+        .navigationDestination(isPresented: $showSecurity) { SecurityView() }
         .safeAreaInset(edge: .top) { FloatingHeader(title: "Настройки") }
     }
 
@@ -59,9 +72,18 @@ struct SettingsView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.vertical, 12)
-            NavigationLink { ProfileEditorView() } label: {
-                SettingsLabel("Редактировать профиль", icon: "person.crop.circle.fill", color: .blue)
+            Button { showProfileEditor = true } label: {
+                HStack {
+                    SettingsLabel("Редактировать профиль", icon: "person.crop.circle.fill", color: .blue)
+                    Spacer()
+                    // NavigationLink рисовал шеврон сам; с Button добавляем вручную.
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(palette.textSecondary.opacity(0.6))
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         }
         .listRowBackground(palette.surface)
     }
@@ -205,9 +227,18 @@ struct SettingsView: View {
 
     private var securitySection: some View {
         Section {
-            NavigationLink { SecurityView() } label: {
-                SettingsLabel("Сессии и безопасность", icon: "checkmark.shield.fill", color: .blue)
+            Button { showSecurity = true } label: {
+                HStack {
+                    SettingsLabel("Сессии и безопасность", icon: "checkmark.shield.fill", color: .blue)
+                    Spacer()
+                    // NavigationLink рисовал шеврон сам; с Button добавляем вручную.
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(palette.textSecondary.opacity(0.6))
+                }
+                .contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
         } footer: {
             Text("Активные устройства, двухфакторная аутентификация, удаление всех данных.")
         }
@@ -350,11 +381,94 @@ struct SettingsView: View {
         .listRowBackground(palette.surface)
     }
 
+    // Образец стекла с текущими настройками. Подложка пёстрая намеренно: поверх
+    // однотонного фона ни блюр, ни оттенок не читаются, и кажется, что ползунки
+    // мертвы. Круг и капсула, а не ряд вкладок — чтобы образец снова не приняли
+    // за второй бар.
+    private var glassPreview: some View {
+        ZStack {
+            LinearGradient(colors: [.purple, .blue, .teal, .orange],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+                .frame(height: 96)
+                .clipShape(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+
+            HStack(spacing: 12) {
+                Image(systemName: "sparkles")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(palette.textPrimary)
+                    .frame(width: 44, height: 44)
+                    .liquidGlass(Circle(), interactive: true)
+
+                Text("Образец")
+                    .font(.system(size: 15, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .liquidGlass(Capsule(), interactive: true)
+            }
+        }
+        .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16))
+        .listRowBackground(Color.clear)
+    }
+
+    /// Экспериментальное: тайминги свайпа по строке списка чатов. Вынесены в
+    /// интерфейс намеренно — ощущение подбирается на устройстве, вслепую по
+    /// описанию его не поймать.
+    private var experimentalSection: some View {
+        Section {
+            Toggle(isOn: $appearance.swipeVelocityEnabled) {
+                SettingsLabel("Подхват скорости пальца", icon: "hand.draw.fill", color: .teal)
+            }
+            tuner("Открытие · длительность, с", value: $appearance.swipeOpenDuration, range: 0.1...0.6, step: 0.02)
+            tuner("Открытие · раскачка", value: $appearance.swipeOpenBounce, range: 0...0.5, step: 0.05)
+            tuner("Возврат · длительность, с", value: $appearance.swipeCloseDuration, range: 0.08...0.5, step: 0.02)
+            tuner("Возврат · раскачка", value: $appearance.swipeCloseBounce, range: 0...0.4, step: 0.05)
+            tuner("Растягивание до срабатывания", value: $appearance.swipeStretch, range: 40...220, step: 5)
+            tuner("Сопротивление за пределом", value: $appearance.swipeResistance, range: 0.2...1, step: 0.05)
+
+            Button("Вернуть исходные") {
+                appearance.swipeOpenDuration = 0.3
+                appearance.swipeOpenBounce = 0.15
+                appearance.swipeCloseDuration = 0.18
+                appearance.swipeCloseBounce = 0
+                appearance.swipeStretch = 100
+                appearance.swipeResistance = 0.75
+                appearance.swipeVelocityEnabled = true
+            }
+            .foregroundStyle(palette.accent)
+        } header: {
+            Text("Экспериментальное")
+        } footer: {
+            Text("Свайп по чату в списке. Значения по умолчанию сняты с Telegram покадрово: открытие ~0,3 с, возврат ~0,18 с. Изменения применяются сразу.")
+        }
+        .listRowBackground(palette.surface)
+    }
+
+    /// Ползунок с текущим значением справа — иначе подбирать вслепую.
+    private func tuner(_ title: LocalizedStringKey, value: Binding<Double>,
+                       range: ClosedRange<Double>, step: Double) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 15))
+                    .foregroundStyle(palette.textPrimary)
+                Spacer()
+                Text(step < 1 ? String(format: "%.2f", value.wrappedValue)
+                              : String(format: "%.0f", value.wrappedValue))
+                    .font(.system(size: 14, weight: .medium).monospacedDigit())
+                    .foregroundStyle(palette.textSecondary)
+            }
+            Slider(value: value, in: range, step: step).tint(palette.accent)
+        }
+        .padding(.vertical, 2)
+    }
+
     private var glassSection: some View {
         Section {
             Toggle(isOn: $appearance.glassEnabled) {
                 SettingsLabel("Жидкое стекло", icon: "sparkles", color: .indigo)
             }
+            glassPreview
             if appearance.glassEnabled {
                 Picker(selection: $appearance.glassStyle) {
                     ForEach(GlassStyleOption.allCases) { style in
@@ -385,7 +499,7 @@ struct SettingsView: View {
         } header: {
             Text("Жидкое стекло")
         } footer: {
-            Text("Режим и оттенок напрямую меняют системный Glass на доке. Отклик включает деформацию при касании, но не возвращает постоянные фоновые анимации.")
+            Text("Действует на элементы приложения: шапки, кнопки, строку поиска, вложения — образец выше показывает результат. Док внизу рисует сама система, его стекло приложению не подчиняется.")
         }
         .listRowBackground(palette.surface)
     }

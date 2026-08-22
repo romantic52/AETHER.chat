@@ -8,7 +8,7 @@ struct RootView: View {
 
     var body: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.environment["AETHER_BARNATIVE"] == "1" {
+        if ProcessInfo.processInfo.environment["AETHER_BARNATIVE"] == "1", #available(iOS 18.0, *) {
             NativeBarReference()
         } else if ProcessInfo.processInfo.environment["AETHER_BARONLY"] == "1" {
             BarOnlyHarness()
@@ -24,21 +24,29 @@ struct RootView: View {
         ZStack {
             palette.background.ignoresSafeArea()
 
-            switch session.phase {
-            case .loading:
-                ProgressView().tint(palette.accent)
-            case .onboarding:
-                WelcomeView()
-                    .transition(.opacity)
-            case .ready:
-                // .id(myId): смена аккаунта пересоздаёт весь домашний экран
-                // (Messaging, чаты, вкладки) под новую личность.
+            // Домашний экран монтируется СРАЗУ и живёт дальше — так же, как жил
+            // самодельный бар: он был частью иерархии с первого кадра. Системный
+            // таб-бар внутри TabView прикрепляется при монтировании, и делать это
+            // надо заранее, а не в момент показа — иначе экран уже виден, а бар
+            // ещё едет. Фаза загрузки просто накрывает готовый дом сверху.
+            if session.phase != .onboarding {
                 HomeView()
-                    .id(session.myId)
+                    // Пересоздание — только на смену аккаунта (см. accountGeneration).
+                    .id(session.accountGeneration)
+            }
+
+            if session.phase == .loading {
+                palette.background.ignoresSafeArea()
+                    .overlay { ProgressView().tint(palette.accent) }
+            }
+
+            if session.phase == .onboarding {
+                WelcomeView()
                     .transition(.opacity)
             }
         }
-        .animation(.easeInOut(duration: 0.3), value: session.phase)
+        // Анимируется только уход онбординга; дом и бар встают мгновенно.
+        .animation(.easeInOut(duration: 0.3), value: session.phase == .onboarding)
         .task {
             session.setApplicationActive(scenePhase != .background)
             await session.bootstrap()
@@ -62,6 +70,12 @@ struct RootView: View {
 }
 
 #if DEBUG
+// ДИАГНОСТИЧЕСКИЙ СТЕНД. Повторяет конструкцию боевого запуска БЕЗ сессии и
+// сервера: тот же switch по фазе с той же анимацией и .transition(.opacity),
+// внутри — тот же TabView с пятью вкладками, включая роль .search. Нужен, чтобы
+// проверить, появляется ли системный док, когда TabView монтируется внутри
+// анимированного перехода. Запуск:
+//   SIMCTL_CHILD_AETHER_DOCKTEST=1 xcrun simctl launch <udid> com.rmkhc.aether
 // ВРЕМЕННЫЙ СТЕНД — УДАЛИТЬ. Рисует только док поверх фона темы, минуя сессию и
 // экран входа: нужен, чтобы снять скриншот бара и сравнить с системным.
 // Запуск: SIMCTL_CHILD_AETHER_BARONLY=1 xcrun simctl launch <udid> com.rmkhc.aether
@@ -69,6 +83,7 @@ struct RootView: View {
 // четырьмя вкладками: переключаем выбор программно и снимаем видео, чтобы
 // получить эталонные тайминги и деформацию подложки. Тапать в симуляторе нечем,
 // а Photos программно не переключишь — поэтому эталон строим сами.
+@available(iOS 18.0, *)
 private struct NativeBarReference: View {
     @State private var sel = 0
     private let titles = ["Контакты", "Звонки", "Чаты", "Настройки"]
@@ -76,13 +91,16 @@ private struct NativeBarReference: View {
                          "bubble.left.and.bubble.right.fill", "gearshape.fill"]
 
     var body: some View {
+        // Пять вкладок, пятая — с ролью .search: система выносит её отдельным
+        // кружком. Это и есть эталон, под который подгоняется наш бар.
         TabView(selection: $sel) {
-            ForEach(0..<4, id: \.self) { i in
-                Color.black.ignoresSafeArea()
-                    .tabItem { Label(titles[i], systemImage: icons[i]) }
-                    .tag(i)
-            }
+            Tab(titles[0], systemImage: icons[0], value: 0) { Color.black.ignoresSafeArea() }
+            Tab(titles[1], systemImage: icons[1], value: 1) { Color.black.ignoresSafeArea() }
+            Tab(titles[2], systemImage: icons[2], value: 2) { Color.black.ignoresSafeArea() }
+            Tab(titles[3], systemImage: icons[3], value: 3) { Color.black.ignoresSafeArea() }
+            Tab(value: 4, role: .search) { Color.black.ignoresSafeArea() }
         }
+
         .task {
             guard ProcessInfo.processInfo.environment["AETHER_BARCYCLE"] == "1" else { return }
             var i = 0

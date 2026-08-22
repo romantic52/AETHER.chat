@@ -1,6 +1,14 @@
 import SwiftUI
 
 struct ChatsListView: View {
+    /// true — экран открыт из вкладки поиска (кружок справа от дока): шапка
+    /// «Чаты» не нужна, поле поиска сразу активно.
+    private let searchMode: Bool
+
+    init(searchMode: Bool = false) {
+        self.searchMode = searchMode
+    }
+
     @EnvironmentObject var session: Session
     @EnvironmentObject var messaging: Messaging
     @EnvironmentObject var chrome: ChromeState
@@ -14,12 +22,22 @@ struct ChatsListView: View {
     @State private var globalTask: Task<Void, Never>?
     @State private var globalSearchGeneration = UUID()
     @FocusState private var searchFocused: Bool
+    /// Вкладка поиска остаётся живой после ухода с экрана, поэтому отложенный
+    /// фокус обязан проверять, что она всё ещё видна: иначе клавиатура всплывает
+    /// над списком чатов и прячет системный док.
+    @State private var onScreen = false
     @State private var newChatPresented = false
     @State private var newGroupPresented = false
     @State private var newChannelPresented = false
     @State private var showComposeMenu = false
     @State private var showArchive = false
     @State private var editMode: EditMode = .inactive
+    /// Какая строка сейчас раскрыта свайпом — открытие одной закрывает соседку.
+    @State private var openRow: String?
+    /// Строка, которая сейчас переезжает при закреплении. LazyVStack рисует
+    /// соседей в порядке объявления, и без явного zIndex переезжающая строка
+    /// уходит ПОД них: видно чужой текст поверх её аватарки и пустоты по краям.
+    @State private var movingId: String?
 
     private var archived: [Chat] { messaging.chats.filter { $0.archived } }
     private var visible: [Chat] {
@@ -42,22 +60,30 @@ struct ChatsListView: View {
         visible.filter { $0.pinned }
             .sorted { messaging.pinRank($0.peerId) < messaging.pinRank($1.peerId) }
     }
-    private var regular: [Chat] { visible.filter { !$0.pinned } }
-    // Один упорядоченный список (закреп сверху): List анимирует ПЕРЕЕЗД строки
-    // при пине (соседи разъезжаются), а не «исчезла тут — появилась там».
+    // Сортируем ЗДЕСЬ, а не полагаемся на порядок из базы. Ядро отдаёт чаты
+    // запросом «ORDER BY pinned DESC, last_ts DESC», поэтому сразу после
+    // открепления строка ещё лежит близко к началу массива и показывалась первой
+    // среди незакреплённых, а на своё место по времени уезжала только после
+    // следующего перечитывания из базы — отсюда переезд в два шага.
+    private var regular: [Chat] {
+        visible.filter { !$0.pinned }.sorted { $0.lastTs > $1.lastTs }
+    }
+    // Порядок целиком определяется вью: закрепы — по порядку закрепления,
+    // остальные — по времени последнего сообщения.
     private var ordered: [Chat] { pinned + regular }
 
     @ViewBuilder
     private var searchSections: some View {
         if !visible.isEmpty {
-            ForEach(ordered, id: \.peerId) { row($0) }
-                .onDelete { delete($0, in: ordered) }
+            ForEach(ordered, id: \.peerId) { chat in
+                chatRow(chat)
+                separator
+            }
         }
 
         if globalSearching {
             HStack { Spacer(); ProgressView().tint(palette.accent); Spacer() }
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
+                .padding(.vertical, 12)
         }
 
         let filteredGlobalUsers = globalResults.users.filter { u in
@@ -72,18 +98,17 @@ struct ChatsListView: View {
             Text("Найдено в сети")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(palette.textSecondary)
-                .listRowBackground(Color.clear)
-                .listRowSeparator(.hidden)
-                .listRowInsets(EdgeInsets(top: 10, leading: 16, bottom: 2, trailing: 16))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16)
+                .padding(.top, 10)
+                .padding(.bottom, 2)
 
             ForEach(filteredGlobalUsers, id: \.userId) { profile in
                 Button { openedPeer = profile.userId.lowercased() } label: {
-                    globalUserRow(profile)
+                    globalUserRow(profile).padding(.horizontal, 16)
                 }
-                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                .listRowBackground(Color.clear)
-                .listRowSeparatorTint(palette.divider)
-                .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+                .buttonStyle(.plain)
+                separator
             }
 
             ForEach(filteredGlobalGroups, id: \.groupId) { group in
@@ -109,12 +134,11 @@ struct ChatsListView: View {
                 } label: {
                     globalGroupRow(group, member: member, joinable: joinable,
                                    joining: joiningIds.contains(gid))
+                    .padding(.horizontal, 16)
                 }
+                .buttonStyle(.plain)
                 .disabled(!member && !joinable)
-                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-                .listRowBackground(Color.clear)
-                .listRowSeparatorTint(palette.divider)
-                .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+                separator
             }
         }
 
@@ -129,8 +153,6 @@ struct ChatsListView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 40)
-            .listRowBackground(Color.clear)
-            .listRowSeparator(.hidden)
         }
     }
 
@@ -141,37 +163,92 @@ struct ChatsListView: View {
             ZStack {
                 palette.background.ignoresSafeArea()
 
-                List {
-                    if query.isEmpty {
-                        if !archived.isEmpty {
-                            archiveRow
+                // ScrollView + LazyVStack вместо List. List переставляет строку
+                // удалением и вставкой: при закреплении она гасла на старом месте
+                // и проявлялась на новом. LazyVStack анимирует положение строки
+                // напрямую — получается настоящее скольжение. Плата — свайпы
+                // пришлось написать самим (SwipeRow), их нет вне List.
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        if query.isEmpty {
+                            if !archived.isEmpty {
+                                archiveRow
+                                separator
+                            }
+                            ForEach(ordered, id: \.peerId) { chat in
+                                chatRow(chat)
+                                    // Зажатие — предпросмотр переписки и меню
+                                    // действий. Чат при этом НЕ открывается и
+                                    // прочитанным не становится.
+                                    .contextMenu {
+                                        chatMenu(chat)
+                                    } preview: {
+                                        ChatPeek(peerId: chat.peerId,
+                                                 title: chat.title.isEmpty ? chat.peerId : chat.title,
+                                                 myId: session.myId,
+                                                 core: session.core)
+                                    }
+                                    .zIndex(chat.peerId == movingId ? 1 : 0)
+                                    // Переезжающая строка летит скруглённой
+                                    // карточкой, а не прямоугольным блоком.
+                                    .clipShape(RoundedRectangle(
+                                        cornerRadius: chat.peerId == movingId ? 22 : 0,
+                                        style: .continuous))
+                                    .shadow(color: .black.opacity(chat.peerId == movingId ? 0.35 : 0),
+                                            radius: 14, y: 4)
+                                    .animation(.easeInOut(duration: 0.22), value: movingId)
+                                separator
+                            }
+                        } else {
+                            searchSections
                         }
-                        ForEach(ordered, id: \.peerId) { row($0) }
-                            .onDelete { delete($0, in: ordered) }
-                    } else {
-                        searchSections
+                        Color.clear.frame(height: 112)
                     }
-                    Color.clear.frame(height: 112).listRowSeparator(.hidden).listRowBackground(Color.clear)
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
                 .scrollDismissesKeyboard(.interactively)
-                .environment(\.editMode, $editMode)
                 .overlay { if messaging.chats.isEmpty && query.isEmpty { emptyState } }
                 .safeAreaInset(edge: .top) {
                     VStack(spacing: 0) {
-                        customHeader
-                        customSearchBar
+                        if searchMode {
+                            customSearchBar
+                        } else {
+                            customHeader
+                        }
                     }
-                    .background(
-                        EdgeDim(edge: .top)
-                            .ignoresSafeArea(edges: .top)
-                    )
+                    .background {
+                        // Под шапкой — сплошной фон темы, и только поверх него
+                        // градиент. У List строки не доезжали до шапки, а в
+                        // ScrollView они уходят прямо под неё: сквозь один
+                        // полупрозрачный градиент их было видно, и шапка
+                        // читалась вперемешку со строками.
+                        ZStack {
+                            palette.background
+                            EdgeDim(edge: .top)
+                        }
+                        .ignoresSafeArea(edges: .top)
+                    }
                 }
             }
             .toolbar(.hidden, for: .navigationBar)
             .ignoresSafeArea(.keyboard, edges: .bottom)
             .onChange(of: query) { _, q in scheduleGlobalSearch(q) }
+            // Вкладки живут одновременно, поэтому onAppear здесь срабатывает
+            // ОДИН раз при запуске приложения и для фокуса не годится: клавиатура
+            // всплыла бы над главным экраном. Ориентир — активная вкладка.
+            .onChange(of: chrome.tab) { _, tab in
+                guard searchMode else { return }
+                if tab == .search {
+                    onScreen = true
+                    // Задержка — чтобы поле успело проявиться; onScreen страхует
+                    // от фокуса, если с вкладки уже ушли.
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        if onScreen { searchFocused = true }
+                    }
+                } else {
+                    onScreen = false
+                    searchFocused = false
+                }
+            }
             .navigationDestination(item: $openedPeer) { peer in
                 ChatView(peerId: peer, isGroup: messaging.isGroup(peer))
                     .environmentObject(messaging)
@@ -223,19 +300,19 @@ struct ChatsListView: View {
                         editMode = editMode == .active ? .inactive : .active
                     }
                 }
-                .font(.system(size: 15, weight: .medium))
+                .font(.system(size: 16, weight: .medium))
                 .foregroundStyle(palette.textPrimary)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 12)
                 .liquidGlass(Capsule())
 
                 Spacer()
 
                 Button { showComposeMenu = true } label: {
                     Image(systemName: "square.and.pencil")
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                         .foregroundStyle(palette.textPrimary)
-                        .frame(width: 36, height: 36)
+                        .frame(width: 44, height: 44)
                         .liquidGlass(Circle())
                 }
                 .accessibilityLabel("Новый чат")
@@ -404,75 +481,136 @@ struct ChatsListView: View {
         .padding(40)
     }
 
-    private var archiveRow: some View {
-        Button { showArchive = true } label: {
-            HStack(spacing: 12) {
-                ZStack {
-                    Circle().fill(LinearGradient(colors: [palette.textSecondary, palette.textSecondary.opacity(0.6)],
-                                                 startPoint: .top, endPoint: .bottom))
-                    Image(systemName: "archivebox.fill")
-                        .foregroundStyle(.white)
-                        .font(.system(size: 22))
-                }
-                .frame(width: AetherUI.listAvatar, height: AetherUI.listAvatar)
-
-                Text("Архив")
-                    .font(.system(size: 17, weight: .semibold))
-                    .foregroundStyle(palette.textPrimary)
-                Spacer(minLength: 4)
-                Text("\(archived.count)")
-                    .font(.system(size: 15))
-                    .foregroundStyle(palette.textSecondary)
-            }
-            .frame(minHeight: AetherUI.listRowHeight)
-            .contentShape(Rectangle())
-        }
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-        .listRowBackground(Color.clear)
-        .listRowSeparatorTint(palette.divider)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
+    /// Разделитель вместо системного: у LazyVStack его нет.
+    private var separator: some View {
+        Rectangle()
+            .fill(palette.divider)
+            .frame(height: 0.5)
+            .padding(.leading, AetherUI.listTextInset)
     }
 
-    private func row(_ chat: Chat) -> some View {
-        Button {
-            openedPeer = chat.peerId
-        } label: {
-            ChatRow(chat: chat,
-                    myId: session.myId,
-                    online: messaging.isOnline(chat.peerId),
-                    typing: messaging.typingPeers.contains(chat.peerId))
-        }
-        .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
-        .listRowBackground(Color.clear)
-        .listRowSeparatorTint(palette.divider)
-        .alignmentGuide(.listRowSeparatorLeading) { _ in AetherUI.listTextInset }
-        .swipeActions(edge: .leading, allowsFullSwipe: true) {
-            Button {
-                Task { await messaging.setPinned(chat.peerId, !chat.pinned) }
-            } label: { Label(chat.pinned ? "Открепить" : "Закрепить", systemImage: "pin.fill") }
-                .tint(palette.accent)
-        }
-        .swipeActions(edge: .trailing, allowsFullSwipe: false) {
-            if chat.peerId == session.myId.lowercased() {
-                // Избранное — личный канал: удалить нельзя, только очистить историю.
-                Button(role: .destructive) {
-                    Task { await messaging.clearSavedMessages() }
-                } label: { Label("Очистить", systemImage: "paintbrush.fill") }
-                    .tint(.red)   // иначе акцент приложения перебивает красный
-            } else {
-                Button(role: .destructive) {
-                    Task { await messaging.deleteChat(chat.peerId) }
-                } label: { Label("Удалить", systemImage: "trash.fill") }
-                    .tint(.red)
+    private var archiveRow: some View {
+        archiveRowContent
+            .padding(.horizontal, 16)
+            .background(palette.background)
+            .contentShape(Rectangle())
+            .onTapGesture { showArchive = true }
+    }
+
+    private var archiveRowContent: some View {
+        HStack(spacing: 12) {
+            ZStack {
+                Circle().fill(LinearGradient(colors: [palette.textSecondary, palette.textSecondary.opacity(0.6)],
+                                             startPoint: .top, endPoint: .bottom))
+                Image(systemName: "archivebox.fill")
+                    .foregroundStyle(.white)
+                    .font(.system(size: 22))
             }
-            Button {
+            .frame(width: AetherUI.listAvatar, height: AetherUI.listAvatar)
+
+            Text("Архив")
+                .font(.system(size: 17, weight: .semibold))
+                .foregroundStyle(palette.textPrimary)
+            Spacer(minLength: 4)
+            Text("\(archived.count)")
+                .font(.system(size: 15))
+                .foregroundStyle(palette.textSecondary)
+        }
+        .frame(minHeight: AetherUI.listRowHeight)
+    }
+
+    @ViewBuilder
+    private func chatMenu(_ chat: Chat) -> some View {
+        Button { Task { await messaging.setPinned(chat.peerId, !chat.pinned) } } label: {
+            Label(chat.pinned ? "Открепить" : "Закрепить", systemImage: "pin.fill")
+        }
+        Button { Task { await messaging.markRead(chat.peerId) } } label: {
+            Label("Прочитать", systemImage: "envelope.open.fill")
+        }
+        Button { Task { await messaging.setMuted(chat.peerId, !chat.muted) } } label: {
+            Label(chat.muted ? "Вкл. звук" : "Без звука",
+                  systemImage: chat.muted ? "bell.fill" : "bell.slash.fill")
+        }
+        Button { Task { await messaging.setArchived(chat.peerId, true) } } label: {
+            Label("В архив", systemImage: "archivebox.fill")
+        }
+        Button(role: .destructive) {
+            Task {
+                if chat.peerId == session.myId.lowercased() { await messaging.clearSavedMessages() }
+                else { await messaging.deleteChat(chat.peerId) }
+            }
+        } label: {
+            Label(chat.peerId == session.myId.lowercased() ? "Очистить" : "Удалить",
+                  systemImage: "trash.fill")
+        }
+    }
+
+    private func chatRow(_ chat: Chat) -> some View {
+        let isSelf = chat.peerId == session.myId.lowercased()
+        // Порядок ведомых действий — как в системе: разрушающее у самого края.
+        // Порядок = слева направо. У САМОГО КРАЯ экрана стоит архив: именно он
+        // растягивается и срабатывает быстрым жестом. Удаление намеренно не там —
+        // смахнуть чат насмерть одним движением слишком легко.
+        let trailing = [
+            RowAction(title: isSelf ? "Очистить" : "Удалить",
+                      icon: isSelf ? "paintbrush.fill" : "trash.fill", tint: .red) {
+                Task {
+                    if isSelf { await messaging.clearSavedMessages() }
+                    else { await messaging.deleteChat(chat.peerId) }
+                }
+            },
+            RowAction(title: chat.muted ? "Вкл. звук" : "Без звука",
+                      icon: chat.muted ? "bell.fill" : "bell.slash.fill", tint: .orange) {
                 Task { await messaging.setMuted(chat.peerId, !chat.muted) }
-            } label: { Label(chat.muted ? "Вкл. звук" : "Без звука", systemImage: chat.muted ? "bell.fill" : "bell.slash.fill") }
-                .tint(.orange)
-            Button {
+            },
+            RowAction(title: "В архив", icon: "archivebox.fill", tint: palette.textSecondary) {
                 Task { await messaging.setArchived(chat.peerId, true) }
-            } label: { Label("В архив", systemImage: "archivebox.fill") }
-                .tint(palette.textSecondary)
+            }
+        ]
+        return SwipeRow(
+            rowId: chat.peerId,
+            openRow: $openRow,
+            // Слева две кнопки, как в эталоне: на узком ряду из одной кнопки
+            // ходу не хватало, и открытие читалось рывком.
+            leading: [
+                RowAction(title: chat.pinned ? "Открепить" : "Закрепить",
+                          icon: "pin.fill", tint: palette.accent) {
+                    movingId = chat.peerId
+                    Task {
+                        await messaging.setPinned(chat.peerId, !chat.pinned)
+                        // Держим строку сверху всю анимацию переезда и отпускаем.
+                        try? await Task.sleep(nanoseconds: 700_000_000)
+                        movingId = nil
+                    }
+                },
+                RowAction(title: "Прочитать", icon: "envelope.open.fill",
+                          tint: palette.textSecondary) {
+                    Task { await messaging.markRead(chat.peerId) }
+                }
+            ],
+            trailing: trailing,
+            fullSwipeLeading: true,
+            onTap: { openedPeer = chat.peerId }
+        ) {
+            HStack(spacing: 12) {
+                if editMode == .active {
+                    Button {
+                        Task { await messaging.deleteChat(chat.peerId) }
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .font(.system(size: 21))
+                            .foregroundStyle(.red)
+                    }
+                    .buttonStyle(.plain)
+                    .transition(.scale.combined(with: .opacity))
+                }
+                ChatRow(chat: chat,
+                        myId: session.myId,
+                        online: messaging.isOnline(chat.peerId),
+                        typing: messaging.typingPeers.contains(chat.peerId))
+            }
+            .padding(.horizontal, 16)
+            .animation(.easeInOut(duration: 0.18), value: editMode)
         }
     }
 }
@@ -595,3 +733,5 @@ struct ChatRow: View {
         return Self.dateFormatter.string(from: date)
     }
 }
+
+

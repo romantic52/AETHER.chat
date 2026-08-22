@@ -91,6 +91,35 @@ final class AvatarStore: ObservableObject {
         return nil
     }
 
+    /// Только память — это безопасно звать прямо из body при отрисовке.
+    func cachedRemote(for url: URL) -> UIImage? { remoteCache[url.absoluteString] }
+
+    /// Диск и сеть — вне главного потока и БЕЗ глобального revision.
+    ///
+    /// Раньше было две беды сразу. Первая: чтение файла шло синхронно прямо в
+    /// body, то есть на каждый показ строки — блокирующий доступ к диску во
+    /// время прокрутки. Вторая: каждая докачанная аватарка увеличивала revision,
+    /// а на него подписан КАЖДЫЙ Avatar в приложении — перерисовывался весь
+    /// список целиком, столько раз, сколько аватарок грузится.
+    func remoteImageAsync(for url: URL) async -> UIImage? {
+        let key = url.absoluteString
+        if let img = remoteCache[key] { return img }
+
+        let file = remotePath(url)
+        if let img = await Task.detached(priority: .utility, operation: {
+            (try? Data(contentsOf: file)).flatMap { UIImage(data: $0) }
+        }).value {
+            remoteCache[key] = img
+            return img
+        }
+
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let img = UIImage(data: data) else { return nil }
+        try? data.write(to: file, options: .atomic)
+        remoteCache[key] = img
+        return img
+    }
+
     /// Размер дискового кеша аватарок в байтах.
     func remoteCacheSizeBytes() -> Int64 {
         let files = (try? FileManager.default.contentsOfDirectory(

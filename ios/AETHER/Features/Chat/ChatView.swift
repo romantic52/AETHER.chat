@@ -505,7 +505,7 @@ struct ChatView: View {
                         Image(systemName: "phone.fill")
                             .font(.system(size: 16, weight: .semibold))
                             .foregroundStyle(palette.accent)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 44, height: 44)
                             .contentShape(Circle())
                     }
                 }
@@ -776,8 +776,8 @@ struct ChatView: View {
         .padding(.bottom, 8)
     }
 
-    /// Толщина контролов композера: единая (толстая) в обоих состояниях —
-    /// анимируются только ширина и позиция, без схлопывания в компактный размер.
+    /// Толщина контролов композера: единая в обеих фазах — и у поля, и у боковых
+    /// кружков. Кружки не уменьшаются: к овалу их придвигает интервал, а не размер.
     private var composerControl: CGFloat { 46 }
 
     private var composerBar: some View {
@@ -867,7 +867,6 @@ struct ChatView: View {
                         }
                         .frame(maxWidth: .infinity)
                         .liquidGlass(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
-                        .padding(.horizontal, inputFocused ? 0 : 8)
                         .animation(AetherUI.sendAnimation, value: replyTo?.id)
                         .animation(AetherUI.sendAnimation, value: editing?.id)
                     }
@@ -919,7 +918,7 @@ struct ChatView: View {
                             .fill(.white)
                             .frame(width: 17, height: 17)
                             .frame(width: composerControl, height: composerControl)
-                            .background(palette.danger, in: Circle())
+                            .liquidGlass(Circle(), tint: palette.danger)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.squish)
@@ -931,7 +930,7 @@ struct ChatView: View {
                         .font(.system(size: 18, weight: .bold))
                         .foregroundStyle(palette.onAccent)
                         .frame(width: composerControl, height: composerControl)
-                        .background(palette.danger, in: Circle())
+                        .liquidGlass(Circle(), tint: palette.danger)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.squish)
@@ -945,7 +944,7 @@ struct ChatView: View {
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(palette.onAccent)
                             .frame(width: composerControl, height: composerControl)
-                            .background(palette.accent, in: Circle())
+                            .liquidGlass(Circle(), tint: palette.accent)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.squish)
@@ -957,7 +956,7 @@ struct ChatView: View {
                         .font(.system(size: 20, weight: .bold))
                         .foregroundStyle(palette.onAccent)
                         .frame(width: composerControl, height: composerControl)
-                        .background(palette.accent, in: Circle())
+                        .liquidGlass(Circle(), tint: palette.accent)
                         .contentShape(Circle())
                 }
                 .buttonStyle(.squish)
@@ -970,8 +969,7 @@ struct ChatView: View {
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(palette.onAccent)
                             .frame(width: composerControl, height: composerControl)
-                            .background(palette.accent, in: Circle())
-                            .overlay(Circle().stroke(.white.opacity(0.12), lineWidth: 0.5))
+                            .liquidGlass(Circle(), tint: palette.accent)
                             .contentShape(Circle())
                     }
                     .buttonStyle(.squish)

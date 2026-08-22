@@ -8,6 +8,9 @@ struct LiquidGlass<S: Shape>: ViewModifier {
     let shape: S
     var interactive: Bool = false
     var tintOverride: Color? = nil
+    /// true — не подмешивать оттенок темы вообще. Для дока: системный бар
+    /// нейтральный, а наш при glassTint 12% отдавал синевой и выглядел чужеродно.
+    var neutral: Bool = false
     /// false — при выключенном стекле НЕ рисовать surface-подложку (контент как есть):
     /// для элементов со своей заливкой (индикатор таб-бара), где подложка — «серое пятно».
     var surfaceWhenOff: Bool = true
@@ -22,7 +25,7 @@ struct LiquidGlass<S: Shape>: ViewModifier {
     func body(content: Content) -> some View {
         if !appearance.glassEnabled {
             if surfaceWhenOff {
-                content.background(palette.surface, in: shape)
+                content.background(tintOverride ?? palette.surface, in: shape)
             } else {
                 content
             }
@@ -46,7 +49,8 @@ struct LiquidGlass<S: Shape>: ViewModifier {
     @ViewBuilder
     private func native(_ content: Content) -> some View {
         let base: Glass = appearance.glassStyle == .clear ? .clear : .regular
-        let tintColor = tintOverride ?? (appearance.glassTint > 0 ? palette.accent.opacity(appearance.glassTint) : nil)
+        let tintColor = neutral ? nil
+            : (tintOverride ?? (appearance.glassTint > 0 ? palette.accent.opacity(appearance.glassTint) : nil))
         let tinted = tintColor != nil ? base.tint(tintColor!) : base
         let glassed = content.glassEffect(
             interactive && appearance.glassInteractive ? tinted.interactive() : tinted,
@@ -68,7 +72,9 @@ struct LiquidGlass<S: Shape>: ViewModifier {
                 shape.fill(appearance.glassStyle == .clear
                             ? AnyShapeStyle(.thinMaterial)
                             : AnyShapeStyle(.ultraThinMaterial))
-                shape.fill(tintOverride ?? palette.accent.opacity(appearance.glassTint))
+                if !neutral {
+                    shape.fill(tintOverride ?? palette.accent.opacity(appearance.glassTint))
+                }
             }
             .overlay(shape.stroke(Color.white.opacity(0.08), lineWidth: 0.5))
             .clipShape(shape)
@@ -78,9 +84,11 @@ struct LiquidGlass<S: Shape>: ViewModifier {
 extension View {
     /// Наложить жидкое стекло в заданной форме. glassID + namespace — только для
     /// стёкол внутри одного GlassGroup, которые должны сливаться при движении.
-    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false, surfaceWhenOff: Bool = true,
+    func liquidGlass<S: Shape>(_ shape: S, interactive: Bool = false, tint: Color? = nil,
+                               neutral: Bool = false, surfaceWhenOff: Bool = true,
                                glassID: String? = nil, namespace: Namespace.ID? = nil) -> some View {
-        modifier(LiquidGlass(shape: shape, interactive: interactive, surfaceWhenOff: surfaceWhenOff,
+        modifier(LiquidGlass(shape: shape, interactive: interactive, tintOverride: tint,
+                             neutral: neutral, surfaceWhenOff: surfaceWhenOff,
                              glassID: glassID, namespace: namespace))
     }
     func liquidGlass(cornerRadius: CGFloat = Radius.panel, interactive: Bool = false) -> some View {

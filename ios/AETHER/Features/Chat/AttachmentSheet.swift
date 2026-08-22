@@ -243,7 +243,7 @@ struct AttachmentSheet: View {
                         Image(systemName: "xmark")
                             .font(.system(size: 15, weight: .heavy))
                             .foregroundStyle(.white)
-                            .frame(width: 36, height: 36)
+                            .frame(width: 44, height: 44)
                             .background(.black.opacity(0.65), in: Circle())
                             .overlay(Circle().stroke(.white.opacity(0.5), lineWidth: 1))
                     }

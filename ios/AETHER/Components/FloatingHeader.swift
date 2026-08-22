@@ -40,13 +40,16 @@ struct FloatingHeader: View {
 struct HeaderIconButton: View {
     @Environment(\.palette) private var palette
     var icon: String
-    var size: CGFloat = 36
+    /// 44pt — минимальная цель нажатия по требованиям Apple. Меньше делать
+    /// нельзя: с системной обводкой кнопок сразу видно, что стекло уже
+    /// самой кнопки, и она выглядит мелкой.
+    var size: CGFloat = 44
     var action: () -> Void
 
     var body: some View {
         Button(action: action) {
             Image(systemName: icon)
-                .font(.system(size: 16, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(palette.textPrimary)
                 .frame(width: size, height: size)
                 // interactive-стекло НЕЛЬЗЯ внутри Button: на iOS 26+ оно вешает
