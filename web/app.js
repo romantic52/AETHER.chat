@@ -3005,9 +3005,16 @@ async function pollInbox() {
                         newMsg.read_sent = true;
                     }
                 } else if (!isSelfMsg) {
-                    // Only notify if this chat is NOT currently open (и не своё сообщение)
-                    playSound = true;
-                    lastNotificationMsg = newMsg;
+                    // Only notify if this chat is NOT currently open (и не своё сообщение).
+                    // Чат «без звука» не должен ни звенеть, ни показывать уведомление:
+                    // переключатель в списке это только рисовал иконкой, но глушить
+                    // ничего не глушил — в отличие от iOS, где он работает.
+                    const notifyPeer = String(newMsg.peer || '').toLowerCase();
+                    const notifyMuted = !!(chatSettingsCache[notifyPeer] || {}).is_muted;
+                    if (!notifyMuted) {
+                        playSound = true;
+                        lastNotificationMsg = newMsg;
+                    }
                 }
             } catch (e) {
                 // Once authenticated decryption succeeded, a malformed
