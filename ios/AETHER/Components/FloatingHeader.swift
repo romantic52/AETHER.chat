@@ -8,6 +8,8 @@ import SwiftUI
 struct FloatingHeader: View {
     @Environment(\.palette) private var palette
     var title: LocalizedStringKey
+    /// Оставлен ради вызовов с `large: false`; на размер больше не влияет —
+    /// заголовки везде одного размера.
     var large = true
     var leading: AnyView? = nil
     var trailing: AnyView? = nil
@@ -16,14 +18,21 @@ struct FloatingHeader: View {
     var withBackground = true
 
     var body: some View {
-        HStack(spacing: 12) {
-            if let leading { leading }
+        // Заголовок ПО ЦЕНТРУ и одного размера на всех экранах — как в чатах.
+        // Раньше он стоял слева и был то 30pt, то 17pt: экраны выглядели из
+        // разных приложений.
+        ZStack {
             Text(title)
-                .font(large ? .system(size: 30, weight: .bold) : .system(size: 17, weight: .semibold))
+                .font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(palette.textPrimary)
                 .lineLimit(1)
-            Spacer()
-            if let trailing { trailing }
+                .padding(.horizontal, 56)
+
+            HStack(spacing: 12) {
+                if let leading { leading }
+                Spacer()
+                if let trailing { trailing }
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
