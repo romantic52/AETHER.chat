@@ -521,6 +521,24 @@ def init_db() -> None:
             )"""
         )
 
+        # Привязка второго устройства по QR. Сервер выступает только почтовым
+        # ящиком: bundle приходит уже зашифрованным на эфемерный ключ нового
+        # устройства, прочитать его сервер не может. Секрет из QR хранится
+        # хешем — по базе нельзя восстановить ссылку и подтвердить привязку.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS pairing_requests (
+                pairing_id TEXT PRIMARY KEY,
+                secret_hash TEXT NOT NULL,
+                eph_pub_b64 TEXT NOT NULL,
+                created_at TIMESTAMPTZ NOT NULL,
+                user_id TEXT,
+                device_id TEXT,
+                encrypted_bundle_b64 TEXT,
+                platform TEXT,
+                approved_at TIMESTAMPTZ
+            )"""
+        )
+
         # P9: резервная копия истории. Сервер хранит ТОЛЬКО шифротекст
         # (AES-256-GCM ключом, выведенным из приватного ключа аккаунта) —
         # прочитать его он не может, как и конверты сообщений.
@@ -1859,6 +1877,119 @@ def post_views(body: PostViewsRequest, current_user: str = Depends(get_current_u
         )
         counts = {r["message_id"]: r["n"] for r in cur.fetchall()}
     return {"views": counts}
+
+
+class PairingStartRequest(BaseModel):
+    pairing_id: str = Field(min_length=8, max_length=64)
+    secret: str = Field(min_length=16, max_length=128)
+    eph_pub_b64: str = Field(min_length=16, max_length=256)
+
+
+class PairingApproveRequest(BaseModel):
+    pairing_id: str = Field(min_length=8, max_length=64)
+    pairing_secret: str = Field(min_length=16, max_length=128)
+    encrypted_bundle_b64: str = Field(min_length=16, max_length=200_000)
+    platform: str = Field(default="unknown", max_length=32)
+
+
+PAIRING_TTL = timedelta(minutes=10)
+
+
+def _pairing_secret_hash(secret: str) -> str:
+    return hashlib.sha256(secret.encode("utf-8")).hexdigest()
+
+
+@app.post("/pairing/start")
+def pairing_start(body: PairingStartRequest) -> dict:
+    """Новое устройство объявляет заявку и показывает QR.
+
+    Без авторизации намеренно: устройство ещё не имеет аккаунта. Защита в том,
+    что подтвердить заявку может только вошедший пользователь, знающий секрет
+    из QR, а сам секрет здесь хранится хешем.
+    """
+    now = _utc_now()
+    with db_conn() as cur:
+        cur.execute("DELETE FROM pairing_requests WHERE created_at < %s", (now - PAIRING_TTL,))
+        cur.execute(
+            """INSERT INTO pairing_requests (pairing_id, secret_hash, eph_pub_b64, created_at)
+               VALUES (%s, %s, %s, %s)
+               ON CONFLICT (pairing_id) DO NOTHING""",
+            (body.pairing_id, _pairing_secret_hash(body.secret), body.eph_pub_b64, now),
+        )
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=409, detail="Заявка с таким идентификатором уже есть")
+    return {"ok": True, "expires_in": int(PAIRING_TTL.total_seconds())}
+
+
+@app.post("/pairing/approve")
+def pairing_approve(body: PairingApproveRequest,
+                    current_user: str = Depends(get_current_user)) -> dict:
+    """Доверенное устройство подтверждает привязку.
+
+    Пароль и TOTP здесь не участвуют: подтверждение с уже вошедшего устройства
+    само по себе является доказательством. Сервер видит только шифротекст
+    bundle — он зашифрован на эфемерный ключ нового устройства.
+    """
+    now = _utc_now()
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT secret_hash, created_at, approved_at FROM pairing_requests WHERE pairing_id = %s",
+            (body.pairing_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Заявка не найдена или истекла")
+        secret_hash, created_at, approved_at = row[0], row[1], row[2]
+        if approved_at is not None:
+            raise HTTPException(status_code=409, detail="Заявка уже подтверждена")
+        if created_at < now - PAIRING_TTL:
+            cur.execute("DELETE FROM pairing_requests WHERE pairing_id = %s", (body.pairing_id,))
+            raise HTTPException(status_code=410, detail="Заявка истекла")
+        # Сравнение постоянным временем: иначе секрет подбирается по задержке.
+        if not hmac.compare_digest(secret_hash, _pairing_secret_hash(body.pairing_secret)):
+            raise HTTPException(status_code=403, detail="Неверный секрет привязки")
+
+        device_id = secrets.token_hex(16)
+        cur.execute(
+            """UPDATE pairing_requests
+               SET user_id = %s, device_id = %s, encrypted_bundle_b64 = %s,
+                   platform = %s, approved_at = %s
+               WHERE pairing_id = %s""",
+            (current_user.lower(), device_id, body.encrypted_bundle_b64,
+             body.platform, now, body.pairing_id),
+        )
+    return {"ok": True, "device_id": device_id}
+
+
+@app.get("/pairing/claim")
+def pairing_claim(pairing_id: str, pairing_secret: str) -> dict:
+    """Новое устройство забирает подтверждение. Выдаётся ОДИН раз: строка сразу
+    удаляется, повторно тот же bundle получить нельзя."""
+    now = _utc_now()
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT secret_hash, created_at, user_id, device_id, encrypted_bundle_b64
+               FROM pairing_requests WHERE pairing_id = %s""",
+            (pairing_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Заявка не найдена или истекла")
+        if not hmac.compare_digest(row[0], _pairing_secret_hash(pairing_secret)):
+            raise HTTPException(status_code=403, detail="Неверный секрет привязки")
+        if row[1] < now - PAIRING_TTL:
+            cur.execute("DELETE FROM pairing_requests WHERE pairing_id = %s", (pairing_id,))
+            raise HTTPException(status_code=410, detail="Заявка истекла")
+        if row[2] is None:
+            return {"status": "pending"}
+
+        cur.execute("DELETE FROM pairing_requests WHERE pairing_id = %s", (pairing_id,))
+    return {
+        "status": "approved",
+        "user_id": row[2],
+        "device_id": row[3],
+        "encrypted_bundle_b64": row[4],
+    }
 
 
 class RegisterDeviceRequest(BaseModel):
