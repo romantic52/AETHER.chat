@@ -525,17 +525,30 @@ def init_db() -> None:
         # ящиком: bundle приходит уже зашифрованным на эфемерный ключ нового
         # устройства, прочитать его сервер не может. Секрет из QR хранится
         # хешем — по базе нельзя восстановить ссылку и подтвердить привязку.
+        # Первая версия таблицы ушла в прод с TIMESTAMPTZ, тогда как во всём
+        # проекте время хранится текстом (_utc_now отдаёт ISO-строку). Таблица
+        # новая и пустая — переносить нечего, просто пересоздаём.
+        cur.execute(
+            """DO $$ BEGIN
+                IF EXISTS (SELECT 1 FROM information_schema.columns
+                           WHERE table_name = 'pairing_requests'
+                             AND column_name = 'created_at'
+                             AND data_type <> 'text') THEN
+                    DROP TABLE pairing_requests;
+                END IF;
+            END $$;"""
+        )
         cur.execute(
             """CREATE TABLE IF NOT EXISTS pairing_requests (
                 pairing_id TEXT PRIMARY KEY,
                 secret_hash TEXT NOT NULL,
                 eph_pub_b64 TEXT NOT NULL,
-                created_at TIMESTAMPTZ NOT NULL,
+                created_at TEXT NOT NULL,
                 user_id TEXT,
                 device_id TEXT,
                 encrypted_bundle_b64 TEXT,
                 platform TEXT,
-                approved_at TIMESTAMPTZ
+                approved_at TEXT
             )"""
         )
 
@@ -1895,6 +1908,12 @@ class PairingApproveRequest(BaseModel):
 PAIRING_TTL = timedelta(minutes=10)
 
 
+def _pairing_cutoff() -> str:
+    """Отсечка «старше этой строки — истекло». Время везде в проекте хранится
+    ISO-строкой одного формата, поэтому сравнение строк корректно."""
+    return (datetime.now(timezone.utc) - PAIRING_TTL).isoformat()
+
+
 def _pairing_secret_hash(secret: str) -> str:
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
@@ -1909,7 +1928,7 @@ def pairing_start(body: PairingStartRequest) -> dict:
     """
     now = _utc_now()
     with db_conn() as cur:
-        cur.execute("DELETE FROM pairing_requests WHERE created_at < %s", (now - PAIRING_TTL,))
+        cur.execute("DELETE FROM pairing_requests WHERE created_at < %s", (_pairing_cutoff(),))
         cur.execute(
             """INSERT INTO pairing_requests (pairing_id, secret_hash, eph_pub_b64, created_at)
                VALUES (%s, %s, %s, %s)
@@ -1942,7 +1961,7 @@ def pairing_approve(body: PairingApproveRequest,
         secret_hash, created_at, approved_at = row[0], row[1], row[2]
         if approved_at is not None:
             raise HTTPException(status_code=409, detail="Заявка уже подтверждена")
-        if created_at < now - PAIRING_TTL:
+        if created_at < _pairing_cutoff():
             cur.execute("DELETE FROM pairing_requests WHERE pairing_id = %s", (body.pairing_id,))
             raise HTTPException(status_code=410, detail="Заявка истекла")
         # Сравнение постоянным временем: иначе секрет подбирается по задержке.
@@ -1965,7 +1984,6 @@ def pairing_approve(body: PairingApproveRequest,
 def pairing_claim(pairing_id: str, pairing_secret: str) -> dict:
     """Новое устройство забирает подтверждение. Выдаётся ОДИН раз: строка сразу
     удаляется, повторно тот же bundle получить нельзя."""
-    now = _utc_now()
     with db_conn() as cur:
         cur.execute(
             """SELECT secret_hash, created_at, user_id, device_id, encrypted_bundle_b64
@@ -1977,7 +1995,7 @@ def pairing_claim(pairing_id: str, pairing_secret: str) -> dict:
             raise HTTPException(status_code=404, detail="Заявка не найдена или истекла")
         if not hmac.compare_digest(row[0], _pairing_secret_hash(pairing_secret)):
             raise HTTPException(status_code=403, detail="Неверный секрет привязки")
-        if row[1] < now - PAIRING_TTL:
+        if row[1] < _pairing_cutoff():
             cur.execute("DELETE FROM pairing_requests WHERE pairing_id = %s", (pairing_id,))
             raise HTTPException(status_code=410, detail="Заявка истекла")
         if row[2] is None:

@@ -56,3 +56,6 @@ ios/AETHER/CoreFFI/Generated/
 
 # macOS
 .DS_Store
+
+# Локальные значения для деплоя (боевой хост) — вне git
+scripts/deploy.local.env

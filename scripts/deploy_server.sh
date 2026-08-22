@@ -35,6 +35,12 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------- параметры
+# Локальные значения (адрес health-пробы и прочее) — вне git, чтобы боевой хост
+# не возвращался в репозиторий после чистки. Файл необязательный.
+# shellcheck source=/dev/null
+[ -f "$(dirname -- "${BASH_SOURCE[0]}")/deploy.local.env" ] \
+    && . "$(dirname -- "${BASH_SOURCE[0]}")/deploy.local.env"
+
 SSH_HOST="${SSH_HOST:-aether-vps}"                      # алиас из ~/.ssh/config → root@<SERVER_IP>
 REMOTE_FILE="${REMOTE_FILE:-/root/secure_messenger/server/main.py}"
 SERVICE="${SERVICE:-secure_messenger}"
