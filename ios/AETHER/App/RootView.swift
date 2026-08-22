@@ -8,7 +8,9 @@ struct RootView: View {
 
     var body: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.environment["AETHER_BARNATIVE"] == "1", #available(iOS 18.0, *) {
+        if ProcessInfo.processInfo.environment["AETHER_SWIPETEST"] == "1" {
+            SwipeTestHarness()
+        } else if ProcessInfo.processInfo.environment["AETHER_BARNATIVE"] == "1", #available(iOS 18.0, *) {
             NativeBarReference()
         } else if ProcessInfo.processInfo.environment["AETHER_BARONLY"] == "1" {
             BarOnlyHarness()
@@ -140,6 +142,62 @@ private struct BarOnlyHarness: View {
                 }
             }
         }
+    }
+}
+#endif
+
+#if DEBUG
+/// Стенд свайпов: список строк с настоящим SwipeRow, но без сессии и сервера —
+/// чтобы проверять жест в симуляторе, а не только на устройстве.
+/// Запуск: SIMCTL_CHILD_AETHER_SWIPETEST=1 xcrun simctl launch <udid> com.rmkhc.aether
+struct SwipeTestHarness: View {
+    @Environment(\.palette) private var palette
+    @State private var openRow: String?
+    @State private var log = "жеста не было"
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Text(log)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(palette.textPrimary)
+                .padding(8)
+
+            ScrollView {
+                LazyVStack(spacing: 0) {
+                    ForEach(0..<12, id: \.self) { i in
+                        SwipeRow(
+                            rowId: "row-\(i)",
+                            openRow: $openRow,
+                            leading: [
+                                RowAction(title: "Закрепить", icon: "pin.fill", tint: .purple) { log = "закрепить \(i)" },
+                                RowAction(title: "Прочитать", icon: "envelope.open.fill", tint: .gray) { log = "прочитать \(i)" }
+                            ],
+                            trailing: [
+                                RowAction(title: "Удалить", icon: "trash.fill", tint: .red) { log = "удалить \(i)" },
+                                RowAction(title: "Без звука", icon: "bell.slash.fill", tint: .orange) { log = "звук \(i)" },
+                                RowAction(title: "В архив", icon: "archivebox.fill", tint: .teal) { log = "архив \(i)" }
+                            ],
+                            onTap: { log = "тап \(i)" },
+                            // Первая строка сама протаскивается вправо, вторая
+                            // влево — чтобы снять результат кадрами.
+                            debugScript: i == 0 ? Array(stride(from: 10.0, through: 200.0, by: 10.0))
+                                       : i == 1 ? Array(stride(from: -10.0, through: -240.0, by: -10.0))
+                                       : nil
+                        ) {
+                            HStack(spacing: 12) {
+                                Circle().fill(.blue).frame(width: 46, height: 46)
+                                Text("Строка \(i)").foregroundStyle(palette.textPrimary)
+                                Spacer()
+                            }
+                            .padding(.horizontal, 16)
+                            .frame(height: 68)
+                        }
+                        Rectangle().fill(palette.divider).frame(height: 0.5)
+                    }
+                }
+            }
+        }
+        .background(palette.background)
     }
 }
 #endif

@@ -63,6 +63,12 @@ struct SwipeRow<Content: View>: View {
     /// В режиме правки список перетаскивают — свайп там только мешает.
     var swipeEnabled = true
     var onTap: () -> Void
+    #if DEBUG
+    /// Стенд прогоняет жест сам: последовательность смещений в точках, потом
+    /// отпускание. Нужно, чтобы проверять свайп в симуляторе без пальца —
+    /// инъекция касаний там доступна не всегда.
+    var debugScript: [CGFloat]? = nil
+    #endif
     @ViewBuilder var content: Content
 
     @Environment(\.palette) private var palette
@@ -127,6 +133,10 @@ struct SwipeRow<Content: View>: View {
                     if offset != 0 { close() } else { onTap() }
                 }
         }
+        // Обрезка ПОСТОЯННАЯ. Пробовал включать её только на время свайпа —
+        // это условие меняет идентичность вьюхи, и SwiftUI пересоздаёт строку
+        // вместе с состоянием и распознавателем ровно в момент начала жеста:
+        // свайп переставал открываться вовсе.
         .clipped()
         // Вся строка — площадь для свайпа: аватарка и время не «глухие».
         .contentShape(Rectangle())
@@ -137,6 +147,18 @@ struct SwipeRow<Content: View>: View {
         ))
         .onChange(of: gestureActive) { _, active in if !active { horizontal = nil } }
         .onChange(of: openRow) { _, id in if id != rowId, offset != 0 { close() } }
+        #if DEBUG
+        .task {
+            guard let script = debugScript else { return }
+            try? await Task.sleep(nanoseconds: 700_000_000)
+            for dx in script {
+                panChanged(dx)
+                try? await Task.sleep(nanoseconds: 40_000_000)
+            }
+            try? await Task.sleep(nanoseconds: 600_000_000)
+            panEnded(translation: script.last ?? 0, velocity: 0)
+        }
+        #endif
     }
 
     // MARK: - Кнопки
@@ -348,6 +370,9 @@ struct SwipeRow<Content: View>: View {
         if lockedSide == 0, offset != 0 { lockedSide = offset > 0 ? 1 : -1 }
         if lockedSide > 0 { offset = max(0, offset) }
         if lockedSide < 0 { offset = min(0, offset) }
+        // Целые точки: на дробных текст строки пересобирается с субпиксельным
+        // сглаживанием и заметно дрожит во время протяжки.
+        offset = offset.rounded()
 
         if (stretchLeading >= 1 || stretchTrailing >= 1) != wasStretched {
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
@@ -462,3 +487,5 @@ private struct PanAttach: ViewModifier {
         }
     }
 }
+
+
