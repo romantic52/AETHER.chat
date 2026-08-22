@@ -106,26 +106,39 @@ struct FolderBar: View {
     @Environment(\.palette) private var palette
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            // Чипы РАСПРЕДЕЛЕНЫ по ширине капсулы, а не сбиты влево: у эталона
-            // они разнесены по всей полосе. Распорки между ними растягиваются,
-            // пока содержимое помещается; когда папок много — полоса
-            // прокручивается, и распорки схлопываются.
-            HStack(spacing: 0) {
-                ForEach(store.folders) { folder in
-                    chip(folder).contextMenu { menu(for: folder) }
-                    Spacer(minLength: 10)
+        // Папок нет — полосы тоже нет: одинокая «Все» занимала строку впустую.
+        if !store.folders.isEmpty {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    // Чипы РАСПРЕДЕЛЕНЫ по ширине капсулы, а не сбиты влево.
+                    // Распорки растягиваются, пока содержимое помещается; когда
+                    // папок много — полоса прокручивается, и распорки схлопываются.
+                    HStack(spacing: 0) {
+                        chip(nil).contextMenu { menu(for: nil) }.id(allChipId)
+                        ForEach(store.folders) { folder in
+                            Spacer(minLength: 10)
+                            chip(folder).contextMenu { menu(for: folder) }.id(folder.id)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 5)
+                    .frame(minWidth: UIScreen.main.bounds.width - 32)
                 }
-                chip(nil).contextMenu { menu(for: nil) }
+                .scrollClipDisabled()
+                .liquidGlass(Capsule())
+                .padding(.horizontal, 16)
+                // Выбранная папка подкручивается в видимую часть: иначе при
+                // переключении из меню чип мог остаться за краем полосы.
+                .onChange(of: selected?.id) { _, id in
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        proxy.scrollTo(id ?? allChipId, anchor: .center)
+                    }
+                }
             }
-            .padding(.horizontal, 10)
-            .padding(.vertical, 5)
-            .frame(minWidth: UIScreen.main.bounds.width - 32)
         }
-        .scrollClipDisabled()
-        .liquidGlass(Capsule())
-        .padding(.horizontal, 16)
     }
+
+    private var allChipId: UUID { UUID(uuidString: "00000000-0000-0000-0000-000000000000")! }
 
     @ViewBuilder
     private func menu(for folder: ChatFolder?) -> some View {
