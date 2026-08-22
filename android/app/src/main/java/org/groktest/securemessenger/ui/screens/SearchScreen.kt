@@ -32,11 +32,12 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.theme.AetherEdge
 import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
@@ -158,16 +159,15 @@ fun SearchScreen(
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text("Ничего не найдено", color = MaterialTheme.colorScheme.onSurfaceVariant)
                                 Spacer(modifier = Modifier.height(16.dp))
-                                Button(
+                                AetherPrimaryButton(
+                                    text = "Создать канал '$query'",
                                     onClick = { onCreateChannel(query) },
-                                    shape = RoundedCornerShape(AetherStyle.PillRadius)
-                                ) {
-                                    Text("Создать канал '$query'")
-                                }
+                                    fillWidth = false,
+                                )
                             }
                         }
                     } else {
-                        LazyColumn(modifier = Modifier.fillMaxSize().glassSource()) {
+                        LazyColumn(modifier = Modifier.fillMaxSize()) {
                             items(results, key = { "${it.isGroup}:${it.userId}" }) { result ->
                             val isMember = memberGroupIds?.contains(result.userId.lowercase()) == true
                             Row(
@@ -219,7 +219,7 @@ fun SearchScreen(
                                         )
                                         if (!result.isGroup && !result.statusEmoji.isNullOrBlank()) {
                                             Spacer(Modifier.width(4.dp))
-                                            Text(result.statusEmoji!!, fontSize = 15.sp)
+                                            Text(result.statusEmoji.orEmpty(), fontSize = 15.sp)
                                         }
                                     }
                                     val subtitle = if (result.isGroup) {
@@ -290,7 +290,7 @@ fun SearchScreen(
                         shape = RoundedCornerShape(AetherStyle.FieldRadius),
                         modifier = Modifier
                             .weight(1f)
-                            .aetherIsland(
+                            .aetherField(
                                 shape = RoundedCornerShape(AetherStyle.FieldRadius),
                                 fillAlpha = AetherStyle.ControlFillAlpha,
                                 strokeAlpha = AetherStyle.SearchStrokeAlpha

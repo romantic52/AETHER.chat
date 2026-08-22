@@ -38,9 +38,9 @@ import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.Avatar
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
@@ -195,9 +195,11 @@ fun CreateGroupScreen(
                                 onValueChange = { name = it },
                                 label = { Text(if (isChannel) "Название канала" else "Название группы") },
                                 singleLine = true,
-                                modifier = Modifier.weight(1f),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                                 shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                                colors = aetherTextFieldColors()
+                                colors = aetherTextFieldColors(containerAlpha = 0f)
                             )
                         }
 
@@ -207,9 +209,11 @@ fun CreateGroupScreen(
                             value = description,
                             onValueChange = { description = it },
                             label = { Text("Описание (необязательно)") },
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                             shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                            colors = aetherTextFieldColors()
+                            colors = aetherTextFieldColors(containerAlpha = 0f)
                         )
 
                         Spacer(Modifier.height(16.dp))
@@ -281,12 +285,14 @@ fun CreateGroupScreen(
                             onValueChange = { memberQuery = it },
                             label = { Text("Поиск по имени / @username") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                             shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                            colors = aetherTextFieldColors()
+                            colors = aetherTextFieldColors(containerAlpha = 0f)
                         )
 
-                        LazyColumn(modifier = Modifier.weight(1f).glassSource()) {
+                        LazyColumn(modifier = Modifier.weight(1f)) {
                             items(searchResults, key = { it.userId }) { user ->
                                 val label = when {
                                     user.username.isNotEmpty() -> "@${user.username}"

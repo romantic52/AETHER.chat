@@ -224,13 +224,13 @@ fun VoiceMessagePlayer(
                                 // плеер иначе утёк бы без release().
                                 withContext(kotlinx.coroutines.NonCancellable) {
                                     val mp = withContext(Dispatchers.IO) {
-                                        val p = android.media.MediaPlayer()
+                                        val newPlayer = android.media.MediaPlayer()
                                         try {
-                                            p.setDataSource(file.absolutePath)
-                                            p.prepare()
-                                            p
+                                            newPlayer.setDataSource(file.absolutePath)
+                                            newPlayer.prepare()
+                                            newPlayer
                                         } catch (t: Throwable) {
-                                            p.release()
+                                            newPlayer.release()
                                             throw t
                                         }
                                     }
@@ -596,7 +596,10 @@ fun FileMessageBubble(
             .padding(vertical = 2.dp)
     ) {
         Box(
-            modifier = Modifier.size(42.dp).clip(CircleShape).background(tint.copy(alpha = AetherStyle.SelectedFillAlpha)),
+            modifier = Modifier
+                .size(42.dp)
+                .clip(CircleShape)
+                .background(tint.copy(alpha = AetherStyle.SelectedFillAlpha)),
             contentAlignment = Alignment.Center
         ) {
             if (loading) CircularProgressIndicator(modifier = Modifier.size(22.dp), color = tint, strokeWidth = 2.dp)
@@ -1075,7 +1078,7 @@ fun VideoNoteMessage(
 
             if (active) {
                 CircularProgressIndicator(
-                    progress = progress,
+                    progress = { progress },
                     modifier = Modifier.fillMaxSize().padding(2.dp),
                     color = Color.White,
                     strokeWidth = 3.dp,

@@ -217,4 +217,95 @@ mod tests {
         let dec = olm_decrypt(a_sess, m2.message_type, m2.body_b64).unwrap();
         assert_eq!(dec.plaintext, "привет алиса");
     }
+
+    #[test]
+    fn ratchet_sessions_are_scoped_per_recipient_device() {
+        fn first_otk(published: &OlmPublish) -> String {
+            let keys: serde_json::Value =
+                serde_json::from_str(&published.one_time_keys_json).unwrap();
+            keys.as_object()
+                .unwrap()
+                .values()
+                .next()
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        }
+
+        let ios = olm_account_generate_otks(olm_account_new().unwrap(), 1).unwrap();
+        let android = olm_account_generate_otks(olm_account_new().unwrap(), 1).unwrap();
+        let sender_account = olm_account_new().unwrap();
+        let sender_identity = olm_account_identity(sender_account.clone()).unwrap();
+
+        let to_ios = olm_create_outbound(
+            sender_account.clone(),
+            ios.identity_key_b64.clone(),
+            first_otk(&ios),
+        )
+        .unwrap();
+        let to_android = olm_create_outbound(
+            sender_account,
+            android.identity_key_b64.clone(),
+            first_otk(&android),
+        )
+        .unwrap();
+
+        let ios_message = olm_encrypt(to_ios, "for ios".into()).unwrap();
+        let android_message = olm_encrypt(to_android, "for android".into()).unwrap();
+
+        assert!(olm_create_inbound(
+            ios.account_pickle.clone(),
+            sender_identity.clone(),
+            android_message.body_b64.clone(),
+        )
+        .is_err());
+
+        let ios_inbound = olm_create_inbound(
+            ios.account_pickle,
+            sender_identity.clone(),
+            ios_message.body_b64.clone(),
+        )
+        .unwrap();
+        let android_inbound = olm_create_inbound(
+            android.account_pickle,
+            sender_identity,
+            android_message.body_b64.clone(),
+        )
+        .unwrap();
+        assert_eq!(ios_inbound.plaintext, "for ios");
+        assert_eq!(android_inbound.plaintext, "for android");
+
+        let ios_reply = olm_encrypt(ios_inbound.session_pickle, "from ios".into()).unwrap();
+        let android_reply =
+            olm_encrypt(android_inbound.session_pickle, "from android".into()).unwrap();
+        assert_eq!(ios_reply.message_type, 1);
+        assert_eq!(android_reply.message_type, 1);
+        assert!(olm_decrypt(
+            android_message.session_pickle.clone(),
+            ios_reply.message_type,
+            ios_reply.body_b64.clone(),
+        )
+        .is_err());
+        assert_eq!(
+            olm_decrypt(
+                ios_message.session_pickle,
+                ios_reply.message_type,
+                ios_reply.body_b64,
+            )
+            .unwrap()
+            .plaintext,
+            "from ios"
+        );
+        assert_eq!(
+            olm_decrypt(
+                android_message.session_pickle,
+                android_reply.message_type,
+                android_reply.body_b64,
+            )
+            .unwrap()
+            .plaintext,
+            "from android"
+        );
+    }
 }

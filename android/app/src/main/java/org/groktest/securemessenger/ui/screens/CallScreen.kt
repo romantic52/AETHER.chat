@@ -46,8 +46,8 @@ import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MicOff
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material.icons.filled.VideocamOff
-import androidx.compose.material.icons.filled.VolumeOff
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.automirrored.filled.VolumeOff
+import androidx.compose.material.icons.automirrored.filled.VolumeUp
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -72,7 +72,8 @@ import org.groktest.securemessenger.AetherService
 import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.data.ChatEntity
 import org.groktest.securemessenger.ui.theme.AetherStyle
-import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherControl
+import org.groktest.securemessenger.ui.theme.aetherControlContent
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.webrtc.WebRTCClient
@@ -192,6 +193,10 @@ fun CallOverlay(
     }
 
     LaunchedEffect(Unit) {
+        if (!isIncoming && AetherService.wsClient?.isActive() != true) {
+            finishCall(false, "Нет соединения", 700)
+            return@LaunchedEffect
+        }
         if (!isIncoming && !hasPermissions) launcher.launch(neededPerms)
     }
 
@@ -299,9 +304,13 @@ fun CallOverlay(
                     @Suppress("DEPRECATION")
                     context.getSystemService(Context.VIBRATOR_SERVICE) as Vibrator
                 }
-                vibrator.vibrate(
-                    VibrationEffect.createWaveform(longArrayOf(0L, 900L, 800L), 0)
-                )
+                val pattern = longArrayOf(0L, 900L, 800L)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    vibrator.vibrate(VibrationEffect.createWaveform(pattern, 0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    vibrator.vibrate(pattern, 0)
+                }
             }
         } catch (_: Exception) {}
         onDispose {
@@ -622,12 +631,15 @@ fun CallOverlay(
                         offer,
                         onSet = {
                             markLocalReadyAndDrain()
-                            AetherService.sendWebRtcSignal(JSONObject().apply {
+                            val sent = AetherService.sendWebRtcSignal(JSONObject().apply {
                                 put("type", "webrtc_offer")
                                 put("recipient_id", peerId)
                                 put("sdp", offer.description)
                                 put("isVideoCall", isVideoCall)
                             })
+                            if (!sent) mainHandler.post {
+                                finishCall(false, "Нет соединения", 700)
+                            }
                         },
                         onError = { fail("Ошибка согласования звонка") }
                     )
@@ -825,9 +837,9 @@ fun CallOverlay(
         ) {
             IconButton(
                 onClick = { onMinimizedChange(true) },
-                modifier = Modifier.size(AetherStyle.SmallControlSize).aetherCircle()
+                modifier = Modifier.size(AetherStyle.SmallControlSize).aetherControl()
             ) {
-                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Свернуть", tint = MaterialTheme.colorScheme.onSurface)
+                Icon(Icons.Filled.KeyboardArrowDown, contentDescription = "Свернуть", tint = aetherControlContent())
             }
             Spacer(Modifier.weight(1f))
             Row(
@@ -897,7 +909,7 @@ fun CallOverlay(
             } else {
                 CallControl(
                     if (micEnabled) Icons.Filled.Mic else Icons.Filled.MicOff,
-                    if (micEnabled) "Звук" else "Без звука",
+                    if (micEnabled) "Микрофон" else "Микрофон выкл.",
                     if (micEnabled) Color.White.copy(alpha = 0.18f) else Color.White,
                     if (micEnabled) Color.White else Color.Black
                 ) {
@@ -906,8 +918,8 @@ fun CallOverlay(
                 }
 
                 CallControl(
-                    if (speakerOn) Icons.Filled.VolumeUp else Icons.Filled.VolumeOff,
-                    if (speakerOn) "Динамик" else "Тихо",
+                    if (speakerOn) Icons.AutoMirrored.Filled.VolumeUp else Icons.AutoMirrored.Filled.VolumeOff,
+                    if (speakerOn) "Динамик" else "Динамик выкл.",
                     if (speakerOn) Color.White else Color.White.copy(alpha = 0.18f),
                     if (speakerOn) Color.Black else Color.White
                 ) { speakerOn = !speakerOn }
@@ -915,7 +927,7 @@ fun CallOverlay(
                 if (isVideoCall) {
                     CallControl(
                         if (cameraEnabled) Icons.Filled.Videocam else Icons.Filled.VideocamOff,
-                        if (cameraEnabled) "Камера" else "Выкл",
+                        if (cameraEnabled) "Камера" else "Камера выкл.",
                         if (cameraEnabled) Color.White.copy(alpha = 0.18f) else Color.White,
                         if (cameraEnabled) Color.White else Color.Black
                     ) {
@@ -923,7 +935,7 @@ fun CallOverlay(
                         webRTCClient?.setVideoEnabled(cameraEnabled)
                     }
 
-                    CallControl(Icons.Filled.FlipCameraAndroid, "Камера", Color.White.copy(alpha = 0.18f), Color.White) {
+                    CallControl(Icons.Filled.FlipCameraAndroid, "Сменить", Color.White.copy(alpha = 0.18f), Color.White) {
                         webRTCClient?.switchCamera()
                     }
                 }

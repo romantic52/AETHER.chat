@@ -7,6 +7,7 @@ import androidx.camera.core.UseCaseGroup
 import androidx.camera.core.ViewPort
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.video.FallbackStrategy
+import androidx.camera.video.ExperimentalPersistentRecording
 import androidx.camera.video.FileOutputOptions
 import androidx.camera.video.Quality
 import androidx.camera.video.QualitySelector
@@ -85,6 +86,7 @@ private fun deleteQuietly(file: File?) {
  * «Отправить»/«Переснять». onResult(file) — готовый mp4; onResult(null) — отмена.
  */
 @Composable
+@androidx.annotation.OptIn(markerClass = [ExperimentalPersistentRecording::class])
 fun VideoNoteRecorder(
     onResult: (File?) -> Unit
 ) {

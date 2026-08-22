@@ -91,11 +91,18 @@ object VideoUtils {
                 if (size < 0) break
                 trackMap[trackIndex]?.let { muxTrack ->
                     if (baseUs < 0L) baseUs = sampleTimeUs.coerceAtLeast(0L)
+                    val codecFlags = if (
+                        extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0
+                    ) {
+                        MediaCodec.BUFFER_FLAG_KEY_FRAME
+                    } else {
+                        0
+                    }
                     info.set(
                         0,
                         size,
                         (sampleTimeUs - baseUs).coerceAtLeast(0L),
-                        extractor.sampleFlags,
+                        codecFlags,
                     )
                     muxer.writeSampleData(muxTrack, buffer, info)
                 }

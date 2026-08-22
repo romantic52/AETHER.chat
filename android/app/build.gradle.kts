@@ -50,7 +50,6 @@ android {
         jvmTarget = "17"
     }
     buildFeatures {
-        viewBinding = true
         compose = true
     }
     composeOptions {
@@ -76,7 +75,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     // Блокировка приложения отпечатком/лицом
     implementation("androidx.biometric:biometric:1.1.0")
@@ -101,9 +99,6 @@ dependencies {
     // uCrop for image cropping
     implementation("com.github.yalantis:ucrop:2.2.8")
     
-    // Palette for color extraction
-    implementation("androidx.palette:palette-ktx:1.0.0")
-
     // WorkManager — отложенные сообщения
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 

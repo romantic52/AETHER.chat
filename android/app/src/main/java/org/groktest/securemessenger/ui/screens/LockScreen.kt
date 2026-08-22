@@ -24,7 +24,8 @@ import androidx.core.content.ContextCompat
 import org.groktest.securemessenger.data.LockPrefs
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.theme.AetherStyle
-import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherControl
+import org.groktest.securemessenger.ui.theme.aetherControlContent
 
 private const val PIN_LEN = 4
 
@@ -150,10 +151,10 @@ private fun KeypadButton(label: String, onClick: () -> Unit) {
     Box(
         modifier = Modifier
             .size(KeypadSize)
-            .aetherCircle(strokeAlpha = AetherStyle.SoftStrokeAlpha)
+            .aetherControl(strokeAlpha = AetherStyle.SoftStrokeAlpha, shape = CircleShape)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Text(label, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onBackground)
+        Text(label, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Medium, color = aetherControlContent())
     }
 }

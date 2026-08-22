@@ -21,8 +21,6 @@ import org.groktest.securemessenger.ui.components.AetherSectionTitle
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
-import org.groktest.securemessenger.ui.glass.supportsRealGlass
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
@@ -36,7 +34,7 @@ fun SecretSettingsScreen(onBack: () -> Unit) {
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = rememberLazyListState(),
-                modifier = Modifier.fillMaxSize().glassSource(),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     start = AetherStyle.ScreenHorizontal,
                     top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
@@ -75,9 +73,9 @@ fun SecretSettingsScreen(onBack: () -> Unit) {
                         Column(Modifier.fillMaxWidth()) {
                             Text("Скорость · ${(themeSettings.animationSpeed.value * 100).toInt()}%", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Slider(
-                                value = themeSettings.animationSpeed.value.coerceIn(0.5f, 2f),
+                                value = themeSettings.animationSpeed.value.coerceIn(1f, 2f),
                                 onValueChange = themeSettings::setAnimationSpeed,
-                                valueRange = 0.5f..2f
+                                valueRange = 1f..2f
                             )
                             Text("Выразительность · ${(themeSettings.motionIntensity.value * 100).toInt()}%", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                             Slider(
@@ -90,35 +88,6 @@ fun SecretSettingsScreen(onBack: () -> Unit) {
                                 subtitle = "Мягкая вспышка при выборе эмодзи",
                                 checked = themeSettings.reactionEffects.value,
                                 onCheckedChange = themeSettings::setReactionEffects
-                            )
-                        }
-                    }
-                }
-
-                item {
-                    HorizontalDivider(Modifier.padding(vertical = 12.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = AetherStyle.DividerAlpha))
-                    AetherSectionTitle("Отрисовка")
-                    AetherSwitchRow(
-                        title = "Жидкое стекло",
-                        subtitle = if (supportsRealGlass) "Размытие содержимого под островками" else "Имитация без аппаратного размытия",
-                        checked = themeSettings.liquidGlassEnabled.value,
-                        onCheckedChange = themeSettings::setLiquidGlassEnabled
-                    )
-                    AnimatedVisibility(
-                        visible = themeSettings.liquidGlassEnabled.value,
-                        enter = fadeIn(tween(themeSettings.motionDuration(160))) + expandVertically(
-                            tween(themeSettings.motionDuration(200))
-                        ),
-                        exit = fadeOut(tween(themeSettings.motionDuration(120))) + shrinkVertically(
-                            tween(themeSettings.motionDuration(160))
-                        )
-                    ) {
-                        Column(modifier = Modifier.fillMaxWidth()) {
-                            Text("Прозрачность", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                            Slider(
-                                value = themeSettings.glassTransparency.value,
-                                onValueChange = themeSettings::setGlassTransparency,
-                                valueRange = 0f..1f
                             )
                         }
                     }

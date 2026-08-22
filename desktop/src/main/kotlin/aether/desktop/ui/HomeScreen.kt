@@ -4,8 +4,9 @@ import aether.desktop.AppSession
 import aether.desktop.data.MessageEntity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.width
@@ -13,6 +14,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.VerticalDivider
 import androidx.compose.runtime.Composable
@@ -32,7 +34,9 @@ fun HomeScreen(
     typingUntil: SnapshotStateMap<String, Long>,
     settings: aether.desktop.data.UiSettings,
     theme: aether.desktop.data.UiSettings.ThemeMode,
+    uiScale: Float,
     onThemeChange: (aether.desktop.data.UiSettings.ThemeMode) -> Unit,
+    onUiScaleChange: (Float) -> Unit,
     onLogout: () -> Unit,
 ) {
     var selectedPeer by remember { mutableStateOf<String?>(null) }
@@ -48,102 +52,124 @@ fun HomeScreen(
     var viewerItems by remember { mutableStateOf<List<MessageEntity>>(emptyList()) }
     var viewerIndex by remember { mutableStateOf<Int?>(null) }
 
-    Box(modifier = Modifier.fillMaxSize()) {
-    Row(modifier = Modifier.fillMaxSize()) {
-        Box(modifier = Modifier.width(320.dp).fillMaxHeight()) {
-            ChatListPane(
-                session = session,
-                selectedPeer = selectedPeer,
-                onSelectPeer = { selectedPeer = it },
-                onMenuClick = { menuOpen = true },
-                menuContent = {
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(
-                            text = { Text("Профиль") },
-                            onClick = { menuOpen = false; showProfile = true },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Избранное") },
-                            onClick = { menuOpen = false; selectedPeer = session.myId },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Новая группа") },
-                            onClick = { menuOpen = false; showCreateGroup = false },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Новый канал") },
-                            onClick = { menuOpen = false; showCreateGroup = true },
-                        )
-                        DropdownMenuItem(
-                            text = { Text("Устройства и сессии") },
-                            onClick = { menuOpen = false; showSessions = true },
-                        )
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("Настройки") },
-                            onClick = { menuOpen = false; showSettings = true },
-                        )
-                        HorizontalDivider()
-                        DropdownMenuItem(
-                            text = { Text("Выйти из аккаунта") },
-                            onClick = { menuOpen = false; onLogout() },
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        // При крупном масштабе эффективная ширина окна в dp уменьшается. Узкая
+        // колонка списка оставляет чату рабочую область вместо полосы в центре.
+        val chatListWidth = when {
+            maxWidth < 700.dp -> maxWidth * 0.42f
+            maxWidth < 1_000.dp -> 280.dp
+            else -> 320.dp
+        }
+        val peer = selectedPeer
+        val infoWidth = minOf(340.dp, maxWidth)
+        val reserveInfoSpace = showInfo && peer != null && maxWidth >= 1_040.dp
+
+        Row(modifier = Modifier.fillMaxSize()) {
+            Box(modifier = Modifier.width(chatListWidth).fillMaxHeight()) {
+                ChatListPane(
+                    session = session,
+                    selectedPeer = selectedPeer,
+                    onSelectPeer = { selectedPeer = it },
+                    onMenuClick = { menuOpen = true },
+                    menuContent = {
+                        DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
+                            DropdownMenuItem(
+                                text = { Text("Профиль") },
+                                onClick = { menuOpen = false; showProfile = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Избранное") },
+                                onClick = { menuOpen = false; selectedPeer = session.myId },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Новая группа") },
+                                onClick = { menuOpen = false; showCreateGroup = false },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Новый канал") },
+                                onClick = { menuOpen = false; showCreateGroup = true },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Устройства и сессии") },
+                                onClick = { menuOpen = false; showSessions = true },
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Настройки") },
+                                onClick = { menuOpen = false; showSettings = true },
+                            )
+                            HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text("Выйти из аккаунта") },
+                                onClick = { menuOpen = false; onLogout() },
+                            )
+                        }
+                    },
+                )
+            }
+            VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+
+            Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                if (peer == null) {
+                    Box(
+                        modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "Выберите чат",
+                            style = MaterialTheme.typography.titleMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
                         )
                     }
-                },
-            )
-        }
-        VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-
-        val peer = selectedPeer
-        Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
-            if (peer == null) {
-                Box(
-                    modifier = Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Text(
-                        "Выберите чат",
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                } else {
+                    ChatPane(
+                        session = session,
+                        peerId = peer,
+                        typingUntil = typingUntil[peer.lowercase()] ?: 0L,
+                        settings = settings,
+                        onShowInfo = { showInfo = !showInfo },
+                        onForwardRequest = { forwardMessages = it },
+                        onOpenViewer = { items, index ->
+                            viewerItems = items
+                            viewerIndex = index
+                        },
+                        onOpenPeer = { selectedPeer = it },
                     )
                 }
-            } else {
-                ChatPane(
-                    session = session,
-                    peerId = peer,
-                    typingUntil = typingUntil[peer.lowercase()] ?: 0L,
-                    settings = settings,
-                    onShowInfo = { showInfo = !showInfo },
-                    onForwardRequest = { forwardMessages = it },
-                    onOpenViewer = { items, index ->
-                        viewerItems = items
-                        viewerIndex = index
-                    },
-                    onOpenPeer = { selectedPeer = it },
-                )
             }
+
+            // На широком окне место резервируется в строке; на узком та же
+            // панель накладывается поверх чата и не сжимает его до нуля.
+            if (reserveInfoSpace) Spacer(modifier = Modifier.width(infoWidth))
         }
 
-        if (showInfo && selectedPeer != null) {
-            VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
-            Box(modifier = Modifier.width(300.dp).fillMaxHeight()) {
-                InfoPane(
-                    session = session,
-                    peerId = selectedPeer!!,
-                    onClose = { showInfo = false },
-                    onShowSafetyNumbers = { showSafetyFor = selectedPeer },
-                    onChatDeleted = {
-                        showInfo = false
-                        selectedPeer = null
-                    },
-                    onOpenMedia = { items, index ->
-                        viewerItems = items
-                        viewerIndex = index
-                    },
-                )
+        if (showInfo && peer != null) {
+            Surface(
+                color = MaterialTheme.colorScheme.surface,
+                shadowElevation = if (reserveInfoSpace) 0.dp else 12.dp,
+                modifier = Modifier.align(Alignment.CenterEnd).width(infoWidth).fillMaxHeight(),
+            ) {
+                Row {
+                    VerticalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.4f))
+                    Box(modifier = Modifier.weight(1f).fillMaxHeight()) {
+                        InfoPane(
+                            session = session,
+                            peerId = peer,
+                            onClose = { showInfo = false },
+                            onShowSafetyNumbers = { showSafetyFor = peer },
+                            onChatDeleted = {
+                                showInfo = false
+                                selectedPeer = null
+                            },
+                            onOpenMedia = { items, index ->
+                                viewerItems = items
+                                viewerIndex = index
+                            },
+                        )
+                    }
+                }
             }
         }
-    }
 
         viewerIndex?.let { start ->
             MediaViewer(
@@ -199,7 +225,9 @@ fun HomeScreen(
             session = session,
             settings = settings,
             theme = theme,
+            uiScale = uiScale,
             onThemeChange = onThemeChange,
+            onUiScaleChange = onUiScaleChange,
             onDismiss = { showSettings = false },
         )
     }

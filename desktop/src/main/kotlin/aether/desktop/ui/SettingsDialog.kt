@@ -23,16 +23,13 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 // Держим в одном значении с packageVersion в desktop/build.gradle.kts.
@@ -44,27 +41,27 @@ fun SettingsDialog(
     session: AppSession,
     settings: UiSettings,
     theme: UiSettings.ThemeMode,
+    uiScale: Float,
     onThemeChange: (UiSettings.ThemeMode) -> Unit,
+    onUiScaleChange: (Float) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    var uiScale by remember { mutableStateOf(settings.uiScale) }
     var notificationsOn by remember { mutableStateOf(settings.notificationsEnabled) }
     var previewOn by remember { mutableStateOf(settings.notificationPreview) }
     var soundsOn by remember { mutableStateOf(settings.soundsEnabled) }
     var closeToTray by remember { mutableStateOf(settings.closeToTray) }
     var ctrlEnter by remember { mutableStateOf(settings.sendOnCtrlEnter) }
     var deviceId by remember { mutableStateOf("") }
-    val scope = rememberCoroutineScope()
 
     LaunchedEffect(Unit) {
         deviceId = runCatching { withContext(Dispatchers.IO) { session.repository.myDeviceId() } }
             .getOrDefault("")
     }
 
-    // Сохранение пишет файл, поэтому уходит с UI-потока: переключатель встаёт
-    // в интерфейсе сразу, диск догоняет следом.
+    // Файл настроек мал; последовательная запись сохраняет последний быстрый
+    // клик, тогда как параллельные IO-корутины могли завершиться не по порядку.
     fun save(write: () -> Unit) {
-        scope.launch(Dispatchers.IO) { write() }
+        write()
     }
 
     AlertDialog(
@@ -89,22 +86,20 @@ fun SettingsDialog(
                         onThemeChange(UiSettings.ThemeMode.DARK)
                     }
                     Text(
-                        "Масштаб интерфейса",
+                        "Размер интерфейса и текста",
                         style = MaterialTheme.typography.bodyMedium,
                         modifier = Modifier.padding(top = 8.dp, bottom = 2.dp),
                     )
                     UiSettings.UI_SCALES.forEach { scale ->
                         SettingsRadioRow(
                             title = "${(scale * 100).roundToInt()} %",
-                            // Сравнение float'ов: значение приходит и из файла, и из этого же списка.
-                            selected = abs(uiScale - scale) < 0.001f,
+                            selected = uiScale == scale,
                         ) {
-                            uiScale = scale
-                            save { settings.uiScale = scale }
+                            onUiScaleChange(scale)
                         }
                     }
                     Text(
-                        "Новый масштаб применяется после перезапуска.",
+                        "Применяется сразу.",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -173,9 +168,9 @@ private fun SettingsSection(title: String, content: @Composable () -> Unit) {
     Column(modifier = Modifier.fillMaxWidth()) {
         Text(
             title,
-            style = MaterialTheme.typography.labelLarge,
+            style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
-            modifier = Modifier.padding(bottom = 4.dp),
+            modifier = Modifier.padding(bottom = 6.dp),
         )
         content()
     }
@@ -217,7 +212,7 @@ private fun SettingsRadioRow(title: String, selected: Boolean, onSelect: () -> U
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onSelect)
-            .padding(vertical = 2.dp),
+            .padding(vertical = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {

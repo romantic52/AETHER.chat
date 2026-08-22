@@ -35,8 +35,8 @@ import org.groktest.securemessenger.ui.components.AetherSectionTitle
 import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 /**
@@ -83,7 +83,6 @@ fun SecurityScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .glassSource()
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
                     .padding(horizontal = AetherStyle.ScreenHorizontal)
@@ -346,8 +345,9 @@ private fun TotpCodeDialog(
                     label = { Text("Код") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
             }
         },
@@ -388,8 +388,9 @@ private fun WipeDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                    modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
             }
         },

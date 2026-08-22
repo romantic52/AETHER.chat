@@ -60,9 +60,7 @@ fun main() {
 
         val settings = remember { UiSettings() }
         var theme by remember { mutableStateOf(settings.theme) }
-        // Масштаб читается один раз при старте: смена в настройках применяется
-        // после перезапуска, окно настроек об этом предупреждает.
-        val uiScale = remember { settings.uiScale }
+        var uiScale by remember { mutableStateOf(settings.uiScale) }
         LaunchedEffect(Unit) { aether.desktop.media.UiSounds.enabled = settings.soundsEnabled }
 
         // Окно живёт в трее: закрытие прячет его, как в Telegram Desktop.
@@ -244,9 +242,14 @@ fun main() {
                             typingUntil = typingUntil,
                             settings = settings,
                             theme = theme,
+                            uiScale = uiScale,
                             onThemeChange = {
                                 theme = it
                                 settings.theme = it
+                            },
+                            onUiScaleChange = {
+                                uiScale = it
+                                settings.uiScale = it
                             },
                             onLoggedIn = { account -> scope.launch(Dispatchers.IO) { openSession(account) } },
                             onLogout = {
@@ -295,7 +298,9 @@ private fun AppContent(
     typingUntil: SnapshotStateMap<String, Long>,
     settings: UiSettings,
     theme: UiSettings.ThemeMode,
+    uiScale: Float,
     onThemeChange: (UiSettings.ThemeMode) -> Unit,
+    onUiScaleChange: (Float) -> Unit,
     onLoggedIn: (ActiveAccount) -> Unit,
     onLogout: () -> Unit,
 ) {
@@ -309,7 +314,9 @@ private fun AppContent(
             typingUntil = typingUntil,
             settings = settings,
             theme = theme,
+            uiScale = uiScale,
             onThemeChange = onThemeChange,
+            onUiScaleChange = onUiScaleChange,
             onLogout = onLogout,
         )
     }

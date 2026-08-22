@@ -75,9 +75,14 @@ ios/AETHER/CoreFFI/Generated/
 /trace_*.txt
 
 # Локальные каталоги других агентов/сборок
-.codex/
 .sixth/
 .agents/
-android/.emulator-codex/
-android/.gradle-codex/
 ios/_artifact/
+
+# Локальные данные и артефакты ручной UI-проверки
+server/uploads/
+desktop/pairing_qr.png
+/baseline-*.xml
+/round-ui.xml
+/shape-controls.xml
+/shapes-ui.xml

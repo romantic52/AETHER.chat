@@ -25,6 +25,8 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -37,7 +39,6 @@ import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.ui.components.AetherSectionTitle
 import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.aetherCircle
@@ -107,7 +108,6 @@ fun SettingsScreen(
         Column(
             modifier = Modifier
                 .fillMaxSize()
-                .glassSource()
                 .verticalScroll(scrollState)
                 .padding(
                     start = AetherStyle.ScreenHorizontal,
@@ -345,16 +345,16 @@ private fun StatusPickerSheet(
         }
         Spacer(Modifier.height(12.dp))
         LazyVerticalGrid(
-            columns = GridCells.Fixed(8),
+            columns = GridCells.Adaptive(44.dp),
             modifier = Modifier.fillMaxWidth().height(192.dp),
             contentPadding = PaddingValues(horizontal = 12.dp),
-            userScrollEnabled = false
+            userScrollEnabled = true
         ) {
             items(profileStatuses, key = { it }) { emoji ->
                 TextButton(
                     onClick = { onSelect(emoji) },
                     enabled = !saving,
-                    modifier = Modifier.size(44.dp),
+                    modifier = Modifier.size(44.dp).semantics { selected = emoji == current },
                     contentPadding = PaddingValues(0.dp)
                 ) {
                     Text(emoji, fontSize = if (emoji == current) 28.sp else 25.sp)

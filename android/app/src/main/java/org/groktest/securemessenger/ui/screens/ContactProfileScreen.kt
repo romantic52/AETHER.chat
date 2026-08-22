@@ -32,7 +32,6 @@ import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.ui.components.AetherActionCircle
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.aetherIsland
 
@@ -83,7 +82,6 @@ fun ContactProfileScreen(
                 modifier = Modifier
                     .fillMaxSize()
                     .verticalScroll(rememberScrollState())
-                    .glassSource()
                     .navigationBarsPadding()
                     .padding(top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical),
                 horizontalAlignment = Alignment.CenterHorizontally

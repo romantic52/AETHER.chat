@@ -39,6 +39,7 @@ import org.groktest.securemessenger.crypto.E2ECrypto
 import org.groktest.securemessenger.data.LockPrefs
 import org.groktest.securemessenger.pairing.PairingLink
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.json.JSONObject
@@ -179,7 +180,7 @@ fun PairDeviceScreen(
                             textAlign = TextAlign.Center,
                         )
                         Spacer(Modifier.height(20.dp))
-                        Button(onClick = onBack) { Text("Готово") }
+                        AetherPrimaryButton(text = "Готово", onClick = onBack, fillWidth = false)
                     }
                     !hasCamera -> {
                         Spacer(Modifier.height(48.dp))
@@ -188,9 +189,11 @@ fun PairDeviceScreen(
                             textAlign = TextAlign.Center,
                         )
                         Spacer(Modifier.height(12.dp))
-                        Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                            Text("Разрешить")
-                        }
+                        AetherPrimaryButton(
+                            text = "Разрешить",
+                            onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) },
+                            fillWidth = false,
+                        )
                     }
                     else -> {
                         Text(
@@ -269,6 +272,7 @@ fun PairDeviceScreen(
 
 /** Превью камеры с ML Kit-анализом кадров: первый распознанный QR отдаётся наверх. */
 @Composable
+@androidx.annotation.OptIn(markerClass = [androidx.camera.core.ExperimentalGetImage::class])
 private fun QrScannerView(
     enabled: Boolean,
     onScanned: (String) -> Unit,

@@ -97,7 +97,11 @@ object VoiceUtils {
                             0,
                             size,
                             offsetUs + normalizedUs,
-                            extractor.sampleFlags
+                            if (extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                                MediaCodec.BUFFER_FLAG_KEY_FRAME
+                            } else {
+                                0
+                            }
                         )
                         muxer.writeSampleData(muxTrack, buffer, info)
                         lastPtsUs = normalizedUs
@@ -178,7 +182,11 @@ object VoiceUtils {
                     0,
                     size,
                     (sampleTimeUs - baseUs).coerceAtLeast(0L),
-                    extractor.sampleFlags
+                    if (extractor.sampleFlags and MediaExtractor.SAMPLE_FLAG_SYNC != 0) {
+                        MediaCodec.BUFFER_FLAG_KEY_FRAME
+                    } else {
+                        0
+                    }
                 )
                 muxer.writeSampleData(muxTrack, buffer, info)
                 extractor.advance()

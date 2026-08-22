@@ -29,7 +29,9 @@ import org.groktest.securemessenger.data.SessionPrefs
 import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.theme.AetherStyle
-import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherControl
+import org.groktest.securemessenger.ui.theme.aetherControlContent
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -141,8 +143,9 @@ fun LoginScreen(
                     onLoginSuccess("$sessionServer|$sessionUsername", kp, api, sessionUsername, true)
                     return@LaunchedEffect
                 }
-                error = if (!tokenValid) "Сессия истекла — выполняю восстановление"
-                else "Локальные ключи не найдены — выполняю восстановление"
+                val nextStep = if (legacyLogin != null) "выполняю восстановление" else "войдите снова"
+                error = if (!tokenValid) "Сессия истекла — $nextStep"
+                else "Локальные ключи не найдены — $nextStep"
             } catch (e: Exception) {
                 error = e.message ?: "Не удалось восстановить сессию"
             }
@@ -165,9 +168,9 @@ fun LoginScreen(
                     .statusBarsPadding()
                     .padding(16.dp)
                     .size(AetherStyle.SmallControlSize)
-                    .aetherCircle()
+                    .aetherControl()
             ) {
-                Icon(Icons.Default.Settings, contentDescription = "Настройки", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                Icon(Icons.Default.Settings, contentDescription = "Настройки", tint = aetherControlContent())
             }
 
             Column(
@@ -199,10 +202,13 @@ fun LoginScreen(
                         value = server,
                         onValueChange = { server = it },
                         label = { Text("Сервер") },
-                        modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 16.dp)
+                            .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                         singleLine = true,
                         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        colors = aetherTextFieldColors(),
+                        colors = aetherTextFieldColors(containerAlpha = 0f),
                         shape = RoundedCornerShape(AetherStyle.FieldRadius)
                     )
                 }
@@ -211,9 +217,11 @@ fun LoginScreen(
                     value = username,
                     onValueChange = { username = it },
                     placeholder = { Text("Имя пользователя") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     singleLine = true,
-                    colors = aetherTextFieldColors(),
+                    colors = aetherTextFieldColors(containerAlpha = 0f),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius)
                 )
 
@@ -224,9 +232,11 @@ fun LoginScreen(
                     onValueChange = { password = it },
                     placeholder = { Text("Пароль") },
                     visualTransformation = PasswordVisualTransformation(),
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     singleLine = true,
-                    colors = aetherTextFieldColors(),
+                    colors = aetherTextFieldColors(containerAlpha = 0f),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius)
                 )
 
@@ -238,9 +248,11 @@ fun LoginScreen(
                             onValueChange = { totpCode = it.filter(Char::isDigit).take(10) },
                             placeholder = { Text("Код 2FA") },
                             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
-                            modifier = Modifier.fillMaxWidth(),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                             singleLine = true,
-                            colors = aetherTextFieldColors(),
+                            colors = aetherTextFieldColors(containerAlpha = 0f),
                             shape = RoundedCornerShape(AetherStyle.FieldRadius)
                         )
                     }

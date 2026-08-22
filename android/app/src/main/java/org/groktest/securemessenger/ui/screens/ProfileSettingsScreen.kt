@@ -25,8 +25,8 @@ import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -60,7 +60,10 @@ fun ProfileSettingsScreen(
             if (p.displayName.isNotBlank()) displayName = p.displayName
             bio = p.bio ?: ""
             avatarFileId = p.avatarFileId
-        } catch (e: Exception) {}
+            isProfileLoaded = true
+        } catch (e: Exception) {
+            snackbarHostState.showSnackbar("Не удалось загрузить профиль")
+        }
     }
 
     val photoPicker = rememberLauncherForActivityResult(
@@ -109,7 +112,6 @@ fun ProfileSettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .glassSource()
                     .verticalScroll(rememberScrollState())
                     .imePadding()
                     .navigationBarsPadding()
@@ -164,9 +166,11 @@ fun ProfileSettingsScreen(
                     value = displayName,
                     onValueChange = { displayName = it },
                     label = { Text("Имя") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -175,9 +179,11 @@ fun ProfileSettingsScreen(
                     value = username,
                     onValueChange = { username = it },
                     label = { Text("Юзернейм (@)") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
 
                 Spacer(modifier = Modifier.height(16.dp))
@@ -186,15 +192,18 @@ fun ProfileSettingsScreen(
                     value = bio,
                     onValueChange = { bio = it },
                     label = { Text("О себе") },
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
 
                 Spacer(modifier = Modifier.height(24.dp))
 
                 AetherPrimaryButton(
                     text = "Сохранить",
+                    enabled = isProfileLoaded && !isUploadingAvatar,
                     loading = isSaving,
                     onClick = {
                         isSaving = true

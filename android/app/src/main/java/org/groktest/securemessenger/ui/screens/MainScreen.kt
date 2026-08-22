@@ -1,9 +1,8 @@
 package org.groktest.securemessenger.ui.screens
 
-import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
@@ -13,7 +12,6 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -22,7 +20,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.automirrored.filled.Chat
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Search
@@ -37,11 +35,18 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import coil.compose.AsyncImage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -53,13 +58,14 @@ import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.data.ChatListEntry
 import org.groktest.securemessenger.data.messagePreview
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
-import org.groktest.securemessenger.ui.glass.glassSurface
 import org.groktest.securemessenger.ui.theme.AetherEdge
 import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherControl
+import org.groktest.securemessenger.ui.theme.aetherControlContent
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 import kotlin.math.roundToInt
@@ -95,7 +101,7 @@ fun MainScreen(
         listOf(
             MainTab("Контакты", Icons.Default.Person),
             MainTab("Звонки", Icons.Default.Phone),
-            MainTab("Чаты", Icons.Default.Email),
+            MainTab("Чаты", Icons.AutoMirrored.Filled.Chat),
             MainTab("Настройки", Icons.Default.Settings)
         )
     }
@@ -103,122 +109,152 @@ fun MainScreen(
     val coroutineScope = rememberCoroutineScope()
     val chats by chatListFlow.collectAsState()
     val appearance = LocalThemeSettings.current
-    var dockDragCenterPx by remember { mutableFloatStateOf(Float.NaN) }
+    val totalUnread = remember(chats) {
+        chats.filter { !it.chat.isMuted && !it.chat.isArchived }.sumOf { it.chat.unreadCount }
+    }
+    var dockDragPosition by remember { mutableFloatStateOf(Float.NaN) }
+    val dockIndicatorPosition = remember { Animatable(2f) }
+    var dockTapAnimating by remember { mutableStateOf(false) }
     var dockScrollJob by remember { mutableStateOf<Job?>(null) }
 
-    fun moveToPage(index: Int, duration: Int = 320, holdIndicator: Boolean = false) {
-        if (!holdIndicator) dockDragCenterPx = Float.NaN
+    LaunchedEffect(pagerState.currentPage, pagerState.isScrollInProgress) {
+        if (!pagerState.isScrollInProgress && !dockTapAnimating && dockDragPosition.isNaN()) {
+            dockIndicatorPosition.snapTo(pagerState.currentPage.toFloat())
+        }
+    }
+
+    fun moveToPage(index: Int, holdIndicator: Boolean = false) {
         dockScrollJob?.cancel()
         dockScrollJob = coroutineScope.launch {
-            if (appearance.animationsEnabled()) {
-                pagerState.animateScrollToPage(
-                    index,
-                    animationSpec = tween(appearance.motionDuration(duration), easing = FastOutSlowInEasing)
-                )
-            } else {
-                pagerState.scrollToPage(index)
+            try {
+                if (holdIndicator) {
+                    dockIndicatorPosition.snapTo(index.toFloat())
+                    pagerState.scrollToPage(index)
+                } else if (appearance.animationsEnabled()) {
+                    dockDragPosition = Float.NaN
+                    dockTapAnimating = true
+                    pagerState.scrollToPage(index)
+                    dockIndicatorPosition.animateTo(
+                        index.toFloat(),
+                        animationSpec = tween(
+                            durationMillis = appearance.motionDuration(160).coerceAtMost(180),
+                            easing = FastOutSlowInEasing
+                        )
+                    )
+                } else {
+                    dockIndicatorPosition.snapTo(index.toFloat())
+                    pagerState.scrollToPage(index)
+                }
+            } finally {
+                dockTapAnimating = false
+                dockDragPosition = Float.NaN
             }
-            dockDragCenterPx = Float.NaN
         }
     }
 
     GlassBackground {
         Box(modifier = Modifier.fillMaxSize()) {
             val dock: @Composable BoxScope.() -> Unit = {
+                val navigationBottom = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                val dockAreaHeight = maxOf(
+                    appearance.edgeDimLength.value.dp,
+                    AetherStyle.DockHeight + AetherStyle.DockBottom + navigationBottom
+                )
                 Box(
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
                         .zIndex(10f)
-                        .height(appearance.edgeDimLength.value.dp)
+                        .height(dockAreaHeight)
                 ) {
                     AetherEdgeDim(
                         edge = AetherEdge.Bottom,
                         modifier = Modifier.matchParentSize()
                     )
-                    Box(
+                    Row(
                         modifier = Modifier
                             .align(Alignment.BottomCenter)
                             .navigationBarsPadding()
                             .padding(start = AetherStyle.DockHorizontal, end = AetherStyle.DockHorizontal, bottom = AetherStyle.DockBottom)
                             .fillMaxWidth()
-                            .height(AetherStyle.DockHeight)
-                            .glassSurface(RoundedCornerShape(AetherStyle.DockRadius))
+                            .height(AetherStyle.DockHeight),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                    BoxWithConstraints(
+                        modifier = Modifier
+                            .weight(1f)
+                            .fillMaxHeight()
                             .aetherIsland(
                                 shape = RoundedCornerShape(AetherStyle.DockRadius),
                                 fillAlpha = AetherStyle.DockFillAlpha,
                                 strokeAlpha = AetherStyle.DockStrokeAlpha
                             )
                     ) {
-                    BoxWithConstraints(
-                        modifier = Modifier
-                            .fillMaxSize()
-                    ) {
                         val tabWidth = maxWidth / tabs.size
                         val density = LocalDensity.current
                         val tabWidthPx = with(density) { tabWidth.toPx() }
                         val dockWidthPx = with(density) { maxWidth.toPx() }
-                        val isDockDragging = !dockDragCenterPx.isNaN()
-                        val pagerPosition = (pagerState.currentPage + pagerState.currentPageOffsetFraction)
-                            .coerceIn(0f, tabs.lastIndex.toFloat())
-                        val dragPosition = if (isDockDragging) {
-                            ((dockDragCenterPx / tabWidthPx) - 0.5f).coerceIn(0f, tabs.lastIndex.toFloat())
-                        } else {
-                            null
-                        }
-                        val indicatorPosition by animateFloatAsState(
-                            targetValue = dragPosition ?: pagerPosition,
-                            animationSpec = when {
-                                !appearance.animationsEnabled() || isDockDragging -> snap()
-                                pagerState.isScrollInProgress -> snap()
-                                else -> spring(
-                                    dampingRatio = 0.88f,
-                                    stiffness = 460f * appearance.animationSpeed.value.coerceAtLeast(0.2f)
-                                )
-                            },
-                            label = "dockIndicatorPosition"
-                        )
-                        val selectedVisualPage = indicatorPosition.roundToInt().coerceIn(0, tabs.lastIndex)
-                        val indicatorInset = AetherStyle.DockIndicatorInset
+                        val selectedContentColor = aetherControlContent()
+                        val selectedVisualPage = pagerState.currentPage
+                        val edgeToEdge = appearance.dockIndicatorEdgeToEdge.value
+                        val indicatorInset = if (edgeToEdge) 0.dp else AetherStyle.DockIndicatorInset
                         val indicatorWidth = tabWidth - indicatorInset * 2
-                        val indicatorShape = RoundedCornerShape(AetherStyle.DockIndicatorRadius)
-                        val indicatorX = tabWidth * indicatorPosition + indicatorInset
+                        val indicatorHeight = if (edgeToEdge) {
+                            AetherStyle.DockHeight
+                        } else {
+                            minOf(AetherStyle.DockIndicatorHeight, maxOf(42.dp, indicatorWidth / 1.25f))
+                        }
+                        val indicatorShape = RoundedCornerShape(
+                            if (edgeToEdge) AetherStyle.DockRadius else AetherStyle.DockIndicatorRadius
+                        )
 
                         Box(
                             modifier = Modifier
-                                .offset(x = indicatorX)
                                 .align(Alignment.CenterStart)
                                 .width(indicatorWidth)
-                                .height(AetherStyle.DockIndicatorHeight)
+                                .height(indicatorHeight)
+                                .graphicsLayer {
+                                    val position = if (dockDragPosition.isNaN()) {
+                                        if (dockTapAnimating) {
+                                            dockIndicatorPosition.value
+                                        } else {
+                                            pagerState.currentPage + pagerState.currentPageOffsetFraction
+                                        }
+                                    } else {
+                                        dockDragPosition
+                                    }.coerceIn(0f, tabs.lastIndex.toFloat())
+                                    translationX = tabWidth.toPx() * position + indicatorInset.toPx()
+                                }
                                 .aetherIsland(
                                     shape = indicatorShape,
-                                    fillAlpha = AetherStyle.SelectedFillAlpha,
-                                    strokeAlpha = AetherStyle.SelectedStrokeAlpha
+                                    fillAlpha = 0.38f,
+                                    strokeAlpha = 0f
                                 )
                         )
 
                         Row(
                             modifier = Modifier
                                 .fillMaxSize()
+                                .selectableGroup()
                                 .pointerInput(tabWidthPx, dockWidthPx) {
                                     detectHorizontalDragGestures(
                                         onDragStart = { offset ->
                                             dockScrollJob?.cancel()
-                                            dockDragCenterPx = offset.x.coerceIn(0f, dockWidthPx)
+                                            dockDragPosition = (offset.x / tabWidthPx - 0.5f)
+                                                .coerceIn(0f, tabs.lastIndex.toFloat())
                                         },
-                                        onDragCancel = {
-                                            dockDragCenterPx = Float.NaN
-                                        },
+                                        onDragCancel = { dockDragPosition = Float.NaN },
                                         onDragEnd = {
-                                            val target = ((if (dockDragCenterPx.isNaN()) 0f else dockDragCenterPx) / tabWidthPx)
-                                                .toInt()
+                                            val target = dockDragPosition.roundToInt()
                                                 .coerceIn(0, tabs.lastIndex)
+                                            dockDragPosition = target.toFloat()
                                             moveToPage(target, holdIndicator = true)
                                         },
                                         onHorizontalDrag = { change, dragAmount ->
                                             change.consume()
-                                            val current = if (dockDragCenterPx.isNaN()) change.position.x else dockDragCenterPx
-                                            dockDragCenterPx = (current + dragAmount).coerceIn(0f, dockWidthPx)
+                                            dockDragPosition = (dockDragPosition + dragAmount / tabWidthPx)
+                                                .coerceIn(0f, tabs.lastIndex.toFloat())
                                         }
                                     )
                                 },
@@ -227,75 +263,107 @@ fun MainScreen(
                         ) {
                             tabs.forEachIndexed { index, tab ->
                                 val selected = selectedVisualPage == index
-                                val color by animateColorAsState(
-                                    targetValue = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
-                                    animationSpec = tween(appearance.motionDuration(240)),
-                                    label = "mainTabColor"
-                                )
-                                val scale by animateFloatAsState(
-                                    targetValue = if (selected) 1.08f else 1f,
-                                    animationSpec = if (!appearance.animationsEnabled()) snap() else spring(
-                                        dampingRatio = (0.78f - appearance.motionIntensity.value * 0.16f).coerceIn(0.48f, 0.78f),
-                                        stiffness = 420f * appearance.animationSpeed.value
-                                    ),
-                                    label = "mainTabScale"
-                                )
-                                val tabGesture = Modifier.clickable(
-                                    interactionSource = remember { androidx.compose.foundation.interaction.MutableInteractionSource() },
-                                    indication = null
-                                ) { moveToPage(index) }
+                                val color = if (selected) {
+                                    selectedContentColor
+                                } else {
+                                    MaterialTheme.colorScheme.onBackground.copy(alpha = 0.92f)
+                                }
+                                val tabInteraction = remember { MutableInteractionSource() }
 
                                 Box(
                                     modifier = Modifier
                                         .weight(1f)
                                         .fillMaxHeight()
-                                        .then(tabGesture),
+                                        .semantics(mergeDescendants = true) {}
+                                        .selectable(
+                                            selected = selected,
+                                            interactionSource = tabInteraction,
+                                            indication = null,
+                                            role = Role.Tab,
+                                            onClick = { moveToPage(index) }
+                                        ),
                                     contentAlignment = Alignment.Center
                                 ) {
-                                    Icon(
-                                        imageVector = tab.icon,
-                                        contentDescription = tab.title,
-                                        tint = color,
-                                        modifier = Modifier
-                                            .size(26.dp)
-                                            .graphicsLayer { scaleX = scale; scaleY = scale }
-                                    )
-                                    // Бейдж непрочитанных на вкладке «Чаты» — как в Telegram
-                                    // (замьюченные чаты в счётчик не входят)
-                                    if (index == 2) {
-                                        val totalUnread = chats
-                                            .filter { !it.chat.isMuted }
-                                            .sumOf { it.chat.unreadCount }
-                                        if (totalUnread > 0) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .align(Alignment.Center)
-                                                    .offset(x = 14.dp, y = (-10).dp)
-                                                    .clip(CircleShape)
-                                                    .background(MaterialTheme.colorScheme.primary)
-                                                    .padding(horizontal = 5.dp, vertical = 1.dp),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                Text(
-                                                    text = if (totalUnread > 99) "99+" else totalUnread.toString(),
-                                                    fontSize = 10.sp,
-                                                    color = MaterialTheme.colorScheme.onPrimary,
-                                                    fontWeight = FontWeight.Bold,
-                                                    maxLines = 1
-                                                )
+                                    Column(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.Center
+                                    ) {
+                                        Box(
+                                            modifier = Modifier.size(29.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Icon(
+                                                imageVector = tab.icon,
+                                                contentDescription = null,
+                                                tint = color,
+                                                modifier = Modifier.size(25.dp)
+                                            )
+                                            if (index == 2 && totalUnread > 0) {
+                                                Badge(
+                                                    modifier = Modifier
+                                                        .align(Alignment.TopEnd)
+                                                        .offset(x = 5.dp)
+                                                        .clearAndSetSemantics {
+                                                            contentDescription = "Непрочитано: $totalUnread"
+                                                        },
+                                                    containerColor = MaterialTheme.colorScheme.error,
+                                                    contentColor = MaterialTheme.colorScheme.onError
+                                                ) {
+                                                    Text(
+                                                        if (totalUnread > 999) "999+" else totalUnread.toString(),
+                                                        fontSize = 10.sp,
+                                                        fontWeight = FontWeight.Bold
+                                                    )
+                                                }
                                             }
                                         }
+                                        Spacer(Modifier.height(2.dp))
+                                        Text(
+                                            text = tab.title,
+                                            color = color,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(horizontal = 4.dp),
+                                            fontSize = 10.sp,
+                                            lineHeight = 13.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            textAlign = TextAlign.Center,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                     }
                                 }
                             }
                         }
+                    }
+                    Box(
+                        modifier = Modifier
+                            .size(AetherStyle.DockHeight)
+                            .aetherIsland(
+                                shape = CircleShape,
+                                fillAlpha = AetherStyle.DockFillAlpha,
+                                strokeAlpha = AetherStyle.DockStrokeAlpha
+                            )
+                            .clickable(
+                                role = Role.Button,
+                                onClick = onNavigateToSearch
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            Icons.Default.Search,
+                            contentDescription = "Поиск",
+                            tint = MaterialTheme.colorScheme.onBackground,
+                            modifier = Modifier.size(30.dp)
+                        )
                     }
                     }
                 }
             }
             HorizontalPager(
                 state = pagerState,
-                beyondBoundsPageCount = tabs.lastIndex,
+                userScrollEnabled = true,
                 modifier = Modifier.fillMaxSize()
             ) { page ->
                 Box(
@@ -314,26 +382,20 @@ fun MainScreen(
                         onOpenChat = onChatSelected,
                         onAudioCall = onStartAudioCall,
                         onVideoCall = onStartVideoCall,
-                        onFindPeople = { moveToPage(0, 260) }
+                        onFindPeople = { moveToPage(0) }
                     )
                     2 -> ChatListScreen(
-                        myId = myId,
                         chats = chats,
                         onChatSelected = onChatSelected,
-                        onLogout = onLogout,
                         onNewChat = onNewChat,
-                        onProfileClick = {},
-                        onSettingsClick = {},
-                        onSearchClick = onNavigateToSearch,
                         onCreateGroup = { onCreateGroupClick(false) },
                         onCreateChannel = { onCreateGroupClick(true) },
-                        onCallsClick = { moveToPage(1, 280) },
                         onAction = onAction
                     )
                     3 -> SettingsScreen(
                         api = api,
                         myId = myId,
-                        onBack = { moveToPage(2, 280) },
+                        onBack = { moveToPage(2) },
                         onNavigateToProfile = onNavigateToProfileSettings,
                         onNavigateToNotifications = onNavigateToNotificationsSettings,
                         onNavigateToPrivacy = onNavigateToPrivacySettings,
@@ -420,7 +482,7 @@ private fun ContactsTab(
 
         val recentContacts = remember(chats) { chats.filter { it.chat.type == 0 } }
         LazyColumn(
-            modifier = Modifier.fillMaxSize().glassSource(),
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 top = 8.dp,
                 bottom = edgeDimHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -486,7 +548,7 @@ private fun CallsTab(
         Text("Звонки", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onBackground)
         Spacer(Modifier.height(10.dp))
         LazyColumn(
-            modifier = Modifier.fillMaxSize().glassSource(),
+            modifier = Modifier.fillMaxSize(),
             contentPadding = PaddingValues(
                 top = 8.dp,
                 bottom = edgeDimHeight + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -530,7 +592,7 @@ private fun AetherSearchField(
         modifier = Modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
-            .aetherIsland(
+            .aetherField(
                 shape = RoundedCornerShape(AetherStyle.FieldRadius),
                 fillAlpha = AetherStyle.SearchFillAlpha,
                 strokeAlpha = AetherStyle.SearchStrokeAlpha
@@ -606,7 +668,7 @@ private fun CallRow(
         Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(entry.chat.name, fontSize = 17.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text("Аудио или видео", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text("Выберите тип звонка", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         RoundActionButton(icon = Icons.Default.Phone, contentDescription = "Аудиозвонок", onClick = onAudioCall)
         Spacer(Modifier.width(8.dp))
@@ -620,27 +682,14 @@ private fun RoundActionButton(
     contentDescription: String,
     onClick: () -> Unit
 ) {
-    val appearance = LocalThemeSettings.current
-    val interaction = remember { MutableInteractionSource() }
-    val pressed by interaction.collectIsPressedAsState()
-    val scale by animateFloatAsState(
-        targetValue = if (pressed) 0.9f else 1f,
-        animationSpec = tween(appearance.motionDuration(if (pressed) 90 else 180)),
-        label = "callButtonScale"
-    )
     Box(
         modifier = Modifier
             .size(AetherStyle.SmallControlSize)
-            .graphicsLayer { scaleX = scale; scaleY = scale }
-            .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
-            .clickable(
-                interactionSource = interaction,
-                indication = null,
-                onClick = onClick
-            ),
+            .aetherControl(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+            .clickable(onClick = onClick),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = contentDescription, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
+        Icon(icon, contentDescription = contentDescription, tint = aetherControlContent(), modifier = Modifier.size(22.dp))
     }
 }
 

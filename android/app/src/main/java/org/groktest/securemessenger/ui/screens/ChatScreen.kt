@@ -3,6 +3,7 @@ package org.groktest.securemessenger.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
@@ -29,7 +30,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Image
-import androidx.compose.material.icons.filled.InsertDriveFile
+import androidx.compose.material.icons.automirrored.filled.InsertDriveFile
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.MoreVert
@@ -49,6 +50,14 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.onLongClick
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -95,15 +104,21 @@ import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.AetherEdge
 import org.groktest.securemessenger.ui.theme.AetherEdgeDim
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
-import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherControl
+import org.groktest.securemessenger.ui.theme.aetherControlContent
+import org.groktest.securemessenger.ui.theme.aetherBubbleShape
+import org.groktest.securemessenger.ui.theme.aetherBubbleVisual
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.glass.glassSurface
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@android.annotation.SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
 @Composable
 fun ChatScreen(
     peerId: String,
@@ -150,6 +165,7 @@ fun ChatScreen(
     var inputText by remember { mutableStateOf("") }
     var isSending by remember { mutableStateOf(false) }
     var sendPulseTrigger by remember { mutableIntStateOf(0) }
+    var composerHeightPx by remember { mutableIntStateOf(0) }
     val listState = rememberLazyListState(initialFirstVisibleItemIndex = messages.lastIndex.coerceAtLeast(0))
     val snackbarHostState = remember { SnackbarHostState() }
     val coroutineScope = rememberCoroutineScope()
@@ -348,18 +364,27 @@ fun ChatScreen(
         }
     }
 
+    val context = LocalContext.current
+
+    // ---- Telegram-like шторка вложений ----
+    var showAttachSheet by remember { mutableStateOf(false) }
+    val selectedMedia = remember { mutableStateListOf<android.net.Uri>() }
+    var attachCaption by remember { mutableStateOf("") }
+    var attachAsDocument by remember { mutableStateOf(false) }
+    var recentMedia by remember { mutableStateOf<List<Pair<android.net.Uri, Boolean>>>(emptyList()) }
+
     val mediaPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.PickMultipleVisualMedia(maxItems = 100)
     ) { uris ->
         if (uris.isNotEmpty()) {
-            isSending = true
-            coroutineScope.launch {
-                val error = withContext(Dispatchers.IO) { onSendMedia(uris, null) }
-                isSending = false
-                if (error != null) {
-                    snackbarHostState.showSnackbar("Ошибка отправки медиа: ${error.message}", duration = SnackbarDuration.Long)
-                }
+            selectedMedia.clear()
+            selectedMedia.addAll(uris)
+            val picked = uris.map { uri ->
+                uri to (context.contentResolver.getType(uri)?.startsWith("video/") == true)
             }
+            recentMedia = (picked + recentMedia).distinctBy { it.first }.take(100)
+            attachAsDocument = false
+            showAttachSheet = true
         }
     }
 
@@ -376,23 +401,6 @@ fun ChatScreen(
                     snackbarHostState.showSnackbar("Ошибка отправки файла: ${error.message}", duration = SnackbarDuration.Long)
                 }
             }
-        }
-    }
-
-    val context = LocalContext.current
-
-    // ---- Telegram-like шторка вложений ----
-    var showAttachSheet by remember { mutableStateOf(false) }
-    val selectedMedia = remember { mutableStateListOf<android.net.Uri>() }
-    var attachCaption by remember { mutableStateOf("") }
-    var attachAsDocument by remember { mutableStateOf(false) }
-    var recentMedia by remember { mutableStateOf<List<Pair<android.net.Uri, Boolean>>>(emptyList()) }
-    val mediaPermsLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { grants ->
-        coroutineScope.launch {
-            if (grants.values.any { it }) {
-                recentMedia = withContext(Dispatchers.IO) { queryRecentMedia(context) }
-            }
-            showAttachSheet = true
         }
     }
 
@@ -678,7 +686,13 @@ fun ChatScreen(
         showVideoNoteRecorder = true
     }
     val cameraPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { perms ->
-        if (perms[android.Manifest.permission.CAMERA] == true && perms[android.Manifest.permission.RECORD_AUDIO] == true) launchVideoNote()
+        if (perms[android.Manifest.permission.CAMERA] == true && perms[android.Manifest.permission.RECORD_AUDIO] == true) {
+            launchVideoNote()
+        } else {
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("Для кружка нужен доступ к камере и микрофону")
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -785,28 +799,28 @@ fun ChatScreen(
                         IconButton(
                             onClick = onBack,
                             modifier = Modifier
-                                .size(48.dp)
-                                .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                                .size(AetherStyle.ControlSize)
+                                .aetherControl(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
                         ) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад", tint = aetherControlContent())
                         }
-                        Spacer(Modifier.width(10.dp))
+                        Spacer(Modifier.width(8.dp))
                         Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .height(48.dp)
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(AetherStyle.ControlSize)
                                 .glassSurface(RoundedCornerShape(AetherStyle.PillRadius))
                                 .aetherIsland(
                                     shape = RoundedCornerShape(AetherStyle.PillRadius),
                                     fillAlpha = AetherStyle.ControlFillAlpha,
                                     strokeAlpha = AetherStyle.ControlStrokeAlpha
                                 )
-                                .padding(start = 6.dp),
+                                    .padding(start = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
+                                    .size(40.dp)
                                     .clip(CircleShape)
                                     .background(if (isSavedChat) savedChatColor else peerColor(peerId))
                                     .clickable(enabled = !isSavedChat) { onOpenProfile() },
@@ -828,7 +842,7 @@ fun ChatScreen(
                                     )
                                 }
                             }
-                            Spacer(Modifier.width(9.dp))
+                            Spacer(Modifier.width(8.dp))
                             Column(
                                 modifier = Modifier
                                     .weight(1f)
@@ -884,21 +898,21 @@ fun ChatScreen(
                                 }
                             }
                             if (isPersonalChat) {
-                                IconButton(onClick = onAudioCall, modifier = Modifier.size(38.dp)) {
+                                IconButton(onClick = onAudioCall, modifier = Modifier.size(40.dp)) {
                                     Icon(Icons.Default.Phone, contentDescription = "Аудиозвонок", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 }
-                                IconButton(onClick = onVideoCall, modifier = Modifier.size(38.dp)) {
+                                IconButton(onClick = onVideoCall, modifier = Modifier.size(40.dp)) {
                                     Icon(Icons.Default.Videocam, contentDescription = "Видеозвонок", tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
                                 }
                             }
                             if (!isSavedChat) Box {
-                                IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(38.dp)) {
+                                IconButton(onClick = { headerMenuOpen = true }, modifier = Modifier.size(40.dp)) {
                                     Icon(Icons.Default.MoreVert, contentDescription = "Меню чата", tint = MaterialTheme.colorScheme.onSurfaceVariant)
                                 }
                                 // Канон меню: surface-контейнер, скругление 20.dp (в M3 1.2 у
                                 // DropdownMenu нет shape/containerColor — задаём через тему).
                                 MaterialTheme(
-                                    shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(20.dp)),
+                                    shapes = MaterialTheme.shapes.copy(extraSmall = CircleShape),
                                     colorScheme = MaterialTheme.colorScheme.copy(surfaceTint = Color.Transparent)
                                 ) {
                                 DropdownMenu(expanded = headerMenuOpen, onDismissRequest = { headerMenuOpen = false }) {
@@ -941,8 +955,9 @@ fun ChatScreen(
                       Box(
                           modifier = Modifier
                               .fillMaxWidth()
-                              .navigationBarsPadding()
-                              .padding(vertical = 14.dp),
+                              .padding(vertical = 14.dp)
+                              .then(if (imeVisible) Modifier else Modifier.navigationBarsPadding())
+                              .onSizeChanged { composerHeightPx = it.height },
                           contentAlignment = Alignment.Center
                       ) {
                           Text(
@@ -952,7 +967,7 @@ fun ChatScreen(
                           )
                       }
                   } else {
-                  Column {
+                  Column(Modifier.onSizeChanged { composerHeightPx = it.height }) {
                     val composerContextMessage = editingMessage ?: replyingTo
                     val composerContextIsEditing = editingMessage != null
                     AnimatedVisibility(
@@ -1005,8 +1020,8 @@ fun ChatScreen(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 12.dp, vertical = 8.dp)
-                            .navigationBarsPadding(),
-                        verticalAlignment = Alignment.CenterVertically
+                            .then(if (imeVisible) Modifier else Modifier.navigationBarsPadding()),
+                        verticalAlignment = Alignment.Bottom
                     ) {
                         val previewFile = voicePreviewFile
                         if (previewFile != null) {
@@ -1031,7 +1046,7 @@ fun ChatScreen(
                         Box(
                             modifier = Modifier
                                 .size(AetherStyle.ControlSize)
-                                .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                                .aetherControl(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
                                 .clickable(enabled = attachEnabled) {
                                     val perms = if (android.os.Build.VERSION.SDK_INT >= 33)
                                         arrayOf(android.Manifest.permission.READ_MEDIA_IMAGES, android.Manifest.permission.READ_MEDIA_VIDEO)
@@ -1040,15 +1055,11 @@ fun ChatScreen(
                                     val granted = perms.any {
                                         androidx.core.content.ContextCompat.checkSelfPermission(context, it) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                     }
-                                    if (granted) {
-                                        coroutineScope.launch {
-                                            if (recentMedia.isEmpty()) {
+                                    coroutineScope.launch {
+                                        if (granted && recentMedia.isEmpty()) {
                                                 recentMedia = withContext(Dispatchers.IO) { queryRecentMedia(context) }
-                                            }
-                                            showAttachSheet = true
                                         }
-                                    } else {
-                                        mediaPermsLauncher.launch(perms)
+                                        showAttachSheet = true
                                     }
                                 },
                             contentAlignment = Alignment.Center
@@ -1056,7 +1067,7 @@ fun ChatScreen(
                             Icon(
                                 Icons.Default.Add,
                                 contentDescription = "Вложение",
-                                tint = if (attachEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
+                                tint = if (attachEnabled) aetherControlContent() else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.45f),
                                 modifier = Modifier.size(26.dp)
                             )
                         }
@@ -1103,7 +1114,7 @@ fun ChatScreen(
                                 }
                             }
                         } else {
-                            TextField(
+                            BasicTextField(
                                 value = inputText,
                                 onValueChange = {
                                     inputText = it
@@ -1118,27 +1129,44 @@ fun ChatScreen(
                                 modifier = Modifier
                                     .weight(1f)
                                     .padding(horizontal = 8.dp)
-                                    .height(AetherStyle.ControlSize)
-                                    .aetherIsland(
-                                        shape = RoundedCornerShape(AetherStyle.PillRadius),
+                                    .heightIn(min = AetherStyle.ControlSize, max = 120.dp)
+                                    .aetherField(
+                                        shape = RoundedCornerShape(AetherStyle.FieldRadius),
                                         fillAlpha = AetherStyle.ControlFillAlpha,
                                         strokeAlpha = AetherStyle.ControlStrokeAlpha
                                     ),
-                                placeholder = { Text("Написать сообщение...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
+                                textStyle = MaterialTheme.typography.bodyLarge.copy(
+                                    color = MaterialTheme.colorScheme.onBackground,
+                                    fontSize = 16.sp,
+                                    lineHeight = 22.sp
+                                ),
+                                cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
                                 maxLines = 4,
                                 enabled = !isSending,
-                                shape = RoundedCornerShape(AetherStyle.PillRadius),
-                                colors = aetherTextFieldColors(containerAlpha = 0f)
+                                decorationBox = { innerTextField ->
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 16.dp, vertical = 14.dp)
+                                    ) {
+                                        if (inputText.isEmpty()) {
+                                            Text(
+                                                "Написать сообщение...",
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                                fontSize = 16.sp,
+                                                lineHeight = 22.sp
+                                            )
+                                        }
+                                        innerTextField()
+                                    }
+                                }
                             )
                         }
                         } // else (нет превью)
 
                         val sendActive = (inputText.isNotBlank() || isRecordingVoice || voicePreviewFile != null) && !isSending
-                        val sendBg by animateColorAsState(
-                            targetValue = if (sendActive) MaterialTheme.colorScheme.primary else aetherSurface(AetherStyle.ControlFillAlpha),
-                            animationSpec = tween(org.groktest.securemessenger.ui.theme.LocalThemeSettings.current.motionDuration(280)),
-                            label = "sendBg"
-                        )
+                        val sendShape = CircleShape
+                        val inactiveSendContent = aetherControlContent()
                         // Лёгкая пульсация кнопки во время незалоченной записи (живее, как в TG).
                         val recordingScale = if (isRecordingVoice && !recordLocked) {
                             val micPulse by rememberInfiniteTransition(label = "micPulse").animateFloat(
@@ -1167,24 +1195,32 @@ fun ChatScreen(
                             }
                         }
                         val btnScale = recordingScale * sendTapScale.value
+                        val sendSurface = if (sendActive) {
+                            Modifier
+                                .clip(sendShape)
+                                .background(MaterialTheme.colorScheme.primary)
+                                .border(
+                                    AetherStyle.Stroke,
+                                    MaterialTheme.colorScheme.primary.copy(alpha = 0.8f),
+                                    sendShape
+                                )
+                        } else {
+                            Modifier.aetherControl(
+                                fillAlpha = AetherStyle.ControlFillAlpha,
+                                strokeAlpha = AetherStyle.ControlStrokeAlpha
+                            )
+                        }
                         Box(
                             modifier = Modifier
                                 .size(AetherStyle.ControlSize)
                                 .graphicsLayer { scaleX = btnScale; scaleY = btnScale }
-                                .clip(CircleShape)
-                                .background(sendBg)
-                                .border(
-                                    AetherStyle.Stroke,
-                                    if (sendActive) MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
-                                    else MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.ControlStrokeAlpha),
-                                    CircleShape
-                                ),
+                                .then(sendSurface),
                             contentAlignment = Alignment.Center
                         ) {
                             if (isSending) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(24.dp),
-                                    color = MaterialTheme.colorScheme.onBackground,
+                                    color = inactiveSendContent,
                                     strokeWidth = 2.dp
                                 )
                             } else if (inputText.isNotBlank() && !isRecordingVoice) {
@@ -1192,7 +1228,7 @@ fun ChatScreen(
                                 Box(
                                     modifier = Modifier
                                         .matchParentSize()
-                                        .clip(CircleShape)
+                                        .clip(sendShape)
                                         .combinedClickable(
                                             onClick = { submitText() },
                                             onLongClick = { if (editingMessage == null) showScheduleDialog = true }
@@ -1210,7 +1246,7 @@ fun ChatScreen(
                                 Box(
                                     modifier = Modifier
                                         .matchParentSize()
-                                        .clip(CircleShape)
+                                        .clip(sendShape)
                                         .combinedClickable(
                                             onClick = { sendPreview() },
                                             onLongClick = { resumeVoiceRecording() }
@@ -1228,7 +1264,7 @@ fun ChatScreen(
                                 Box(
                                     modifier = Modifier
                                         .matchParentSize()
-                                        .clip(CircleShape)
+                                        .clip(sendShape)
                                         .combinedClickable(onClick = { stopVoiceToPreview() }),
                                     contentAlignment = Alignment.Center
                                 ) {
@@ -1245,6 +1281,26 @@ fun ChatScreen(
                                 Box(
                                     modifier = Modifier
                                         .matchParentSize()
+                                        .clip(sendShape)
+                                        .clearAndSetSemantics {
+                                            role = Role.Button
+                                            contentDescription = if (recordVideoMode) "Видео-кружок" else "Голосовое сообщение"
+                                            onClick(
+                                                label = if (recordVideoMode) "Переключить на голосовое" else "Переключить на видеокружок"
+                                            ) {
+                                                recordVideoMode = !recordVideoMode
+                                                true
+                                            }
+                                            if (recordVideoMode) {
+                                                onLongClick(label = "Записать видеокружок") {
+                                                    val camOk = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                                    val micOk = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
+                                                    if (camOk && micOk) launchVideoNote()
+                                                    else cameraPermLauncher.launch(arrayOf(android.Manifest.permission.CAMERA, android.Manifest.permission.RECORD_AUDIO))
+                                                    true
+                                                }
+                                            }
+                                        }
                                         .pointerInput(recordVideoMode) {
                                             val lockPx = 80.dp.toPx()
                                             val cancelPx = 96.dp.toPx()
@@ -1270,9 +1326,12 @@ fun ChatScreen(
                                                 if (recordVideoMode) {
                                                     val camOk = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
                                                     val micOk = androidx.core.content.ContextCompat.checkSelfPermission(context, android.Manifest.permission.RECORD_AUDIO) == android.content.pm.PackageManager.PERMISSION_GRANTED
-                                                    if (camOk && micOk) launchVideoNote()
-                                                    else cameraPermLauncher.launch(arrayOf(android.Manifest.permission.CAMERA, android.Manifest.permission.RECORD_AUDIO))
-                                                    waitForUpOrCancellation()
+                                                    // Сначала ждём отпускания: иначе палец отпускается уже поверх
+                                                    // рекордера и мгновенно нажимает его кнопку «Стоп».
+                                                    if (waitForUpOrCancellation() != null) {
+                                                        if (camOk && micOk) launchVideoNote()
+                                                        else cameraPermLauncher.launch(arrayOf(android.Manifest.permission.CAMERA, android.Manifest.permission.RECORD_AUDIO))
+                                                    }
                                                     return@awaitEachGesture
                                                 }
 
@@ -1330,7 +1389,7 @@ fun ChatScreen(
                                         else if (recordVideoMode) Icons.Filled.Videocam
                                         else Icons.Filled.Mic,
                                         contentDescription = if (recordVideoMode) "Видео-кружок" else "Записать голос",
-                                        tint = if (isRecordingVoice) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant
+                                        tint = if (isRecordingVoice) MaterialTheme.colorScheme.onPrimary else inactiveSendContent
                                     )
                                 }
                             }
@@ -1351,7 +1410,7 @@ fun ChatScreen(
                       Box(
                           modifier = Modifier
                               .size(AetherStyle.SmallControlSize)
-                              .aetherCircle(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
+                              .aetherControl(fillAlpha = AetherStyle.ControlFillAlpha, strokeAlpha = AetherStyle.ControlStrokeAlpha)
                               .clickable {
                                   coroutineScope.launch {
                                       glideToLatest()
@@ -1362,7 +1421,7 @@ fun ChatScreen(
                           Icon(
                               Icons.Filled.KeyboardArrowDown,
                               contentDescription = "Вниз",
-                              tint = MaterialTheme.colorScheme.onSurfaceVariant
+                              tint = aetherControlContent()
                           )
                       }
                   }
@@ -1395,16 +1454,23 @@ fun ChatScreen(
                 }
             Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             CompositionLocalProvider(LocalOverscrollConfiguration provides null) {
+                val measuredComposerHeight = with(density) { composerHeightPx.toDp() }
+                val composerPadding = if (composerHeightPx > 0) {
+                    measuredComposerHeight
+                } else {
+                    AetherStyle.ControlSize + 16.dp +
+                        WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                }
                 LazyColumn(
                     state = listState,
                     // Лента — источник размытия для стеклянных панелей (пилюля шапки и т.п.)
                     modifier = Modifier.fillMaxSize().glassSource(),
+                    verticalArrangement = Arrangement.Bottom,
                     contentPadding = PaddingValues(
-                        start = 8.dp,
+                        start = 12.dp,
                         top = if (notE2e) 8.dp else AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
-                        end = 8.dp,
-                        bottom = appearance.edgeDimLength.value.dp +
-                            AetherStyle.ScreenVertical +
+                        end = 12.dp,
+                        bottom = composerPadding + 12.dp +
                             imeInsets.asPaddingValues().calculateBottomPadding()
                     )
                 ) {
@@ -1426,7 +1492,7 @@ fun ChatScreen(
 
                         Column {
                             if (showDate) DateSeparator(msg.timestamp)
-                            Spacer(Modifier.height(if (groupedWithPrev) 2.dp else 8.dp))
+                            Spacer(Modifier.height(if (groupedWithPrev) 2.dp else 4.dp))
                             val bubble: @Composable () -> Unit = {
                                 MessageBubble(
                                     msg = msg,
@@ -1651,13 +1717,15 @@ fun ChatScreen(
             ModalBottomSheet(
                 onDismissRequest = {
                     showAttachSheet = false
-                    selectedMedia.clear()
-                    attachCaption = ""
-                    attachAsDocument = false
+                    if (!isSending) {
+                        selectedMedia.clear()
+                        attachCaption = ""
+                        attachAsDocument = false
+                    }
                 },
                 sheetState = attachSheetState,
-                containerColor = Color.Transparent,
-                scrimColor = Color.Transparent,
+                containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 0.96f),
+                scrimColor = Color.Black.copy(alpha = 0.32f),
                 dragHandle = null
             ) {
                 Column(
@@ -1677,7 +1745,7 @@ fun ChatScreen(
                             modifier = Modifier.fillMaxWidth().height(100.dp),
                             contentAlignment = Alignment.Center
                         ) {
-                            Text("Нет доступа к галерее", color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Text("Выберите фото через «Галерея»", color = MaterialTheme.colorScheme.onSurfaceVariant)
                         }
                     } else {
                         androidx.compose.foundation.lazy.grid.LazyVerticalGrid(
@@ -1744,12 +1812,13 @@ fun ChatScreen(
                     }
 
                     val actionItem: @Composable (androidx.compose.ui.graphics.vector.ImageVector, String, () -> Unit) -> Unit = { icon, label, onClick ->
+                        val actionShape = CircleShape
                         Column(
                             horizontalAlignment = Alignment.CenterHorizontally,
                             modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(10.dp)
                         ) {
                             Box(
-                                modifier = Modifier.size(46.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                modifier = Modifier.size(46.dp).clip(actionShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.primary)
@@ -1779,7 +1848,7 @@ fun ChatScreen(
                             showAttachSheet = false
                             mediaPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageAndVideo))
                         }
-                        actionItem(Icons.Default.InsertDriveFile, "Файл") {
+                        actionItem(Icons.AutoMirrored.Filled.InsertDriveFile, "Файл") {
                             showAttachSheet = false
                             filePicker.launch(arrayOf("*/*"))
                         }
@@ -1810,7 +1879,7 @@ fun ChatScreen(
                                 selected = attachAsDocument,
                                 onClick = { attachAsDocument = true },
                                 label = { Text("Файл") },
-                                leadingIcon = { Icon(Icons.Default.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                leadingIcon = { Icon(Icons.AutoMirrored.Filled.InsertDriveFile, contentDescription = null, modifier = Modifier.size(18.dp)) },
                                 colors = FilterChipDefaults.filterChipColors(
                                     containerColor = aetherSurface(AetherStyle.SoftIslandFillAlpha),
                                     selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.SelectedFillAlpha)
@@ -1824,47 +1893,59 @@ fun ChatScreen(
                             TextField(
                                 value = attachCaption,
                                 onValueChange = { attachCaption = it },
-                                modifier = Modifier.weight(1f).padding(end = 8.dp),
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .padding(end = 8.dp)
+                                    .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                                 placeholder = { Text("Подпись...", color = MaterialTheme.colorScheme.onSurfaceVariant) },
                                 maxLines = 3,
-                                shape = RoundedCornerShape(AetherStyle.PillRadius),
-                                colors = aetherTextFieldColors()
+                                shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                                colors = aetherTextFieldColors(containerAlpha = 0f)
                             )
+                            val attachmentControlContent = aetherControlContent()
                             Box(
                                 modifier = Modifier
                                     .size(50.dp)
-                                    .clip(CircleShape)
-                                    .background(MaterialTheme.colorScheme.primary)
-                                    .clickable {
+                                    .aetherControl()
+                                    .clickable(enabled = !isSending) {
                                         val uris = selectedMedia.toList()
                                         val cap = attachCaption.trim().ifBlank { null }
                                         val sendAsDocument = attachAsDocument
-                                        showAttachSheet = false
-                                        selectedMedia.clear()
-                                        attachCaption = ""
-                                        attachAsDocument = false
                                         isSending = true
                                         coroutineScope.launch {
                                             val error = withContext(Dispatchers.IO) {
                                                 if (sendAsDocument) onSendFiles(uris, cap) else onSendMedia(uris, cap)
                                             }
                                             isSending = false
-                                            if (error != null) {
+                                            if (error == null) {
+                                                showAttachSheet = false
+                                                selectedMedia.clear()
+                                                attachCaption = ""
+                                                attachAsDocument = false
+                                            } else {
                                                 snackbarHostState.showSnackbar("Ошибка отправки медиа: ${error.message}", duration = SnackbarDuration.Long)
                                             }
                                         }
                                     },
                                 contentAlignment = Alignment.Center
                             ) {
-                                Row(verticalAlignment = Alignment.CenterVertically) {
-                                    Text("${selectedMedia.size}", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                    Spacer(Modifier.width(2.dp))
-                                    Icon(
-                                        Icons.AutoMirrored.Filled.Send,
-                                        contentDescription = "Отправить",
-                                        tint = MaterialTheme.colorScheme.onPrimary,
-                                        modifier = Modifier.size(18.dp)
+                                if (isSending) {
+                                    CircularProgressIndicator(
+                                        modifier = Modifier.size(22.dp),
+                                        color = attachmentControlContent,
+                                        strokeWidth = 2.dp
                                     )
+                                } else {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Text("${selectedMedia.size}", color = attachmentControlContent, fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                        Spacer(Modifier.width(2.dp))
+                                        Icon(
+                                            Icons.AutoMirrored.Filled.Send,
+                                            contentDescription = "Отправить",
+                                            tint = attachmentControlContent,
+                                            modifier = Modifier.size(18.dp)
+                                        )
+                                    }
                                 }
                             }
                         }
@@ -1976,30 +2057,138 @@ fun MessageBubble(
     }
 
     // (#A5) remember: JSON парсится один раз, а не при каждой рекомпозиции пузыря
-    val isDetachedMedia = kind == "image" || kind == "video" || kind == "video_note"
+    val mediaCaption = mediaJson?.optString("caption", "") ?: ""
+    val hasStyledMediaCaption = mediaCaption.isNotBlank() && (kind == "image" || kind == "video")
+    val isDetachedMedia = (kind == "image" || kind == "video" || kind == "video_note") && !hasStyledMediaCaption
+    val bubbleVisual = aetherBubbleVisual(alignEnd)
+    val detachedLabelFill = Color.Black.copy(alpha = 0.58f)
+    val detachedLabelStroke = Color.White.copy(alpha = 0.18f)
     val bubbleColor by animateColorAsState(
         targetValue = if (isDetachedMedia) {
             Color.Transparent
         } else {
-            MaterialTheme.colorScheme.surfaceVariant.copy(
-                alpha = (if (alignEnd) 0.82f else 0.72f) * (1f - appearance.surfaceTransparency.value)
-            )
+            bubbleVisual.fill
         },
         animationSpec = tween(appearance.motionDuration(220)),
         label = "messageBubbleColor"
     )
     val bubbleBorderColor by animateColorAsState(
-        targetValue = if (alignEnd) {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.68f)
-        } else {
-            MaterialTheme.colorScheme.primary.copy(alpha = 0.34f)
-        },
+        targetValue = if (isDetachedMedia) Color.Transparent else bubbleVisual.stroke,
         animationSpec = tween(appearance.motionDuration(220)),
         label = "messageBubbleBorder"
     )
-    val textColor = when {
-        isDetachedMedia -> MaterialTheme.colorScheme.onSurface
-        else -> MaterialTheme.colorScheme.onSurface
+    val textColor = if (isDetachedMedia) Color.White else bubbleVisual.content
+    val metadataColor = if (isDetachedMedia) Color.White else bubbleVisual.metadata
+    val inlineMetadata = !isMedia && reactionsMap.isEmpty() && !isChannelPost
+    val metadataContent: @Composable () -> Unit = {
+        Row(
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (msg.isEdited && !isMedia) {
+                Text(
+                    "изм.",
+                    fontSize = 11.sp,
+                    color = metadataColor,
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+            }
+            Text(
+                formatMsgTime(msg.timestamp),
+                fontSize = 11.sp,
+                color = metadataColor
+            )
+            if (isOut) {
+                Spacer(Modifier.width(3.dp))
+                Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
+                    Crossfade(
+                        targetState = msg.status,
+                        animationSpec = tween(appearance.motionDuration(200)),
+                        label = "messageStatus"
+                    ) { status ->
+                        when {
+                            status == -1 -> Icon(
+                                Icons.Filled.ErrorOutline,
+                                contentDescription = "Ошибка отправки",
+                                tint = MaterialTheme.colorScheme.error,
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            status == 0 -> Icon(
+                                Icons.Filled.Schedule,
+                                contentDescription = "Отправляется",
+                                tint = textColor.copy(alpha = 0.6f),
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            else -> Icon(
+                                if (status >= 2) Icons.Filled.DoneAll else Icons.Filled.Done,
+                                contentDescription = null,
+                                tint = when {
+                                    isDetachedMedia -> metadataColor
+                                    status >= 3 -> MaterialTheme.colorScheme.primary
+                                    else -> textColor.copy(alpha = 0.6f)
+                                },
+                                modifier = Modifier.fillMaxSize()
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+    val reactionChips: @Composable () -> Unit = {
+        val counts = reactionsMap.values.toSet()
+        val chipBg = if (isDetachedMedia) {
+            detachedLabelFill
+        } else {
+            MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            counts.forEach { emoji ->
+                key(emoji) {
+                    val mineChip = myReaction == emoji
+                    val count = reactionsMap.values.count { it == emoji }
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(
+                                if (mineChip) {
+                                    if (isDetachedMedia) detachedLabelFill
+                                    else MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                } else {
+                                    chipBg
+                                }
+                            )
+                            .then(
+                                if (mineChip && isDetachedMedia) {
+                                    Modifier.border(
+                                        1.dp,
+                                        Color.White.copy(alpha = 0.78f),
+                                        RoundedCornerShape(12.dp)
+                                    )
+                                } else {
+                                    Modifier
+                                }
+                            )
+                            .clickable { react(emoji, mineChip) }
+                            .padding(horizontal = 8.dp, vertical = 3.dp)
+                    ) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp)
+                        ) {
+                            Text(emoji, fontSize = 13.sp, color = textColor)
+                            if (count > 1) {
+                                Text(
+                                    count.toString(),
+                                    fontSize = 11.sp,
+                                    color = if (isDetachedMedia) Color.White else textColor.copy(alpha = 0.75f)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
     LaunchedEffect(msg.msgId, mediaText, kind) {
@@ -2052,21 +2241,15 @@ fun MessageBubble(
         ) {
         // «Хвост» (срезанный угол) только у последнего сообщения в группе —
         // сгруппированные сообщения одного автора скруглены одинаково.
-        val r = appearance.bubbleRadius.value.dp
-        val bubbleShape = if (!showTail || !appearance.bubbleTails.value) RoundedCornerShape(r) else RoundedCornerShape(
-            topStart = r,
-            topEnd = r,
-            bottomStart = if (alignEnd) r else 8.dp,
-            bottomEnd = if (alignEnd) 8.dp else r
-        )
+        val bubbleShape = aetherBubbleShape(alignEnd, showTail)
         Surface(
             color = bubbleColor,
             shape = bubbleShape,
             modifier = Modifier
-                .widthIn(max = if (kind == "video_note") 308.dp else if (isDetachedMedia) 320.dp else 310.dp)
+                .widthIn(max = if (kind == "video_note") 308.dp else if (isDetachedMedia) 320.dp else 340.dp)
                 .then(
                     if (isDetachedMedia) Modifier
-                    else Modifier.border(1.dp, bubbleBorderColor, bubbleShape)
+                    else Modifier.border(AetherStyle.Stroke, bubbleBorderColor, bubbleShape)
                 )
                 .combinedClickable(
                     interactionSource = bubbleInteraction,
@@ -2085,26 +2268,55 @@ fun MessageBubble(
         ) {
             Column(
                 modifier = Modifier.padding(
-                    horizontal = if (isDetachedMedia) 0.dp else 14.dp,
-                    vertical = if (isDetachedMedia) 0.dp else 10.dp
+                    horizontal = if (isDetachedMedia) 0.dp else 12.dp,
+                    vertical = if (isDetachedMedia) 0.dp else 8.dp
                 )
             ) {
                 if (msg.forwardedFrom != null) {
+                    val forwardedShape = RoundedCornerShape(10.dp)
                     Text(
                         "↪ Переслано от ${msg.forwardedFrom}",
-                        color = textColor.copy(alpha = 0.75f),
+                        color = if (isDetachedMedia) Color.White else textColor.copy(alpha = 0.75f),
                         fontSize = 12.sp,
                         fontStyle = androidx.compose.ui.text.font.FontStyle.Italic,
-                        modifier = Modifier.padding(bottom = 4.dp)
+                        modifier = Modifier
+                            .padding(bottom = 4.dp)
+                            .then(
+                                if (isDetachedMedia) {
+                                    Modifier
+                                        .clip(forwardedShape)
+                                        .background(detachedLabelFill)
+                                        .border(AetherStyle.Stroke, detachedLabelStroke, forwardedShape)
+                                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                                } else {
+                                    Modifier
+                                }
+                            )
                     )
                 }
                 if (msg.replyToText != null) {
-                    Row(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp)) {
+                    val replyShape = RoundedCornerShape(10.dp)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp)
+                            .then(
+                                if (isDetachedMedia) {
+                                    Modifier
+                                        .clip(replyShape)
+                                        .background(detachedLabelFill)
+                                        .border(AetherStyle.Stroke, detachedLabelStroke, replyShape)
+                                        .padding(horizontal = 7.dp, vertical = 4.dp)
+                                } else {
+                                    Modifier
+                                }
+                            )
+                    ) {
                         Box(modifier = Modifier.width(3.dp).height(34.dp).background(textColor.copy(alpha = 0.5f)))
                         Spacer(Modifier.width(8.dp))
                         Text(
                             msg.replyToText,
-                            color = textColor.copy(alpha = 0.85f),
+                            color = if (isDetachedMedia) Color.White else textColor.copy(alpha = 0.85f),
                             fontSize = 13.sp,
                             maxLines = 2,
                             overflow = androidx.compose.ui.text.style.TextOverflow.Ellipsis
@@ -2112,12 +2324,40 @@ fun MessageBubble(
                     }
                 }
                 if (!isMedia) {
-                    Text(
-                        text = msg.text,
-                        color = textColor,
-                        fontSize = appearance.messageTextSize.value.sp,
-                        lineHeight = (appearance.messageTextSize.value + 6).sp
-                    )
+                    if (reactionsMap.isNotEmpty()) {
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = msg.text,
+                                color = textColor,
+                                fontSize = appearance.messageTextSize.value.sp,
+                                lineHeight = (appearance.messageTextSize.value + 6).sp,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            reactionChips()
+                            Spacer(Modifier.width(8.dp))
+                            metadataContent()
+                        }
+                    } else if (inlineMetadata) {
+                        Box {
+                            Text(
+                                text = msg.text + "\u00A0".repeat(if (isOut) 13 else 9),
+                                color = textColor,
+                                fontSize = appearance.messageTextSize.value.sp,
+                                lineHeight = (appearance.messageTextSize.value + 6).sp
+                            )
+                            Box(Modifier.align(Alignment.BottomEnd)) {
+                                metadataContent()
+                            }
+                        }
+                    } else {
+                        Text(
+                            text = msg.text,
+                            color = textColor,
+                            fontSize = appearance.messageTextSize.value.sp,
+                            lineHeight = (appearance.messageTextSize.value + 6).sp
+                        )
+                    }
                 } else {
                     val json = mediaJson
                     val mimeType = json?.optString("mime_type", "") ?: ""
@@ -2232,7 +2472,8 @@ fun MessageBubble(
                         if (isDownloading) {
                             CircularProgressIndicator(modifier = Modifier.size(24.dp), color = MaterialTheme.colorScheme.onBackground)
                         } else {
-                            Button(
+                            AetherPrimaryButton(
+                                text = if (mimeType.startsWith("image/")) "Показать фото" else "Скачать файл",
                                 onClick = {
                                     isDownloading = true
                                     coroutineScope.launch {
@@ -2245,19 +2486,30 @@ fun MessageBubble(
                                         isDownloading = false
                                     }
                                 },
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                            ) {
-                                Text(if (mimeType.startsWith("image/")) "Показать фото" else "Скачать файл")
-                            }
+                                fillWidth = false,
+                            )
                             if (errorMessage != null) {
                                 Text(errorMessage!!, color = MaterialTheme.colorScheme.error, fontSize = 12.sp)
                             }
                         }
                     }
-                    val caption = mediaJson?.optString("caption", "") ?: ""
-                    if (caption.isNotBlank() && kind != "voice") {
+                    if (mediaCaption.isNotBlank() && kind != "voice") {
                         Spacer(Modifier.height(6.dp))
-                        Text(caption, color = textColor, fontSize = 15.sp, lineHeight = 20.sp)
+                        Text(
+                            mediaCaption,
+                            color = textColor,
+                            fontSize = 15.sp,
+                            lineHeight = 20.sp,
+                            modifier = if (isDetachedMedia) {
+                                Modifier
+                                    .clip(RoundedCornerShape(12.dp))
+                                    .background(detachedLabelFill)
+                                    .border(AetherStyle.Stroke, detachedLabelStroke, RoundedCornerShape(12.dp))
+                                    .padding(horizontal = 10.dp, vertical = 6.dp)
+                            } else {
+                                Modifier
+                            }
+                        )
                     }
                 }
                 
@@ -2274,128 +2526,46 @@ fun MessageBubble(
                     }
                 }
 
-                var renderedReactions by remember(msg.msgId) { mutableStateOf(reactionsMap) }
-                var reactionRevision by remember(msg.msgId) { mutableIntStateOf(0) }
-                var reactionsInitialized by remember(msg.msgId) { mutableStateOf(false) }
-                LaunchedEffect(reactionsMap) {
-                    if (reactionsInitialized) reactionRevision++ else reactionsInitialized = true
-                    if (reactionsMap.isNotEmpty()) {
-                        renderedReactions = reactionsMap
-                    } else {
-                        kotlinx.coroutines.delay(appearance.motionDuration(220).toLong())
-                        renderedReactions = emptyMap()
-                    }
-                }
-                AnimatedVisibility(
-                    visible = reactionsMap.isNotEmpty(),
-                    enter = fadeIn(tween(appearance.motionDuration(220))) +
-                        androidx.compose.animation.scaleIn(
-                            animationSpec = tween(appearance.motionDuration(280), easing = FastOutSlowInEasing),
-                            initialScale = 0.82f,
-                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
-                        ),
-                    exit = fadeOut(tween(appearance.motionDuration(190))) +
-                        androidx.compose.animation.scaleOut(
-                            animationSpec = tween(appearance.motionDuration(240), easing = FastOutSlowInEasing),
-                            targetScale = 0.82f,
-                            transformOrigin = androidx.compose.ui.graphics.TransformOrigin(0f, 0.5f)
-                        )
-                ) {
-                    val counts = renderedReactions.values.toSet()
-                    val chipBg = MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                if (isMedia && reactionsMap.isNotEmpty()) {
                     Column {
                         Spacer(Modifier.height(4.dp))
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            counts.forEach { emoji ->
-                                key(emoji) {
-                                    val scale = remember(msg.msgId, emoji) { Animatable(1f) }
-                                    LaunchedEffect(reactionRevision, appearance.experimentalAnimations.value, appearance.animationSpeed.value, appearance.reactionEffects.value) {
-                                        if (reactionRevision > 0 && appearance.reactionEffects.value && appearance.animationsEnabled()) {
-                                            scale.snapTo(0.78f)
-                                            scale.animateTo(
-                                                1f,
-                                                spring(
-                                                    dampingRatio = (0.82f - appearance.motionIntensity.value * 0.1f).coerceIn(0.58f, 0.82f),
-                                                    stiffness = 300f * appearance.animationSpeed.value
-                                                )
-                                            )
-                                        } else {
-                                            scale.snapTo(1f)
-                                        }
-                                    }
-                                    val mineChip = myReaction == emoji
-                                    val count = renderedReactions.values.count { it == emoji }
-                                    Box(
-                                        modifier = Modifier
-                                            .graphicsLayer { scaleX = scale.value; scaleY = scale.value }
-                                            .clip(RoundedCornerShape(12.dp))
-                                            .background(if (mineChip) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f) else chipBg)
-                                            .clickable { react(emoji, mineChip) }
-                                            .padding(horizontal = 8.dp, vertical = 3.dp)
-                                    ) {
-                                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                                            Text(emoji, fontSize = 13.sp, color = textColor)
-                                            if (count > 1) Text(count.toString(), fontSize = 11.sp, color = textColor.copy(alpha = 0.75f))
-                                        }
-                                    }
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            reactionChips()
+                            Spacer(Modifier.width(8.dp))
+                            Box(
+                                modifier = if (isDetachedMedia) {
+                                    Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(detachedLabelFill)
+                                        .border(AetherStyle.Stroke, detachedLabelStroke, RoundedCornerShape(12.dp))
+                                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                                } else {
+                                    Modifier
                                 }
+                            ) {
+                                metadataContent()
                             }
                         }
                     }
                 }
-                run {
+                if (!inlineMetadata && reactionsMap.isEmpty()) {
                     Spacer(Modifier.height(2.dp))
-                    Row(
-                        modifier = Modifier.align(Alignment.End),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        if (msg.isEdited && !isMedia) {
-                            Text(
-                                "изм.",
-                                fontSize = 11.sp,
-                                color = textColor.copy(alpha = 0.6f),
-                                modifier = Modifier.padding(end = 4.dp)
-                            )
-                        }
-                        // Время — у всех сообщений (как в Telegram)
-                        Text(
-                            formatMsgTime(msg.timestamp),
-                            fontSize = 11.sp,
-                            color = textColor.copy(alpha = 0.6f)
-                        )
-                        if (isOut) {
-                            Spacer(Modifier.width(3.dp))
-                            // (#A2) -1 = ошибка отправки, 0 = в очереди (optimistic send)
-                            Box(Modifier.size(14.dp), contentAlignment = Alignment.Center) {
-                                Crossfade(
-                                    targetState = msg.status,
-                                    animationSpec = tween(appearance.motionDuration(200)),
-                                    label = "messageStatus"
-                                ) { status ->
-                                    when {
-                                        status == -1 -> Icon(
-                                            Icons.Filled.ErrorOutline,
-                                            contentDescription = "Ошибка отправки",
-                                            tint = MaterialTheme.colorScheme.error,
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                        status == 0 -> Icon(
-                                            Icons.Filled.Schedule,
-                                            contentDescription = "Отправляется",
-                                            tint = textColor.copy(alpha = 0.6f),
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                        else -> Icon(
-                                            if (status >= 2) Icons.Filled.DoneAll else Icons.Filled.Done,
-                                            contentDescription = null,
-                                            tint = if (status >= 3) MaterialTheme.colorScheme.primary else textColor.copy(alpha = 0.6f),
-                                            modifier = Modifier.fillMaxSize()
-                                        )
-                                    }
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.End)
+                            .then(
+                                if (isDetachedMedia) {
+                                    Modifier
+                                        .clip(RoundedCornerShape(12.dp))
+                                        .background(detachedLabelFill)
+                                        .border(AetherStyle.Stroke, detachedLabelStroke, RoundedCornerShape(12.dp))
+                                        .padding(horizontal = 7.dp, vertical = 3.dp)
+                                } else {
+                                    Modifier
                                 }
-                            }
-                        }
+                            )
+                    ) {
+                        metadataContent()
                     }
                 }
             }
@@ -2449,7 +2619,7 @@ fun MessageBubble(
         // Канон меню: surface-контейнер, скругление 20.dp (в M3 1.2 у
         // DropdownMenu нет shape/containerColor — задаём через тему).
         MaterialTheme(
-            shapes = MaterialTheme.shapes.copy(extraSmall = RoundedCornerShape(20.dp)),
+            shapes = MaterialTheme.shapes.copy(extraSmall = CircleShape),
             colorScheme = MaterialTheme.colorScheme.copy(surfaceTint = Color.Transparent)
         ) {
         DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
@@ -2471,6 +2641,7 @@ fun MessageBubble(
                     val mine = myReaction == e
                     Box(
                         modifier = Modifier
+                            .size(40.dp)
                             .graphicsLayer { scaleX = sc; scaleY = sc }
                             .clip(CircleShape)
                             // Подсветка моей выбранной реакции — повторный тап её снимает
@@ -2482,7 +2653,7 @@ fun MessageBubble(
                                     react(e, mine)
                                 }
                             }
-                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                            .padding(4.dp),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(e, fontSize = 22.sp)
@@ -2837,7 +3008,7 @@ internal fun formatLastSeen(iso: String?): String {
 @Composable
 private fun DateSeparator(ts: Long) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         horizontalArrangement = Arrangement.Center
     ) {
         Text(

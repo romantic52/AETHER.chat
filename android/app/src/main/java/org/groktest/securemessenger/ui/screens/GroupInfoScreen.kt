@@ -34,8 +34,8 @@ import org.groktest.securemessenger.ui.components.AetherActionCircle
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.Avatar
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
@@ -106,7 +106,7 @@ fun GroupInfoScreen(
         Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize().glassSource(),
+                modifier = Modifier.fillMaxSize(),
                 contentPadding = PaddingValues(
                     top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
                     bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -278,9 +278,9 @@ fun GroupInfoScreen(
             title = { Text("Изменить") },
             text = {
                 Column {
-                    TextField(value = newName, onValueChange = { newName = it }, label = { Text("Название") }, singleLine = true, shape = RoundedCornerShape(AetherStyle.FieldRadius), colors = aetherTextFieldColors())
+                    TextField(value = newName, onValueChange = { newName = it }, label = { Text("Название") }, singleLine = true, modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)), shape = RoundedCornerShape(AetherStyle.FieldRadius), colors = aetherTextFieldColors(containerAlpha = 0f))
                     Spacer(Modifier.height(8.dp))
-                    TextField(value = newDesc, onValueChange = { newDesc = it }, label = { Text("Описание") }, shape = RoundedCornerShape(AetherStyle.FieldRadius), colors = aetherTextFieldColors())
+                    TextField(value = newDesc, onValueChange = { newDesc = it }, label = { Text("Описание") }, modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)), shape = RoundedCornerShape(AetherStyle.FieldRadius), colors = aetherTextFieldColors(containerAlpha = 0f))
                 }
             },
             confirmButton = {
@@ -412,9 +412,11 @@ private fun AddMemberDialog(
                     onValueChange = { query = it },
                     label = { Text("Поиск по имени/@username") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
                 Spacer(Modifier.height(8.dp))
                 if (adding) {

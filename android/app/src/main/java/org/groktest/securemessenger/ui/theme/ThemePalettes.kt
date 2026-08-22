@@ -83,7 +83,7 @@ private fun pastel() = AppPalette(
         tertiary = Color(0xFFF8CFDF), onTertiary = Color(0xFF3B2A32),
         background = Color(0xFFFDF2F6), onBackground = Color(0xFF3B2A32),
         surface = Color(0xFFFFFFFF), onSurface = Color(0xFF3B2A32),
-        surfaceVariant = Color(0xFFF6E3EC), onSurfaceVariant = Color(0xFF8A6B78),
+        surfaceVariant = Color(0xFFF6E3EC), onSurfaceVariant = Color(0xFF765966),
         outline = Color(0xFFE8CFDA),
         error = Color(0xFFD64560), onError = Color(0xFFFFFFFF)
     )
@@ -97,7 +97,7 @@ private fun daylight() = AppPalette(
         tertiary = Color(0xFFD7E5FF), onTertiary = Color(0xFF1A1C20),
         background = Color(0xFFF4F5F7), onBackground = Color(0xFF1A1C20),
         surface = Color(0xFFFFFFFF), onSurface = Color(0xFF1A1C20),
-        surfaceVariant = Color(0xFFEAECEF), onSurfaceVariant = Color(0xFF6B7077),
+        surfaceVariant = Color(0xFFEAECEF), onSurfaceVariant = Color(0xFF60656B),
         outline = Color(0xFFDADDE1),
         error = Color(0xFFD93B4C), onError = Color(0xFFFFFFFF)
     )
@@ -125,7 +125,7 @@ private fun telegramDay() = AppPalette(
         tertiary = Color(0xFFE5F3FF), onTertiary = Color(0xFF17212B),
         background = Color(0xFFFFFFFF), onBackground = Color(0xFF17212B),
         surface = Color(0xFFFFFFFF), onSurface = Color(0xFF17212B),
-        surfaceVariant = Color(0xFFF1F4F6), onSurfaceVariant = Color(0xFF707B85),
+        surfaceVariant = Color(0xFFF1F4F6), onSurfaceVariant = Color(0xFF626E78),
         outline = Color(0xFFD5DDE3),
         error = Color(0xFFE53935), onError = Color.White
     )

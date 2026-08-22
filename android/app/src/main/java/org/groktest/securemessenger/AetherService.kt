@@ -44,14 +44,17 @@ class AetherService : Service() {
             try { wsClient?.sendTyping(recipientId) } catch (e: Exception) {}
         }
 
-        fun sendWebRtcSignal(signal: JSONObject) {
-            try {
+        fun sendWebRtcSignal(signal: JSONObject): Boolean {
+            return try {
                 val type = signal.optString("type")
                 val recipientId = signal.optString("recipient_id")
-                if (type.isNotBlank() && recipientId.isNotBlank()) {
-                    wsClient?.sendWebrtcSignal(type, recipientId, signal.toString())
-                }
-            } catch (_: Exception) {}
+                val client = wsClient
+                if (type.isBlank() || recipientId.isBlank() || client?.isActive() != true) return false
+                client.sendWebrtcSignal(type, recipientId, signal.toString())
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 

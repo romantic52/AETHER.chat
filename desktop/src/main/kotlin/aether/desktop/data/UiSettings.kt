@@ -17,7 +17,7 @@ class UiSettings(private val file: File = File(DesktopPrefs.defaultDir(), "setti
 
     companion object {
         /** Масштабы интерфейса, между которыми выбирает окно настроек. */
-        val UI_SCALES = listOf(0.9f, 1.0f, 1.1f, 1.25f)
+        val UI_SCALES = listOf(0.9f, 1.0f, 1.1f, 1.25f, 1.5f)
     }
 
     // Настройки правит и UI-поток (геометрия окна при закрытии), и IO-потоки

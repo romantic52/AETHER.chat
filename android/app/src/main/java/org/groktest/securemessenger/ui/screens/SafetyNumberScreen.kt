@@ -24,7 +24,6 @@ import org.groktest.securemessenger.data.PinnedKeyEntity
 import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.aetherIsland
 
@@ -60,7 +59,6 @@ fun SafetyNumberScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .glassSource()
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
                     .padding(horizontal = AetherStyle.ScreenHorizontal)

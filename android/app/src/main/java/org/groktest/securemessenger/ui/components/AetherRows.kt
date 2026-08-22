@@ -1,6 +1,7 @@
 package org.groktest.securemessenger.ui.components
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -10,8 +11,9 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LocalContentColor
@@ -22,12 +24,16 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import org.groktest.securemessenger.ui.theme.AetherStyle
-import org.groktest.securemessenger.ui.theme.aetherCircle
+import org.groktest.securemessenger.ui.theme.aetherControl
+import org.groktest.securemessenger.ui.theme.aetherControlContent
 import org.groktest.securemessenger.ui.theme.aetherIsland
 
 /**
@@ -57,19 +63,21 @@ fun AetherSectionTitle(title: String, modifier: Modifier = Modifier) {
 @Composable
 fun AetherSettingsRow(
     title: String,
+    modifier: Modifier = Modifier,
     subtitle: String? = null,
     icon: (@Composable () -> Unit)? = null,
     destructive: Boolean = false,
     trailing: (@Composable () -> Unit)? = null,
     onClick: (() -> Unit)? = null
 ) {
-    val accent = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+    val accent = if (destructive) MaterialTheme.colorScheme.error else aetherControlContent()
+    val rowShape = CircleShape
     Row(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 4.dp)
             .aetherIsland(
-                shape = RoundedCornerShape(AetherStyle.RowRadius),
+                shape = rowShape,
                 fillAlpha = AetherStyle.SoftIslandFillAlpha,
                 strokeAlpha = AetherStyle.SoftStrokeAlpha
             )
@@ -81,7 +89,7 @@ fun AetherSettingsRow(
             Box(
                 modifier = Modifier
                     .size(AetherStyle.SmallControlSize)
-                    .aetherCircle(),
+                    .aetherControl(shape = CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 CompositionLocalProvider(LocalContentColor provides accent) {
@@ -95,12 +103,11 @@ fun AetherSettingsRow(
                 title,
                 fontSize = 16.sp,
                 fontWeight = FontWeight.SemiBold,
-                color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground,
-                maxLines = 1
+                color = if (destructive) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onBackground
             )
             if (subtitle != null) {
                 Spacer(Modifier.height(2.dp))
-                Text(subtitle, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant, maxLines = 2)
+                Text(subtitle, fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
         if (trailing != null) {
@@ -124,8 +131,20 @@ fun AetherSwitchRow(
         title = title,
         subtitle = subtitle,
         icon = icon,
-        trailing = { Switch(checked = checked, onCheckedChange = onCheckedChange, enabled = enabled) },
-        onClick = { if (enabled) onCheckedChange(!checked) }
+        trailing = {
+            Switch(
+                checked = checked,
+                onCheckedChange = null,
+                enabled = enabled,
+                modifier = Modifier.clearAndSetSemantics { }
+            )
+        },
+        modifier = Modifier.toggleable(
+            value = checked,
+            enabled = enabled,
+            role = Role.Switch,
+            onValueChange = onCheckedChange
+        )
     )
 }
 
@@ -136,19 +155,30 @@ fun AetherPrimaryButton(
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
-    loading: Boolean = false
+    loading: Boolean = false,
+    fillWidth: Boolean = true,
 ) {
+    val content = aetherControlContent()
+    val sizedModifier = if (fillWidth) modifier.fillMaxWidth() else modifier
     Button(
         onClick = onClick,
         enabled = enabled && !loading,
-        modifier = modifier.fillMaxWidth().height(52.dp),
-        shape = RoundedCornerShape(AetherStyle.FieldRadius)
+        modifier = sizedModifier
+            .height(52.dp)
+            .aetherControl(),
+        shape = CircleShape,
+        colors = ButtonDefaults.buttonColors(
+            containerColor = Color.Transparent,
+            contentColor = content,
+            disabledContainerColor = Color.Transparent,
+            disabledContentColor = content.copy(alpha = 0.45f),
+        ),
     ) {
         if (loading) {
             CircularProgressIndicator(
                 Modifier.size(22.dp),
                 strokeWidth = 2.dp,
-                color = MaterialTheme.colorScheme.onPrimary
+                color = content
             )
         } else {
             Text(text, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
@@ -168,14 +198,14 @@ fun AetherActionCircle(
         Box(
             modifier = Modifier
                 .size(AetherStyle.ControlSize)
-                .aetherCircle()
+                .aetherControl(shape = CircleShape)
                 .clickable { onClick() },
             contentAlignment = Alignment.Center
         ) {
             Icon(
                 icon,
                 contentDescription = contentDescription ?: label,
-                tint = MaterialTheme.colorScheme.primary,
+                tint = aetherControlContent(),
                 modifier = Modifier.size(22.dp)
             )
         }

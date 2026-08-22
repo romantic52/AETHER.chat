@@ -11,7 +11,6 @@ import androidx.compose.ui.unit.dp
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
@@ -27,7 +26,6 @@ fun NotificationsSettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .glassSource()
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = AetherStyle.ScreenHorizontal)
                     .padding(top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical, bottom = 24.dp)

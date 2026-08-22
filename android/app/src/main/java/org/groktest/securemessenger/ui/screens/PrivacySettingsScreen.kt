@@ -29,9 +29,9 @@ import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.GlassBackground
-import org.groktest.securemessenger.ui.glass.glassSource
 import org.groktest.securemessenger.ui.theme.AetherStyle
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
+import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -55,7 +55,6 @@ fun PrivacySettingsScreen(
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .glassSource()
                     .verticalScroll(rememberScrollState())
                     .navigationBarsPadding()
                     .padding(
@@ -194,8 +193,9 @@ private fun SetPinDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
                     singleLine = true,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
                 Spacer(Modifier.height(8.dp))
                 TextField(
@@ -206,8 +206,9 @@ private fun SetPinDialog(onConfirm: (String) -> Unit, onDismiss: () -> Unit) {
                     isError = mismatch,
                     visualTransformation = PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.NumberPassword),
+                    modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
                     shape = RoundedCornerShape(AetherStyle.FieldRadius),
-                    colors = aetherTextFieldColors()
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
                 if (mismatch) Text("PIN не совпадает", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
             }

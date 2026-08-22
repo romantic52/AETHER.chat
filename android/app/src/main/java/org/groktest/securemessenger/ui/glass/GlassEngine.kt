@@ -5,21 +5,17 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.lerp
 import androidx.compose.ui.util.lerp as lerpF
 import dev.chrisbanes.haze.HazeState
 import dev.chrisbanes.haze.haze
 import dev.chrisbanes.haze.hazeChild
-import org.groktest.securemessenger.ui.components.liquidGlass
 import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 
 /**
  * Ядро движка «жидкого стекла» (Android, поверх Haze — настоящий backdrop-blur
- * через RenderEffect, API 31+).
+ * через RenderEffect, API 32+; Haze 0.7.x использует scrim на API 31).
  *
  * ВАЖНО про архитектуру (иначе панели размывают сами себя):
  *  - ИСТОЧНИК размытия — только ПРОКРУЧИВАЕМЫЙ контент экрана (лента/список):
@@ -33,7 +29,7 @@ import org.groktest.securemessenger.ui.theme.LocalThemeSettings
 val LocalHazeState = staticCompositionLocalOf<HazeState?> { null }
 
 /** Поддерживается ли настоящий backdrop-blur на этом устройстве. */
-val supportsRealGlass: Boolean get() = Build.VERSION.SDK_INT >= 31
+val supportsRealGlass: Boolean get() = Build.VERSION.SDK_INT >= 32
 
 /**
  * Помечает контент ИСТОЧНИКОМ размытия. Вешать на прокручиваемое тело экрана
@@ -44,32 +40,30 @@ val supportsRealGlass: Boolean get() = Build.VERSION.SDK_INT >= 31
 fun Modifier.glassSource(): Modifier {
     val hazeState = LocalHazeState.current ?: return this
     if (!supportsRealGlass) return this
-    val transparency = LocalThemeSettings.current.glassTransparency.value
-    // Прозрачнее → меньше тинта, чуть сильнее блюр. Радиус умеренный (читаемо).
-    val tintAlpha = lerpF(0.5f, 0.14f, transparency)
-    val blur = lerp(8.dp, 18.dp, transparency)
+    val settings = LocalThemeSettings.current
+    val tintAlpha = lerpF(0.5f, 0.14f, settings.glassClarity.value)
     return this.haze(
         state = hazeState,
         backgroundColor = MaterialTheme.colorScheme.background,
         tint = MaterialTheme.colorScheme.surface.copy(alpha = tintAlpha),
-        blurRadius = blur,
+        blurRadius = settings.glassBlurRadius.value.dp,
     )
 }
 
 /**
- * Стеклянная панель: backdrop-blur (Haze) при API 31+, иначе фолбэк на имитацию
- * [liquidGlass]. Вызывается только когда стекло включено (фон панели прозрачный).
+ * Стеклянная панель: backdrop-blur (Haze) при API 32+.
+ * Без реального blur визуальную имитацию уже рисует следующий aetherIsland.
  */
 @Composable
 fun Modifier.glassSurface(
     shape: Shape,
-    fallbackTint: Color = Color.White,
-    fallbackAlpha: Float = 0.12f,
 ): Modifier {
+    val settings = LocalThemeSettings.current
+    if (!settings.liquidGlassEnabled.value) return this
     val hazeState = LocalHazeState.current
     return if (hazeState != null && supportsRealGlass) {
         this.hazeChild(state = hazeState, shape = shape)
     } else {
-        this.clip(shape).liquidGlass(shape = shape, tint = fallbackTint, tintAlpha = fallbackAlpha)
+        this
     }
 }

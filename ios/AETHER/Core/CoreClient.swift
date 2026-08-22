@@ -123,6 +123,8 @@ actor CoreClient {
         if myId != id {
             selectStore(for: id)
             peerKeyCache.removeAll(keepingCapacity: true)
+            deviceCache.removeAll(keepingCapacity: true)
+            cachedDeviceId = ""
             myOlmIdentity = ""   // у нового аккаунта свой Olm-аккаунт в его store
         }
         self.myId = id
@@ -170,6 +172,9 @@ actor CoreClient {
         try? api.logout()
         myId = ""; myPublicKey = ""; myPrivateKey = ""
         peerKeyCache.removeAll(keepingCapacity: false)
+        deviceCache.removeAll(keepingCapacity: false)
+        cachedDeviceId = ""
+        myOlmIdentity = ""
     }
 
     func heartbeat() { try? api.heartbeat() }
@@ -238,6 +243,50 @@ actor CoreClient {
         return myOlmIdentity
     }
 
+    // MARK: - Multi-device
+
+    /// Existing installations recover their server device by Olm identity;
+    /// a fresh installation gets a separate iOS slot instead of overwriting primary.
+    private var cachedDeviceId = ""
+    private func myDeviceId() throws -> String {
+        if !cachedDeviceId.isEmpty { return cachedDeviceId }
+        if let stored = try? store.metaGet(key: "device_id"), !stored.isEmpty {
+            cachedDeviceId = stored
+            return stored
+        }
+
+        let devices = try api.listDevices(userId: myId)
+        let identity = try myOlmIdentityKey()
+        let resolved: String
+        if devices.isEmpty {
+            resolved = "primary"
+        } else if let mine = devices.first(where: { $0.identityKeyB64 == identity }) {
+            resolved = mine.deviceId
+        } else {
+            let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(10).lowercased()
+            resolved = "ios-" + suffix
+        }
+        cachedDeviceId = resolved
+        try store.metaSet(key: "device_id", value: resolved)
+        return resolved
+    }
+
+    /// Preserve the legacy primary session while isolating every secondary device.
+    private func sessionKey(_ peerId: String, _ deviceId: String) -> String {
+        deviceId == "primary" ? peerId : "\(peerId)::\(deviceId)"
+    }
+
+    private var deviceCache: [String: (devices: [DeviceInfo], at: Date)] = [:]
+    private func peerDevices(_ peerId: String, force: Bool = false) throws -> [DeviceInfo] {
+        let id = peerId.lowercased()
+        if !force, let cached = deviceCache[id], Date().timeIntervalSince(cached.at) < 60 {
+            return cached.devices
+        }
+        let devices = try api.listDevices(userId: id)
+        if !devices.isEmpty { deviceCache[id] = (devices, Date()) }
+        return devices
+    }
+
     /// Опубликовать/пополнить prekeys на сервере. Идемпотентно: заливает identity
     /// и генерит новые OTK, когда на сервере их мало. Дёргается при старте и после
     /// расхода OTK на входящей prekey-сессии.
@@ -245,25 +294,32 @@ actor CoreClient {
         do {
             let acct = try olmAccount()
             let localIdentity = try olmAccountIdentity(accountPickle: acct)
-            if let state = try? api.keysState(),
-               (state.identityKeyB64 == nil || state.identityKeyB64 == localIdentity),
-               state.count >= 20 {
+            let device = try myDeviceId()
+            // Bind before publishing so this session cannot replace another device's identity.
+            try api.bindSessionDevice(deviceId: device)
+            let serverIdentity = try api.listDevices(userId: myId)
+                .first(where: { $0.deviceId == device })?.identityKeyB64
+            if try api.keysCountDevice(deviceId: device) >= 20,
+               serverIdentity == localIdentity {
                 myOlmIdentity = localIdentity
                 return
             }
             let published = try olmAccountGenerateOtks(accountPickle: acct, count: 40)
             try store.metaSet(key: "olm_account", value: published.accountPickle)
             myOlmIdentity = published.identityKeyB64
-            try api.uploadKeys(identityKeyB64: published.identityKeyB64,
-                               oneTimeKeysJson: published.oneTimeKeysJson)
+            try api.uploadKeysDevice(identityKeyB64: published.identityKeyB64,
+                                     oneTimeKeysJson: published.oneTimeKeysJson,
+                                     deviceId: device)
+            deviceCache.removeAll(keepingCapacity: true)
         } catch {
             // Не критично для UI: повторится при следующем старте/приёме.
         }
     }
 
-    /// Ratchet-конверт 1:1: {ratchet, olm_identity, type, body_b64}.
+    /// Ratchet-конверт 1:1: {ratchet, olm_identity, sender_device, type, body_b64}.
     private func ratchetEnvelope(type: UInt32, body: String) throws -> String {
         let obj: [String: Any] = ["ratchet": "1", "olm_identity": try myOlmIdentityKey(),
+                                  "sender_device": try myDeviceId(),
                                   "type": Int(type), "body_b64": body]
         let data = try JSONSerialization.data(withJSONObject: obj)
         return String(decoding: data, as: UTF8.self)
@@ -278,17 +334,40 @@ actor CoreClient {
     /// статическим box. box остаётся лишь для обёртки групповых ключей.
     func sendDirect(to peerId: String, wirePayload: String, clientId: String? = nil) throws -> String {
         let id = peerId.lowercased()
-        var sessionPickle = try store.olmSessionGet(peerId: id)
-        if sessionPickle == nil {
-            let bundle = try api.claimKeys(userId: id)
-            sessionPickle = try olmCreateOutbound(accountPickle: olmAccount(),
-                                                  theirIdentityB64: bundle.identityKeyB64,
-                                                  theirOneTimeKeyB64: bundle.oneTimeKeyB64)
+        var devices = try peerDevices(id)
+        if devices.isEmpty {
+            devices = [DeviceInfo(deviceId: "primary", identityKeyB64: "")]
         }
-        let enc = try olmEncrypt(sessionPickle: sessionPickle!, plaintext: wirePayload)
-        try store.olmSessionSet(peerId: id, sessionJson: enc.sessionPickle)
-        let envelope = try ratchetEnvelope(type: enc.messageType, body: enc.bodyB64)
-        return try api.sendMessage(recipientId: peerId, envelopeJson: envelope, clientId: clientId)
+
+        var firstMessageId: String?
+        var firstError: Error?
+        for device in devices {
+            do {
+                let key = sessionKey(id, device.deviceId)
+                var sessionPickle = try store.olmSessionGet(peerId: key)
+                if sessionPickle == nil {
+                    let bundle = try api.claimKeysDevice(userId: id, deviceId: device.deviceId)
+                    sessionPickle = try olmCreateOutbound(accountPickle: olmAccount(),
+                                                          theirIdentityB64: bundle.identityKeyB64,
+                                                          theirOneTimeKeyB64: bundle.oneTimeKeyB64)
+                }
+                let enc = try olmEncrypt(sessionPickle: sessionPickle!, plaintext: wirePayload)
+                try store.olmSessionSet(peerId: key, sessionJson: enc.sessionPickle)
+                let envelope = try ratchetEnvelope(type: enc.messageType, body: enc.bodyB64)
+                let copyId = firstMessageId == nil ? clientId : UUID().uuidString.lowercased()
+                let messageId = try api.sendMessageDevice(
+                    recipientId: peerId,
+                    envelopeJson: envelope,
+                    clientId: copyId,
+                    targetDeviceId: device.deviceId
+                )
+                if firstMessageId == nil { firstMessageId = messageId }
+            } catch {
+                if firstError == nil { firstError = error }
+            }
+        }
+        if let firstMessageId { return firstMessageId }
+        throw firstError ?? CoreError.Crypto(msg: "у получателя нет доступных устройств")
     }
 
     func sendGroup(groupId: String, groupKey: String, wirePayload: String) throws -> String {
@@ -299,10 +378,12 @@ actor CoreClient {
     // MARK: - Приём
 
     func fetchInbox(since: String?) throws -> [InboxItem] {
-        try api.fetchInbox(since: since)
+        try api.fetchInboxDevice(since: since, deviceId: myDeviceId())
     }
 
-    func ack(_ ids: [String]) throws { try api.ackMessages(messageIds: ids) }
+    func ack(_ ids: [String]) throws {
+        try api.ackMessagesDevice(messageIds: ids, deviceId: myDeviceId())
+    }
 
     /// Вскрыть конверт входящего. 1:1 — Double Ratchet (Olm); группы — общий
     /// симметричный ключ из локального стораджа (crypto_box-обёртка).
@@ -325,16 +406,24 @@ actor CoreClient {
         let body = obj["body_b64"] as? String ?? ""
         let peer = item.senderId.lowercased()
 
+        var senderDevice = obj["sender_device"] as? String ?? ""
+        if senderDevice.isEmpty {
+            var devices = (try? peerDevices(peer)) ?? []
+            if !devices.contains(where: { $0.identityKeyB64 == senderIdentity }) {
+                devices = (try? peerDevices(peer, force: true)) ?? devices
+            }
+            senderDevice = devices.first(where: { $0.identityKeyB64 == senderIdentity })?.deviceId ?? "primary"
+        }
+        let key = sessionKey(peer, senderDevice)
+
         // Есть сессия — пробуем ею. prekey (type 0) при живой сессии — обычное дело
         // (пир ещё не увидел наш ответ), сессия его тоже расшифрует.
-        if let session = try? store.olmSessionGet(peerId: peer) {
-            if let dec = try? olmDecrypt(sessionPickle: session, messageType: type, bodyB64: body) {
-                try store.olmSessionSet(peerId: peer, sessionJson: dec.sessionPickle)
+        // The legacy peer-only key is also tried once so upgrades keep live sessions.
+        for storedKey in key == peer ? [key] : [key, peer] {
+            if let session = try? store.olmSessionGet(peerId: storedKey),
+               let dec = try? olmDecrypt(sessionPickle: session, messageType: type, bodyB64: body) {
+                try store.olmSessionSet(peerId: key, sessionJson: dec.sessionPickle)
                 return Opened(senderPubB64: senderIdentity, plaintext: dec.plaintext, isGroup: false)
-            }
-            // Не расшифровалось существующей сессией: только prekey может завести новую.
-            if type != 0 {
-                throw CoreError.Crypto(msg: "ratchet: normal-сообщение не расшифровалось сессией")
             }
         }
         // Нет сессии (или расхождение) + prekey → установить входящую (расходует OTK).
@@ -344,7 +433,7 @@ actor CoreClient {
         let inb = try olmCreateInbound(accountPickle: olmAccount(),
                                        theirIdentityB64: senderIdentity, bodyB64: body)
         try store.metaSet(key: "olm_account", value: inb.accountPickle)   // OTK списан
-        try store.olmSessionSet(peerId: peer, sessionJson: inb.sessionPickle)
+        try store.olmSessionSet(peerId: key, sessionJson: inb.sessionPickle)
         ensureOlmKeys()   // пополнить OTK на сервере
         return Opened(senderPubB64: senderIdentity, plaintext: inb.plaintext, isGroup: false)
     }

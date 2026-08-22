@@ -478,6 +478,26 @@ def init_db() -> None:
         if not cur.fetchone()[0]:
             # NULL = адресовано аккаунту целиком (группы, legacy-клиенты).
             cur.execute("ALTER TABLE messages ADD COLUMN recipient_device_id TEXT")
+        # Старые iOS-клиенты не указывали устройство, хотя Olm-конверт был
+        # зашифрован ровно одному. Раздавать такую очередь всем устройствам
+        # аккаунта бессмысленно (расшифрует только адресат), поэтому пришиваем
+        # её к устройству по умолчанию — тому же, что отдаёт _default_device.
+        # Раньше здесь стояло жёсткое 'primary': на аккаунте без слота
+        # 'primary' сообщения уезжали в никуда.
+        cur.execute(
+            """UPDATE messages AS m
+               SET recipient_device_id = COALESCE((
+                       SELECT d.device_id FROM crypto_devices AS d
+                       WHERE d.user_id = LOWER(m.recipient_id)
+                       ORDER BY (d.device_id = 'primary') DESC, d.created_at ASC
+                       LIMIT 1), 'primary')
+               WHERE m.recipient_device_id IS NULL
+                 AND m.envelope_json::jsonb ->> 'ratchet' = '1'
+                 AND EXISTS (
+                     SELECT 1 FROM users AS u
+                     WHERE LOWER(u.user_id) = LOWER(m.recipient_id)
+                 )"""
+        )
         cur.execute(
             """INSERT INTO crypto_devices (user_id, device_id, identity_key_b64, created_at)
                SELECT LOWER(user_id), 'primary', olm_identity_key, %s FROM users
@@ -768,6 +788,54 @@ async def logout(authorization: str = Header(None), current_user: str = Depends(
 
 class BindDeviceRequest(BaseModel):
     device_id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
+def _session_device(cur, authorization: Optional[str], *, lock: bool = False) -> Optional[str]:
+    """Return the device bound to this exact bearer session (None = legacy session)."""
+    token = (authorization or "").partition(" ")[2].strip()
+    cur.execute(
+        "SELECT device_id FROM sessions WHERE token = %s" + (" FOR UPDATE" if lock else ""),
+        (token,),
+    )
+    row = cur.fetchone()
+    if not row:
+        raise HTTPException(401, "Session expired or invalid")
+    return row["device_id"]
+
+
+def _bind_session_device(cur, authorization: Optional[str], device_id: str) -> None:
+    """Непривязанная сессия занимает то устройство, которым уже пользуется."""
+    token = (authorization or "").partition(" ")[2].strip()
+    cur.execute("UPDATE sessions SET device_id = %s WHERE token = %s AND device_id IS NULL",
+                (device_id, token))
+
+
+def _require_inbox_device(cur, authorization: Optional[str], device_id: str) -> None:
+    """Привязанная сессия ходит только в очередь своего устройства.
+
+    Непривязанную (старый iOS, веб — они вообще не знают про device_id и
+    всегда шлют 'primary') не режем: до multi-device такая сессия читала весь
+    аккаунт, и отказ здесь означал бы полную остановку доставки. Заодно
+    страхует современный клиент, у которого bind не прошёл из-за сети."""
+    bound = _session_device(cur, authorization)
+    if bound is not None and bound != device_id:
+        raise HTTPException(403, "Session is bound to another device")
+
+
+def _default_device(cur, user_id: str) -> str:
+    """Устройство, которое подразумевает клиент, не знающий про multi-device:
+    'primary', а если такого слота нет — старейшее устройство аккаунта.
+
+    Без этого legacy-клиент (старый iOS) не может ни забрать prekey-bundle, ни
+    доставить сообщение аккаунту, у которого единственное устройство называется
+    'android-xxx': /keys/claim отвечал 404, а копия уезжала в несуществующий
+    'primary' и не доходила никому."""
+    cur.execute(
+        "SELECT device_id FROM crypto_devices WHERE user_id = LOWER(%s) "
+        "ORDER BY (device_id = 'primary') DESC, created_at ASC LIMIT 1",
+        (user_id,))
+    row = cur.fetchone()
+    return row["device_id"] if row else "primary"
 
 
 class TotpCodeRequest(BaseModel):
@@ -1224,23 +1292,31 @@ def upload_keys(body: UploadKeysRequest, request: Request,
                 current_user: str = Depends(get_current_user)) -> dict:
     _validate_key_b64(body.identity_key_b64, "identity_key_b64")
     device_id = body.device_id
-    token = authorization.split(" ", 1)[1].strip() if authorization else ""
     with db_conn() as cur:
+        # A missing crypto_devices row cannot be locked. Serialize first-slot
+        # creation on the account row so concurrent first launches cannot both
+        # pass the "new device" branch and overwrite each other.
+        cur.execute("SELECT user_id FROM users WHERE user_id = LOWER(%s) FOR UPDATE", (current_user,))
+        session_device = _session_device(cur, authorization, lock=True)
         cur.execute(
             "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s FOR UPDATE",
             (current_user, device_id))
         previous = cur.fetchone()
+        # Привязанная сессия не трогает чужой слот — это и есть защита от
+        # подмены identity соседнего устройства аккаунта.
+        if session_device is not None and session_device != device_id:
+            raise HTTPException(403, "Session is bound to another device")
+        # Непривязанная сессия (старый iOS, веб: /sessions/me/device они не
+        # зовут) публикует ключи своего единственного устройства и тут же
+        # занимает его. Требовать bind заранее нельзя: такие клиенты уже в
+        # поле, и отказ здесь оставлял их без пополнения OTK — собеседник
+        # получал 409/404 на /keys/claim и не мог завести Olm-сессию.
+        if session_device is None:
+            _bind_session_device(cur, authorization, device_id)
         if previous and previous["identity_key_b64"] != body.identity_key_b64:
             # Тихая перезапись чужого слота = подмена ключа для всех, кто шлёт на
             # это устройство. Менять identity можно только своей сессией, уже
             # привязанной к этому device_id (bind_session_device / pairing).
-            cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
-            session_row = cur.fetchone() if token else None
-            session_device = session_row["device_id"] if session_row else None
-            if session_device and session_device != device_id:
-                raise HTTPException(
-                    403,
-                    "Сессия привязана к другому устройству: сменить его ключ нельзя.")
             # OTKs are bound to the identity that generated them. A rotated
             # account must not leave stale OTKs for the next claimant.
             cur.execute("DELETE FROM one_time_keys WHERE LOWER(user_id) = LOWER(%s) AND device_id = %s",
@@ -1346,9 +1422,13 @@ def list_devices(user_id: str, current_user: str = Depends(get_current_user)) ->
 # достался один и тот же OTK.
 @app.post("/keys/claim/{user_id}")
 @limiter.limit("60/minute")
-def claim_keys(user_id: str, request: Request, device_id: str = "primary",
+def claim_keys(user_id: str, request: Request, device_id: Optional[str] = None,
                current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
+        # Параметр не прислан — клиент не знает про multi-device (старый iOS).
+        # Современные клиенты всегда указывают устройство явно.
+        if device_id is None:
+            device_id = _default_device(cur, user_id)
         cur.execute(
             "SELECT identity_key_b64 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
             (user_id, device_id))
@@ -1793,6 +1873,15 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 if is_channel and member["role"] != "admin":
                     raise HTTPException(403, "Only admins can post to a channel")
                     
+            # Legacy-отправитель (старый iOS) не шлёт target_device_id, но
+            # конверт зашифрован ровно тому устройству, у которого он забрал
+            # prekey-bundle, — тому же, что вернул бы /keys/claim без параметра.
+            # Адресуем туда же: NULL раздал бы нерасшифровываемую копию всем,
+            # а жёсткий 'primary' терял бы сообщение на аккаунте без primary.
+            target_device = body.target_device_id
+            if is_user and target_device is None and is_ratchet:
+                target_device = _default_device(cur, body.recipient_id)
+
             # (#A2) ON CONFLICT: повтор с тем же client_id — не ошибка, а дубликат.
             cur.execute(
                 """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at, recipient_device_id)
@@ -1804,7 +1893,7 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     body.recipient_id.lower(),
                     json.dumps(body.envelope),
                     _utc_now(),
-                    body.target_device_id if is_user else None,
+                    target_device if is_user else None,
                 ),
             )
             if cur.rowcount == 0:
@@ -1924,12 +2013,14 @@ class AckMessagesRequest(BaseModel):
 
 
 @app.post("/messages/ack")
-def ack_messages(body: AckMessagesRequest, current_user: str = Depends(get_current_user)) -> dict:
+def ack_messages(body: AckMessagesRequest, authorization: str = Header(None),
+                 current_user: str = Depends(get_current_user)) -> dict:
     """(#A1) Клиент подтверждает: сообщения сохранены локально.
     Только после этого они исчезают из inbox. Это исключает потерю
     сообщений при краше клиента между fetch и записью в локальную БД."""
     now = _utc_now()
     with db_conn() as cur:
+        _require_inbox_device(cur, authorization, body.device_id)
         cur.executemany(
             """INSERT INTO message_receipts (message_id, user_id, device_id, acked_at)
                VALUES (%s, %s, %s, %s) ON CONFLICT (message_id, user_id, device_id) DO NOTHING""",
@@ -1940,13 +2031,15 @@ def ack_messages(body: AckMessagesRequest, current_user: str = Depends(get_curre
 
 @app.get("/messages/inbox/{user_id}")
 def inbox(user_id: str, since: str = None, device_id: str = "primary",
+          authorization: str = Header(None),
           current_user: str = Depends(get_current_user)) -> dict:
     if user_id.lower() != current_user.lower():
         raise HTTPException(403, "Cannot read another user's inbox")
 
-    # Multi-device: NULL recipient_device_id = всему аккаунту (группы, legacy).
+    # Multi-device: NULL recipient_device_id = всему аккаунту (группы, legacy crypto_box).
     # Копии для чужих устройств в этот inbox не попадают.
     with db_conn() as cur:
+        _require_inbox_device(cur, authorization, device_id)
         if since:
             cur.execute(
                 """SELECT m.id, m.sender_id, m.recipient_id, m.envelope_json, m.created_at
