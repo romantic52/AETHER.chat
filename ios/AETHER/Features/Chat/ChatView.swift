@@ -66,6 +66,9 @@ struct ChatView: View {
 
     // Группа/канал.
     @State private var showGroupProfile = false
+    /// Отложенная отправка — долгое нажатие на кнопке отправки.
+    @State private var showSchedule = false
+    @State private var scheduleAt = Date().addingTimeInterval(3600)
     @ObservedObject private var wallpaperStore = WallpaperStore.shared
 
     // Локальное фото для контакта (см. AvatarStore) — только для 1:1.
@@ -217,6 +220,18 @@ struct ChatView: View {
         .toolbar(.hidden, for: .navigationBar)
         .swipeBackEnabled()
         .safeAreaInset(edge: .top) { chatTopBar }
+        .sheet(isPresented: $showSchedule) {
+            ScheduleSheet(date: $scheduleAt,
+                          pending: ScheduledStore.shared.pending(for: peerId)) {
+                let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !text.isEmpty else { return }
+                ScheduledStore.shared.add(peerId: peerId, text: text, dueAt: scheduleAt)
+                draft = ""
+            } onCancelItem: { item in
+                ScheduledStore.shared.remove(item)
+            }
+            .presentationDetents([.medium])
+        }
         .sheet(isPresented: $showGroupProfile) {
             if isGroup {
                 GroupProfileView(groupId: peerId)
@@ -973,6 +988,14 @@ struct ChatView: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.squish)
+                    // Зажатие на отправке — «отправить позже», как в Android.
+                    .simultaneousGesture(
+                        LongPressGesture(minimumDuration: 0.4).onEnded { _ in
+                            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            scheduleAt = Date().addingTimeInterval(3600)
+                            showSchedule = true
+                        }
+                    )
                     .transition(.scale.combined(with: .opacity))
                 } else {
                     Image(systemName: circleMode ? "video.fill" : "mic.fill")
@@ -1569,5 +1592,55 @@ private struct IslandBackground: ViewModifier {
 private extension View {
     func islandBackground(cornerRadius: CGFloat = Radius.panel) -> some View {
         modifier(IslandBackground(cornerRadius: cornerRadius))
+    }
+}
+
+
+/// Выбор времени отложенной отправки и список уже запланированного в этом чате.
+private struct ScheduleSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.palette) private var palette
+    @Binding var date: Date
+    var pending: [ScheduledMessage]
+    var onSchedule: () -> Void
+    var onCancelItem: (ScheduledMessage) -> Void
+
+    var body: some View {
+        NavigationStack {
+            Form {
+                Section {
+                    DatePicker("Отправить", selection: $date, in: Date()...)
+                } footer: {
+                    Text("iOS не обещает разбудить приложение в точную минуту. Сообщение уйдёт в назначенное время или при первой возможности после — когда откроете приложение или система выдаст фоновую задачу.")
+                }
+                if !pending.isEmpty {
+                    Section("Уже запланировано") {
+                        ForEach(pending) { item in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(item.text).lineLimit(1)
+                                    Text(item.dueAt.formatted(date: .abbreviated, time: .shortened))
+                                        .font(.footnote)
+                                        .foregroundStyle(palette.textSecondary)
+                                }
+                                Spacer()
+                                Button(role: .destructive) { onCancelItem(item) } label: {
+                                    Image(systemName: "trash")
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                }
+            }
+            .navigationTitle("Отправить позже")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) { Button("Отмена") { dismiss() } }
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Запланировать") { onSchedule(); dismiss() }
+                }
+            }
+        }
     }
 }
