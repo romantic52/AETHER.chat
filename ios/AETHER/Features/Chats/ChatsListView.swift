@@ -39,6 +39,7 @@ struct ChatsListView: View {
     /// уходит ПОД них: видно чужой текст поверх её аватарки и пустоты по краям.
     @State private var movingId: String?
     @StateObject private var folders = ChatFoldersStore.shared
+    @StateObject private var blocks = BlockStore.shared
     @State private var folder: ChatFolder?
     @State private var editingFolder: ChatFolder?
     @State private var showFolderEditor = false
@@ -652,6 +653,13 @@ struct ChatsListView: View {
         Button { Task { await messaging.setArchived(chat.peerId, true) } } label: {
             Label("В архив", systemImage: "archivebox.fill")
         }
+        Button {
+            blocks.toggle(chat.peerId)
+        } label: {
+            Label(blocks.isBlocked(chat.peerId) ? "Разблокировать" : "Заблокировать",
+                  systemImage: blocks.isBlocked(chat.peerId) ? "hand.raised.slash" : "hand.raised")
+        }
+
         Menu {
             ForEach(folders.folders.filter { $0.rule == .custom }) { f in
                 Button {
