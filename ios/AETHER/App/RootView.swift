@@ -8,7 +8,9 @@ struct RootView: View {
 
     var body: some View {
         #if DEBUG
-        if ProcessInfo.processInfo.environment["AETHER_SWIPETEST"] == "1" {
+        if ProcessInfo.processInfo.environment["AETHER_MEDIATEST"] == "1" {
+            MediaTestHarness()
+        } else if ProcessInfo.processInfo.environment["AETHER_SWIPETEST"] == "1" {
             SwipeTestHarness()
         } else if ProcessInfo.processInfo.environment["AETHER_BARNATIVE"] == "1", #available(iOS 18.0, *) {
             NativeBarReference()
@@ -198,6 +200,113 @@ struct SwipeTestHarness: View {
             }
         }
         .background(palette.background)
+    }
+}
+#endif
+
+
+#if DEBUG
+/// Стенд просмотрщика медиа: галерея из нарисованных прямо здесь картинок, трек
+/// и документ — без сессии и сервера. Медиа в симуляторе иначе недостижимо
+/// (нужен вход в аккаунт), и всё ловилось бы уже на устройстве.
+/// Запуск: SIMCTL_CHILD_AETHER_MEDIATEST=1 xcrun simctl launch <udid> com.rmkhc.aether
+struct MediaTestHarness: View {
+    @Environment(\.palette) private var palette
+    @State private var ready = false
+    @State private var open = false
+    @State private var items: [MediaItem] = []
+    @State private var track: Wire.Payload?
+
+    var body: some View {
+        ZStack {
+            palette.background.ignoresSafeArea()
+            VStack(spacing: 14) {
+                MiniPlayerBar()
+                Text(ready ? "готово" : "готовлю файлы…")
+                    .font(.system(size: 13)).foregroundStyle(palette.textSecondary)
+                Button("Открыть галерею") { open = true }
+                    .disabled(!ready)
+                    .buttonStyle(.borderedProminent)
+                if let track {
+                    AudioBubble(payload: track, outgoing: false)
+                        .background(palette.surfaceElevated, in: RoundedRectangle(cornerRadius: 18))
+                }
+            }
+            .padding(20)
+        }
+        .task { await prepare() }
+        .fullScreenCover(isPresented: $open) {
+            AetherMediaViewer(items: items, start: 0)
+        }
+    }
+
+    private func prepare() async {
+        var built: [MediaItem] = []
+        for (i, color) in [UIColor.systemTeal, .systemPink, .systemIndigo].enumerated() {
+            let id = "bench_image_\(i)"
+            MediaStore.shared.seed(fileId: id, data: Self.image(color: color, caption: "Фото \(i + 1)"))
+            built.append(MediaItem(Wire.Payload(type: "media", raw: [
+                "type": "media", "kind": "image", "file_id": id,
+                "file_name": "photo_\(i + 1).jpg", "mime_type": "image/jpeg",
+            ])))
+        }
+        // Документ отдельной страницей: проверяем, что файл открывается
+        // системным просмотром прямо внутри галереи, а не крутит спиннер.
+        let docId = "bench_doc"
+        MediaStore.shared.seed(fileId: docId, data: Data("AETHER: проверка документа.\n".utf8))
+        built.append(MediaItem(Wire.Payload(type: "media", raw: [
+            "type": "media", "kind": "file", "file_id": docId,
+            "file_name": "заметка.txt", "mime_type": "text/plain",
+        ])))
+        items = built
+
+        let audioId = "bench_audio"
+        MediaStore.shared.seed(fileId: audioId, data: Self.tone(seconds: 12))
+        track = Wire.Payload(type: "media", raw: [
+            "type": "media", "kind": "audio", "file_id": audioId,
+            "file_name": "Проверка звука.wav", "mime_type": "audio/wav",
+        ])
+        ready = true
+    }
+
+    /// Кадр с подписью — чтобы на снимке было видно, какая страница открыта.
+    private static func image(color: UIColor, caption: String) -> Data {
+        let size = CGSize(width: 900, height: 1400)
+        let image = UIGraphicsImageRenderer(size: size).image { context in
+            color.setFill()
+            context.fill(CGRect(origin: .zero, size: size))
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: UIFont.systemFont(ofSize: 120, weight: .bold),
+                .foregroundColor: UIColor.white,
+            ]
+            let text = caption as NSString
+            let bounds = text.size(withAttributes: attrs)
+            text.draw(at: CGPoint(x: (size.width - bounds.width) / 2,
+                                  y: (size.height - bounds.height) / 2), withAttributes: attrs)
+        }
+        return image.jpegData(compressionQuality: 0.9) ?? Data()
+    }
+
+    /// WAV с синусом: AVPlayer его читает, а генерировать проще, чем m4a.
+    private static func tone(seconds: Int) -> Data {
+        let rate = 22050
+        let count = rate * seconds
+        var samples = Data(capacity: count * 2)
+        for i in 0..<count {
+            let value = sin(Double(i) * 2 * Double.pi * 440 / Double(rate))
+            let scaled = Int16(value * 8000)
+            samples.append(UInt8(truncatingIfNeeded: scaled))
+            samples.append(UInt8(truncatingIfNeeded: scaled >> 8))
+        }
+        func le32(_ v: Int) -> Data { Data([UInt8(v & 0xff), UInt8((v >> 8) & 0xff),
+                                            UInt8((v >> 16) & 0xff), UInt8((v >> 24) & 0xff)]) }
+        func le16(_ v: Int) -> Data { Data([UInt8(v & 0xff), UInt8((v >> 8) & 0xff)]) }
+        var wav = Data("RIFF".utf8)
+        wav += le32(36 + samples.count)
+        wav += Data("WAVEfmt ".utf8)
+        wav += le32(16) + le16(1) + le16(1) + le32(rate) + le32(rate * 2) + le16(2) + le16(16)
+        wav += Data("data".utf8) + le32(samples.count) + samples
+        return wav
     }
 }
 #endif

@@ -70,6 +70,10 @@ struct ChatView: View {
     @State private var showSchedule = false
     @State private var scheduleAt = Date().addingTimeInterval(3600)
     @ObservedObject private var wallpaperStore = WallpaperStore.shared
+    /// Лента медиа этого чата для просмотрщика: он листает соседние фото и
+    /// видео, а плеер берёт отсюда очередь музыки. Коробка ссылочная, поэтому
+    /// её обновление не перерисовывает переписку.
+    @State private var gallery = ChatGallery()
 
     // Локальное фото для контакта (см. AvatarStore) — только для 1:1.
     @State private var showAvatarMenu = false
@@ -289,6 +293,11 @@ struct ChatView: View {
         .onChange(of: circleCam.elapsed) { _, t in
             if circleRecordedBefore + t >= 60, circleCam.isRecording, !circleSwitching { finishCircle(preview: true) }
         }
+        .environment(\.chatGallery, gallery)
+        // Порядок ленты — порядок листания. Пересобираем на изменение списка
+        // сообщений, а не на каждый кадр: массив нужен только в момент тапа.
+        .onChange(of: vm.messages.count) { _, _ in refreshGallery() }
+        .onAppear { refreshGallery() }
         .onDisappear {
             vm.onDisappear()
             armTask?.cancel()
@@ -699,6 +708,10 @@ struct ChatView: View {
 
     /// Прыжок к сообщению по id (тап по цитате): скролл к нему и плавно
     /// гаснущая подсветка на 3 секунды.
+    private func refreshGallery() {
+        gallery.items = vm.messages.compactMap { $0.payload }.filter { $0.type == "media" }
+    }
+
     private func jumpToMessage(_ id: String, proxy: ScrollViewProxy) {
         guard vm.messages.contains(where: { $0.id == id }) else { return }
         // Плавно, но резво: детерминированный easeInOut вместо пружины —

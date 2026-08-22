@@ -29,6 +29,11 @@ struct HomeView: View {
             tabView
                 .toolbar(.hidden, for: .navigationBar)
         }
+        // Полоска играющего трека — СВЕРХУ и вставкой в безопасную зону, а не
+        // наложением: внизу в чате поле ввода, а наложение сверху перекрыло бы
+        // заголовок. Вставка сдвигает содержимое, поэтому ничего не прячется.
+        // Пустой плеер занимает ноль — вставка не мешает, пока не играет.
+        .safeAreaInset(edge: .top, spacing: 0) { MiniPlayerBar() }
         .environmentObject(messaging)
         .environmentObject(chrome)
         .overlay { CallOverlay(calls: messaging.calls) }
