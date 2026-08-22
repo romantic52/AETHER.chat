@@ -67,6 +67,28 @@ final class Session: ObservableObject {
         Task { await loadMyProfile() }
     }
 
+    /// Войти по привязке со второго устройства: bundle уже расшифрован.
+    /// Зеркало bootstrap() — те же ключи Keychain, тот же порядок, чтобы
+    /// дальнейшая жизнь приложения ничем не отличалась от обычного входа.
+    func signIn(paired bundle: PairingBundle) async {
+        Keychain.set(bundle.token, for: Keychain.kToken)
+        Keychain.set(bundle.userId, for: Keychain.kUserId)
+        Keychain.set(bundle.publicKey, for: Keychain.kPublicKey)
+        Keychain.set(bundle.privateKey, for: Keychain.kPrivateKey)
+        await core.restoreSession(token: bundle.token, userId: bundle.userId,
+                                  publicKey: bundle.publicKey, privateKey: bundle.privateKey)
+        authToken = bundle.token
+        myId = bundle.userId
+        registerAccount(id: bundle.userId.lowercased(), token: bundle.token,
+                        publicKey: bundle.publicKey, privateKey: bundle.privateKey)
+        phase = .ready
+        startHeartbeat()
+        Task { await loadMyProfile() }
+        // Ключи нового устройства должны попасть на сервер сразу, иначе ему
+        // нельзя написать: Double Ratchet требует prekey-бандл получателя.
+        Task { await core.ensureOlmKeys() }
+    }
+
     // MARK: - Аутентификация
 
     func register(userId: String, password: String) async throws {
