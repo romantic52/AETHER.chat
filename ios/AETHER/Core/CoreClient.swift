@@ -358,6 +358,11 @@ actor CoreClient {
         return resolved
     }
 
+    /// Идентификатор этого устройства; пустая строка — ещё не определён.
+    /// Нужен быстрому приёму по WS: событие уходит всем устройствам аккаунта,
+    /// а конверт личной переписки адресован ровно одному из них.
+    var currentDeviceId: String { myDeviceId() }
+
     /// device_id или ошибка: пустой означает «директория была недоступна».
     /// Работать под неизвестным устройством нельзя — повторим позже.
     private func requireDeviceId() throws -> String {
@@ -375,6 +380,8 @@ actor CoreClient {
     }
 
     private var deviceCache: [String: (devices: [DeviceInfo], at: Date, forcedAt: Date)] = [:]
+    /// Кому уже заказано фоновое обновление справочника устройств.
+    private var deviceRefreshPending: Set<String> = []
     private func peerDevices(_ peerId: String, force: Bool = false) throws -> [DeviceInfo] {
         let id = peerId.lowercased()
         if let cached = deviceCache[id] {
@@ -384,11 +391,43 @@ actor CoreClient {
             let window: TimeInterval = force ? 10 : 60
             let fresh = Date().timeIntervalSince(force ? cached.forcedAt : cached.at) < window
             if fresh { return cached.devices }
+            // Список устарел, но он ЕСТЬ. Ждать директорию до отправки — лишний
+            // сетевой круг в самом заметном месте: первый ответ после паузы в
+            // переписке. Отдаём известные устройства сразу, а справочник
+            // обновляем следом, уже не задерживая сообщение.
+            //
+            // Дыру «пир завёл устройство только что» это не расширяет: она равна
+            // окну свежести и была здесь всегда. Форс-рефетч (застрявшее
+            // сообщение) по-прежнему ходит за списком синхронно — там как раз
+            // важна свежесть, а не скорость.
+            if !force {
+                refreshDevicesSoon(id)
+                return cached.devices
+            }
         }
         let devices = try api.listDevices(userId: id)
         let forcedAt = force ? Date() : (deviceCache[id]?.forcedAt ?? .distantPast)
         deviceCache[id] = (devices, Date(), forcedAt)
         return devices
+    }
+
+    /// Обновить список устройств пира, не задерживая текущую отправку. Задача
+    /// изолирована этим же актором, поэтому встанет в очередь ЗА отправкой —
+    /// ровно то, что нужно: сообщение уходит первым.
+    private func refreshDevicesSoon(_ id: String) {
+        guard !deviceRefreshPending.contains(id) else { return }
+        deviceRefreshPending.insert(id)
+        Task { [weak self] in
+            guard let self else { return }
+            await self.refreshDevicesNow(id)
+        }
+    }
+
+    private func refreshDevicesNow(_ id: String) {
+        defer { deviceRefreshPending.remove(id) }
+        guard let devices = try? api.listDevices(userId: id) else { return }
+        let forcedAt = deviceCache[id]?.forcedAt ?? .distantPast
+        deviceCache[id] = (devices, Date(), forcedAt)
     }
 
     /// Опубликовать/пополнить prekeys на сервере. Идемпотентно: заливает identity

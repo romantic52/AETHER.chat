@@ -69,6 +69,15 @@ final class Messaging: ObservableObject {
     private var reconnectAttempt = 0
     private var pollInFlight = false
     private var pollAgain = false
+    /// Отметка времени последнего сообщения, разобранного быстрым путём по WS.
+    /// Двигать по ней inbox_since сразу нельзя: если бы WS-событие по дороге
+    /// потерялось, потерянное сообщение оказалось бы СТАРШЕ курсора, и мы бы
+    /// его больше никогда не запросили. Поэтому отметка ждёт поллинга, который
+    /// подтвердит, что за курсором действительно ничего не осталось.
+    private var fastCursor: String?
+    /// Конверты из WS-событий, ждущие разбора, и признак идущего разбора.
+    private var fastQueue: [InboxItem] = []
+    private var fastDraining = false
     private var lastTypingSent: [String: Date] = [:]
     private var stopTypingTasks: [String: Task<Void, Never>] = [:]
     private var receiptTasks: [String: Task<Void, Never>] = [:]
@@ -140,11 +149,15 @@ final class Messaging: ObservableObject {
         shouldRun = true
         reconnectAttempt = 0
         startupTask = Task {
-            await core.ensureOlmKeys()   // опубликовать/пополнить prekeys для Double Ratchet
-            await refreshChats()
-            await groups.load()
-            await flushOutgoing()
+            // Порядок важен: ядро — актор, вызовы к нему выстраиваются в очередь,
+            // и всё, что стоит перед разбором инбокса, откладывает появление новых
+            // сообщений на экране. Поэтому сначала то, ради чего приложение
+            // открыли, и лишь потом обслуживание ключей.
+            await refreshChats()         // локальная база, без сети
+            await groups.load()          // ключи групп нужны ДО разбора инбокса
             await pollInbox()
+            await flushOutgoing()
+            await core.ensureOlmKeys()   // опубликовать/пополнить prekeys для Double Ratchet
         }
         startPolling()
         connectWs()
@@ -264,7 +277,15 @@ final class Messaging: ObservableObject {
             typingTimers[sender]?.cancel()
             typingTimers[sender] = nil
             typingPeers.remove(sender)
-        case "new_message": Task { await pollInbox() }
+        case "new_message":
+            // Конверт обычно приезжает прямо в событии — тогда сообщение видно
+            // без похода за инбоксом. Не сложилось (старый сервер, чужой ключ) —
+            // работает прежний путь.
+            Task { [weak self] in
+                guard let self else { return }
+                if await self.fastIncoming(obj) { return }
+                await self.pollInbox()
+            }
         case "webrtc_offer", "webrtc_answer", "webrtc_ice", "webrtc_hangup", "webrtc_busy":
             // SDP/ICE группового звонка помечены group_call — в свой менеджер.
             if (obj["group_call"] as? Bool) == true || (obj["group_call"] as? Int) == 1 {
@@ -336,7 +357,14 @@ final class Messaging: ObservableObject {
 
     private func performInboxPoll() async {
         let since = await core.metaGet("inbox_since")
-        guard let items = try? await core.fetchInbox(since: since), !items.isEmpty else { return }
+        guard let items = try? await core.fetchInbox(since: since) else { return }
+        guard !items.isEmpty else {
+            // За курсором пусто: всё разобрано, включая быстрый путь по WS.
+            // Только теперь двигать курсор по его отметке безопасно — потерянное
+            // событие лежало бы сейчас именно здесь.
+            await advanceCursorToFast(after: since)
+            return
+        }
         // Сервер отдаёт не больше 200 за раз — если пришло ровно окно, догребаем
         // остаток сразу, а не по 200 за цикл поллинга.
         if items.count >= 200 { pollAgain = true }
@@ -384,6 +412,9 @@ final class Messaging: ObservableObject {
 
         if let ts = cursor { await core.metaSet("inbox_since", ts) }
         if !ackIds.isEmpty { try? await core.ack(ackIds) }
+        // Окно выбрано целиком (200) — остаток ещё не виден, курсор быстрого
+        // пути подождёт следующего круга.
+        if !stuck && items.count < 200 { await advanceCursorToFast(after: cursor) }
 
         await refreshChats()
         if changed {
@@ -392,6 +423,96 @@ final class Messaging: ObservableObject {
             // Копия шифруется на устройстве, поэтому это дешёвая фоновая работа.
             Task.detached { [core] in await core.backupSyncUp() }
         }
+    }
+
+    private func advanceCursorToFast(after since: String?) async {
+        guard let ts = fastCursor else { return }
+        // Отметки времени сервер сравнивает как текст (created_at — TEXT),
+        // поэтому и здесь строковое сравнение, а не разбор дат.
+        if let since, ts <= since { return }
+        await core.metaSet("inbox_since", ts)
+    }
+
+    /// Быстрый приём: конверт приехал прямо в WS-событии, поэтому сообщение
+    /// вскрывается и показывается сразу — без отдельного захода за инбоксом.
+    /// Этот заход и был основной задержкой ответа: целый сетевой круг поверх
+    /// уже доставленного уведомления.
+    ///
+    /// true — разобрано и подтверждено; false — нужен обычный поллинг.
+    private func fastIncoming(_ obj: [String: Any]) async -> Bool {
+        guard let id = obj["message_id"] as? String, !id.isEmpty,
+              let envelope = obj["envelope"] as? String, !envelope.isEmpty,
+              let sender = obj["sender_id"] as? String,
+              let recipient = obj["recipient_id"] as? String,
+              let createdAt = obj["created_at"] as? String, !createdAt.isEmpty
+        else { return false }   // сервер старой версии — полей в событии нет
+
+        let myDevice = await core.currentDeviceId
+        guard !myDevice.isEmpty else { return false }
+        // Копия, адресованная другому устройству аккаунта: ключа от неё здесь
+        // нет и в инбокс она не попадёт — поллинг звать незачем.
+        if let target = obj["target_device_id"] as? String, !target.isEmpty,
+           target != myDevice { return true }
+
+        fastQueue.append(InboxItem(id: id, senderId: sender.lowercased(),
+                                   recipientId: recipient.lowercased(),
+                                   envelope: envelope, createdAt: createdAt))
+        return await drainFast()
+    }
+
+    /// Разбор очереди конвертов, пришедших по WS, строго по одному: вскрывать
+    /// два конверта от одного пира параллельно нельзя — Olm-сессия одна, и
+    /// второй вызов сломал бы её состояние.
+    private func drainFast() async -> Bool {
+        // Разбор уже идёт — только что добавленное заберёт тот же цикл.
+        guard !fastDraining else { return true }
+        // Идёт обычный поллинг: он и так вычитает всё неподтверждённое, а
+        // повторное вскрытие тех же конвертов только сломает сессии.
+        guard !pollInFlight else {
+            fastQueue.removeAll()
+            pollAgain = true
+            return true
+        }
+
+        fastDraining = true
+        pollInFlight = true
+        var ackIds: [String] = []
+        var newest: String?
+        var changed = false
+        var needPoll = false
+
+        while !fastQueue.isEmpty {
+            let item = fastQueue.removeFirst()
+            switch await handleIncoming(item) {
+            case .processed(let didChange):
+                if didChange { changed = true }
+            case .duplicate:
+                break
+            case .undecryptable:
+                // Ключ группы ещё не подъехал или сменился ключ пира — там
+                // карантин и тревоги, это работа поллинга.
+                needPoll = true
+                continue
+            }
+            ackIds.append(item.id)
+            await clearRetries(item.id)
+            if let ts = item.createdAt, newest == nil || ts > newest! { newest = ts }
+        }
+
+        pollInFlight = false
+        fastDraining = false
+
+        // Подтверждаем всю пачку одним запросом — и уже после показа сообщений.
+        if !ackIds.isEmpty { try? await core.ack(ackIds) }
+        if let ts = newest, fastCursor == nil || ts > fastCursor! { fastCursor = ts }
+
+        await refreshChats()
+        if changed {
+            inboxTick.fire()
+            Task.detached { [core] in await core.backupSyncUp() }
+        }
+        // Пока разбирали, накопилось ещё — пусть поллинг доберёт остаток.
+        return !(needPoll || pollAgain)
     }
 
     private enum IncomingResult {
