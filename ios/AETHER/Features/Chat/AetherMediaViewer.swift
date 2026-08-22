@@ -1,85 +1,172 @@
 import AVFoundation
+import QuickLook
 import SwiftUI
 import UIKit
 
-/// Единый полноэкранный просмотрщик AETHER: фото, видео и музыка используют
-/// один chrome, а AVPlayer остаётся только движком под собственными контролами.
-struct AetherMediaViewer: View {
+/// Одна карточка галереи. Идентификатор нужен ForEach и постраничному листанию,
+/// а `Wire.Payload` для этого не годится: внутри него сырой словарь.
+struct MediaItem: Identifiable, Equatable {
+    let id: String
     let payload: Wire.Payload
 
-    @Environment(\.dismiss) private var dismiss
-    @State private var image: UIImage?
-    @State private var mediaURL: URL?
-    @State private var quarterTurns = 0
-    @State private var sharing: ActivityItems?
-    @State private var loadError: String?
+    init(_ payload: Wire.Payload) {
+        self.payload = payload
+        self.id = MediaPlaybackCenter.identity(payload)
+    }
 
-    private var kind: Wire.MediaKind { payload.mediaKind }
+    static func == (lhs: MediaItem, rhs: MediaItem) -> Bool { lhs.id == rhs.id }
+}
+
+/// Все медиа открытого чата — чтобы просмотрщик листался, а не показывал одну
+/// карточку. Отдаём ССЫЛОЧНОЙ коробкой: пузырь лежит глубоко, тащить массив
+/// параметром через все промежуточные вью — шум, а класс в среде не заставляет
+/// SwiftUI перерисовывать ленту при каждом новом сообщении.
+final class ChatGallery {
+    var items: [Wire.Payload] = []
+
+    /// Что листается: фото и видео. Музыка и документы живут в ленте своей
+    /// жизнью, подмешивать их в перелистывание фотографий неудобно.
+    func viewable() -> [MediaItem] {
+        items.filter { $0.mediaKind == .image || $0.mediaKind == .video }.map(MediaItem.init)
+    }
+
+    /// Просмотрщик, открытый на этом медиа. Если ленты нет (например, открыли из
+    /// профиля группы) — показываем одну карточку, как раньше.
+    @MainActor
+    func viewer(opening payload: Wire.Payload) -> AetherMediaViewer {
+        let list = viewable()
+        let id = MediaPlaybackCenter.identity(payload)
+        guard let start = list.firstIndex(where: { $0.id == id }) else {
+            return AetherMediaViewer(payload: payload)
+        }
+        return AetherMediaViewer(items: list, start: start)
+    }
+
+    /// Все аудио чата — очередь плеера.
+    func audioQueue() -> [Wire.Payload] {
+        items.filter { $0.mediaKind == .audio }
+    }
+}
+
+private struct ChatGalleryKey: EnvironmentKey {
+    static let defaultValue = ChatGallery()
+}
+
+extension EnvironmentValues {
+    var chatGallery: ChatGallery {
+        get { self[ChatGalleryKey.self] }
+        set { self[ChatGalleryKey.self] = newValue }
+    }
+}
+
+/// Полноэкранный просмотрщик AETHER: фото, видео, музыка и документы под одним
+/// chrome. Листается вбок, закрывается потягиванием вниз, тап убирает панели —
+/// то, чего ждёшь от галереи мессенджера.
+struct AetherMediaViewer: View {
+    let items: [MediaItem]
+    @State private var index: Int
+
+    init(payload: Wire.Payload) {
+        items = [MediaItem(payload)]
+        _index = State(initialValue: 0)
+    }
+
+    init(items: [MediaItem], start: Int) {
+        self.items = items
+        _index = State(initialValue: min(max(start, 0), max(items.count - 1, 0)))
+    }
+
+    @Environment(\.dismiss) private var dismiss
+    @State private var chromeHidden = false
+    @State private var dragY: CGFloat = 0
+    @State private var zoomed = false
+    @State private var rotation: [String: Int] = [:]
+    @State private var sharing: ActivityItems?
+
+    private var item: MediaItem? { items.indices.contains(index) ? items[index] : nil }
+    private var payload: Wire.Payload? { item?.payload }
+    /// 0 в покое, 1 у порога закрытия. Фон гаснет ровно на столько же — картинка
+    /// «отрывается» от экрана, а не проваливается в чёрное.
+    private var dismissProgress: CGFloat { min(abs(dragY) / 240, 1) }
 
     var body: some View {
         ZStack {
-            Color.black.ignoresSafeArea()
-            content
-            topBar
-            if kind == .image { imageTools }
+            Color.black.opacity(1 - dismissProgress * 0.7).ignoresSafeArea()
+
+            pages
+                .offset(y: dragY)
+                .scaleEffect(1 - dismissProgress * 0.12)
+
+            if !chromeHidden {
+                topBar.transition(.opacity)
+                if payload?.mediaKind == .image { imageTools.transition(.opacity) }
+            }
         }
         .statusBarHidden()
-        .task(id: payload.fileId ?? payload.fileName) { await load() }
+        .simultaneousGesture(dismissDrag)
         .sheet(item: $sharing) { ActivityView(items: $0.values) }
+        // Зум сбрасывается сменой страницы: иначе следующее фото открывается
+        // приближённым и непонятно, куда смотреть.
+        .onChange(of: index) { _, _ in zoomed = false }
     }
 
-    @ViewBuilder private var content: some View {
-        if let loadError {
-            VStack(spacing: 14) {
-                Image(systemName: "exclamationmark.triangle.fill")
-                    .font(.system(size: 42)).foregroundStyle(.yellow)
-                Text(loadError).font(.headline).foregroundStyle(.white).multilineTextAlignment(.center)
-                    .padding(.horizontal, 32)
-                if mediaURL != nil {
-                    Text("Файл можно сохранить кнопкой сверху.")
-                        .font(.subheadline).foregroundStyle(.white.opacity(0.65))
-                }
-            }
+    @ViewBuilder private var pages: some View {
+        if items.isEmpty {
+            EmptyView()
+        } else if items.count == 1, let item {
+            page(item)
         } else {
-            switch kind {
-            case .image:
-                if let image {
-                    ZoomableMediaImage(image: image, quarterTurns: quarterTurns)
-                } else {
-                    ProgressView().tint(.white)
+            TabView(selection: $index) {
+                ForEach(Array(items.enumerated()), id: \.element.id) { position, item in
+                    page(item).tag(position)
                 }
-            case .video, .videoNote:
-                if let mediaURL {
-                    AetherPlaybackView(url: mediaURL, video: true)
-                } else {
-                    ProgressView().tint(.white)
-                }
-            case .audio, .voice:
-                if let mediaURL {
-                    AetherPlaybackView(url: mediaURL, video: false,
-                                       title: payload.fileName ?? (kind == .voice ? "Голосовое сообщение" : "Аудио"))
-                } else {
-                    ProgressView().tint(.white)
-                }
-            case .file:
-                ProgressView().tint(.white)
             }
+            .tabViewStyle(.page(indexDisplayMode: .never))
         }
     }
+
+    @ViewBuilder private func page(_ pageItem: MediaItem) -> some View {
+        MediaPage(
+            item: pageItem,
+            chromeHidden: $chromeHidden,
+            zoomed: $zoomed,
+            quarterTurns: Binding(
+                get: { rotation[pageItem.id] ?? 0 },
+                set: { rotation[pageItem.id] = $0 }
+            ),
+            active: pageItem.id == item?.id,
+            // Соседние страницы готовим заранее: иначе на каждом перелистывании
+            // на месте фотографии секунду висит спиннер. Дальше соседей не
+            // трогаем — незачем тянуть весь чат.
+            preload: abs((items.firstIndex(of: pageItem) ?? 0) - index) <= 1,
+            audioQueue: audioQueue
+        )
+    }
+
+    /// Очередь для плеера собирается из самой галереи: если просмотрщик открыт
+    /// списком, соседние аудио уже здесь.
+    private var audioQueue: [Wire.Payload] {
+        items.map(\.payload).filter { $0.mediaKind == .audio }
+    }
+
+    // MARK: - Панели
 
     private var topBar: some View {
         VStack {
             HStack(spacing: 12) {
                 roundButton("xmark", label: "Закрыть") { dismiss() }
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(title).font(.system(size: 16, weight: .semibold))
-                    if let caption = payload.caption, !caption.isEmpty {
+                    Text(title).font(.system(size: 16, weight: .semibold)).lineLimit(1)
+                    if items.count > 1 {
+                        Text("\(index + 1) из \(items.count)")
+                            .font(.caption).foregroundStyle(.white.opacity(0.7))
+                    } else if let caption = payload?.caption, !caption.isEmpty {
                         Text(caption).font(.caption).lineLimit(1).foregroundStyle(.white.opacity(0.7))
                     }
                 }
                 .foregroundStyle(.white)
                 Spacer()
-                roundButton("square.and.arrow.up", label: "Поделиться") { share() }
+                roundButton("square.and.arrow.up", label: "Поделиться") { Task { await share() } }
             }
             .padding(.horizontal, 16).padding(.top, 8)
             Spacer()
@@ -90,22 +177,30 @@ struct AetherMediaViewer: View {
         VStack {
             Spacer()
             HStack(spacing: 18) {
-                roundButton("rotate.left", label: "Повернуть влево") {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { quarterTurns -= 1 }
-                }
-                roundButton("arrow.counterclockwise", label: "Сбросить изменения") {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { quarterTurns = 0 }
-                }
-                .opacity(quarterTurns == 0 ? 0.45 : 1)
-                .disabled(quarterTurns == 0)
-                roundButton("rotate.right", label: "Повернуть вправо") {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { quarterTurns += 1 }
-                }
+                roundButton("rotate.left", label: "Повернуть влево") { turn(-1) }
+                roundButton("arrow.counterclockwise", label: "Сбросить изменения") { reset() }
+                    .opacity(currentTurns == 0 ? 0.45 : 1)
+                    .disabled(currentTurns == 0)
+                roundButton("rotate.right", label: "Повернуть вправо") { turn(1) }
             }
             .padding(.horizontal, 18).padding(.vertical, 12)
             .background(.ultraThinMaterial, in: Capsule())
             .padding(.bottom, 18)
         }
+    }
+
+    private var currentTurns: Int { item.map { rotation[$0.id] ?? 0 } ?? 0 }
+
+    private func turn(_ delta: Int) {
+        guard let item else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            rotation[item.id] = (rotation[item.id] ?? 0) + delta
+        }
+    }
+
+    private func reset() {
+        guard let item else { return }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { rotation[item.id] = 0 }
     }
 
     private func roundButton(_ systemName: String, label: String, action: @escaping () -> Void) -> some View {
@@ -121,13 +216,125 @@ struct AetherMediaViewer: View {
     }
 
     private var title: String {
+        guard let payload else { return "Медиа" }
         if let name = payload.fileName, !name.isEmpty { return name }
-        switch kind {
+        switch payload.mediaKind {
         case .image: return "Фото"
         case .video, .videoNote: return "Видео"
         case .audio: return "Аудио"
         case .voice: return "Голосовое сообщение"
         case .file: return "Файл"
+        }
+    }
+
+    // MARK: - Закрытие потягиванием
+
+    private var dismissDrag: some Gesture {
+        DragGesture(minimumDistance: 12)
+            .onChanged { value in
+                // Приближённое фото таскают, а не закрывают: там жест занят.
+                guard !zoomed else { return }
+                guard abs(value.translation.height) > abs(value.translation.width) else { return }
+                dragY = value.translation.height
+            }
+            .onEnded { value in
+                guard !zoomed else { return }
+                let far = abs(value.translation.height) > 120
+                let fast = abs(value.predictedEndTranslation.height) > 320
+                if far || fast {
+                    dismiss()
+                } else {
+                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { dragY = 0 }
+                }
+            }
+    }
+
+    private func share() async {
+        guard let payload else { return }
+        if payload.mediaKind == .image {
+            guard let image = await MediaStore.shared.image(payload: payload, maxPixel: 4096) else { return }
+            sharing = ActivityItems(values: [image.rotatedQuarterTurns(currentTurns)])
+        } else if let url = await MediaStore.shared.materialize(payload: payload, fallbackExtension: "bin") {
+            sharing = ActivityItems(values: [url])
+        }
+    }
+}
+
+// MARK: - Страница
+
+/// Одна страница галереи. Грузится ТОЛЬКО когда стала активной: иначе открытие
+/// чата с полусотней фотографий разом тянуло бы их все.
+private struct MediaPage: View {
+    let item: MediaItem
+    @Binding var chromeHidden: Bool
+    @Binding var zoomed: Bool
+    @Binding var quarterTurns: Int
+    let active: Bool
+    let preload: Bool
+    let audioQueue: [Wire.Payload]
+
+    @State private var image: UIImage?
+    @State private var mediaURL: URL?
+    @State private var loadError: String?
+    @State private var loaded = false
+
+    private var payload: Wire.Payload { item.payload }
+    private var kind: Wire.MediaKind { payload.mediaKind }
+
+    var body: some View {
+        ZStack {
+            if let loadError {
+                failure(loadError)
+            } else {
+                switch kind {
+                case .image:
+                    if let image {
+                        ZoomableMediaImage(image: image, quarterTurns: quarterTurns, zoomed: $zoomed)
+                            .onTapGesture { toggleChrome() }
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                case .video, .videoNote:
+                    if let mediaURL {
+                        VideoPage(url: mediaURL, active: active, onTapBackground: toggleChrome)
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                case .audio, .voice:
+                    AudioPage(payload: payload, queue: audioQueue)
+                case .file:
+                    if let mediaURL {
+                        // Документы отдаём системному просмотру: он умеет PDF,
+                        // офисные форматы и архивы, свой такой писать незачем.
+                        DocumentPage(url: mediaURL)
+                    } else {
+                        ProgressView().tint(.white)
+                    }
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .task(id: preload) {
+            guard preload, !loaded else { return }
+            loaded = true
+            await load()
+        }
+    }
+
+    private func toggleChrome() {
+        withAnimation(.easeInOut(duration: 0.18)) { chromeHidden.toggle() }
+    }
+
+    private func failure(_ text: String) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 42)).foregroundStyle(.yellow)
+            Text(text).font(.headline).foregroundStyle(.white)
+                .multilineTextAlignment(.center).padding(.horizontal, 32)
+            if mediaURL != nil {
+                Text("Файл можно сохранить кнопкой сверху.")
+                    .font(.subheadline).foregroundStyle(.white.opacity(0.65))
+            }
         }
     }
 
@@ -137,10 +344,13 @@ struct AetherMediaViewer: View {
             if image == nil { loadError = "Не удалось открыть фото." }
             return
         }
+        // Аудио материализует сам центр воспроизведения — здесь только видео и
+        // документы, иначе один и тот же файл качался бы дважды.
+        guard kind != .audio, kind != .voice else { return }
+
         let ext: String
         switch kind {
         case .video, .videoNote: ext = "mp4"
-        case .audio, .voice: ext = "m4a"
         default: ext = "bin"
         }
         guard let url = await MediaStore.shared.materialize(payload: payload, fallbackExtension: ext) else {
@@ -148,6 +358,7 @@ struct AetherMediaViewer: View {
             return
         }
         mediaURL = url
+        guard kind != .file else { return }
         do {
             let playable = try await AVURLAsset(url: url).load(.isPlayable)
             if !playable { loadError = "Этот формат пока не поддерживается плеером iPhone." }
@@ -155,19 +366,51 @@ struct AetherMediaViewer: View {
             loadError = "Этот формат пока не поддерживается плеером iPhone."
         }
     }
+}
 
-    private func share() {
-        if kind == .image, let image {
-            sharing = ActivityItems(values: [image.rotatedQuarterTurns(quarterTurns)])
-        } else if let mediaURL {
-            sharing = ActivityItems(values: [mediaURL])
-        }
+// MARK: - Документ
+
+/// Документ внутри галереи. Берём голый системный просмотр, а не QuickLookCover:
+/// у того своя кнопка закрытия, и она встала бы ровно под нашей. Отступ сверху —
+/// под нашу панель: QuickLook рисует от самого края и заезжал под заголовок.
+private struct DocumentPage: View {
+    let url: URL
+
+    var body: some View {
+        QuickLookView(url: url)
+            .padding(.top, 76)
+            .background(Color.black)
     }
 }
+
+private struct QuickLookView: UIViewControllerRepresentable {
+    let url: URL
+
+    func makeUIViewController(context: Context) -> QLPreviewController {
+        let controller = QLPreviewController()
+        controller.dataSource = context.coordinator
+        return controller
+    }
+
+    func updateUIViewController(_ controller: QLPreviewController, context: Context) {}
+    func makeCoordinator() -> Coordinator { Coordinator(url: url) }
+
+    final class Coordinator: NSObject, QLPreviewControllerDataSource {
+        let url: URL
+        init(url: URL) { self.url = url }
+        func numberOfPreviewItems(in controller: QLPreviewController) -> Int { 1 }
+        func previewController(_ controller: QLPreviewController,
+                               previewItemAt index: Int) -> QLPreviewItem { url as NSURL }
+    }
+}
+
+// MARK: - Картинка
 
 private struct ZoomableMediaImage: View {
     let image: UIImage
     let quarterTurns: Int
+    @Binding var zoomed: Bool
+
     @State private var scale: CGFloat = 1
     @State private var lastScale: CGFloat = 1
     @State private var offset: CGSize = .zero
@@ -185,22 +428,15 @@ private struct ZoomableMediaImage: View {
                     .onChanged { scale = min(6, max(1, lastScale * $0)) }
                     .onEnded { _ in
                         lastScale = scale
-                        if scale <= 1 { resetPosition() }
+                        if scale <= 1 { resetPosition() } else { zoomed = true }
                     }
             )
-            .simultaneousGesture(
-                DragGesture()
-                    .onChanged { value in
-                        guard scale > 1 else { return }
-                        offset = CGSize(width: lastOffset.width + value.translation.width,
-                                        height: lastOffset.height + value.translation.height)
-                    }
-                    .onEnded { _ in lastOffset = offset }
-            )
+            // Тянуть приближённое фото важнее, чем листать: пока увеличено,
+            // жест забираем у постраничной прокрутки высоким приоритетом.
+            .highPriorityGesture(panGesture, isEnabled: scale > 1)
             .onTapGesture(count: 2) {
                 withAnimation(.easeOut(duration: 0.2)) {
-                    if scale > 1 { resetPosition() }
-                    else { scale = 2.5; lastScale = 2.5 }
+                    if scale > 1 { resetPosition() } else { scale = 2.5; lastScale = 2.5; zoomed = true }
                 }
             }
             .onChange(of: quarterTurns) { _, _ in resetPosition() }
@@ -208,73 +444,154 @@ private struct ZoomableMediaImage: View {
             .ignoresSafeArea()
     }
 
+    private var panGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                guard scale > 1 else { return }
+                offset = CGSize(width: lastOffset.width + value.translation.width,
+                                height: lastOffset.height + value.translation.height)
+            }
+            .onEnded { _ in lastOffset = offset }
+    }
+
     private func resetPosition() {
         scale = 1; lastScale = 1; offset = .zero; lastOffset = .zero
+        zoomed = false
     }
 }
 
-private struct AetherPlaybackView: View {
-    let video: Bool
-    let title: String
-    @StateObject private var model: AetherPlayerModel
+// MARK: - Видео
 
-    init(url: URL, video: Bool, title: String = "") {
-        self.video = video
-        self.title = title
-        _model = StateObject(wrappedValue: AetherPlayerModel(url: url))
+/// Видео с собственными контролами. Плеер живёт вместе со страницей: уносить
+/// его в общий центр незачем — в фоне видео всё равно не играет.
+private struct VideoPage: View {
+    let url: URL
+    let active: Bool
+    var onTapBackground: () -> Void
+
+    @StateObject private var model: VideoPlayerModel
+    @State private var showControls = true
+
+    init(url: URL, active: Bool, onTapBackground: @escaping () -> Void) {
+        self.url = url
+        self.active = active
+        self.onTapBackground = onTapBackground
+        _model = StateObject(wrappedValue: VideoPlayerModel(url: url))
     }
 
     var body: some View {
         ZStack {
-            if video {
-                PlayerLayer(player: model.player).ignoresSafeArea()
-            } else {
-                LinearGradient(colors: [Color.black, Color(red: 0.08, green: 0.10, blue: 0.16)],
-                               startPoint: .top, endPoint: .bottom).ignoresSafeArea()
-                VStack(spacing: 18) {
-                    Image(systemName: "waveform.circle.fill")
-                        .font(.system(size: 132, weight: .thin))
-                        .foregroundStyle(.white.opacity(0.88), Color.accentColor.opacity(0.75))
-                    Text(title).font(.title3.weight(.semibold)).foregroundStyle(.white).lineLimit(2)
-                        .multilineTextAlignment(.center).padding(.horizontal, 32)
+            PlayerLayer(player: model.player).ignoresSafeArea()
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    withAnimation(.easeInOut(duration: 0.18)) { showControls.toggle() }
+                    onTapBackground()
                 }
-                .offset(y: -72)
-            }
-            VStack {
-                Spacer()
-                controls
+            if showControls {
+                VStack {
+                    Spacer()
+                    PlaybackControls(
+                        current: model.current, duration: model.duration, isPlaying: model.isPlaying,
+                        rateText: model.rateText,
+                        onSeek: model.seek, onSkip: model.skip,
+                        onToggle: model.toggle, onRate: model.cycleRate
+                    )
+                }
+                .transition(.opacity)
             }
         }
-        .onAppear { if video { model.play() } }
+        .onAppear { if active { model.play() } }
+        .onChange(of: active) { _, isActive in
+            // Ушли на соседнюю страницу — звук не должен идти из-за кадра.
+            if isActive { model.play() } else { model.pause() }
+        }
         .onDisappear { model.finish() }
     }
+}
 
-    private var controls: some View {
+// MARK: - Музыка и голосовые
+
+/// Аудио отдаём общему центру: закрытый просмотрщик не должен обрывать трек.
+private struct AudioPage: View {
+    let payload: Wire.Payload
+    let queue: [Wire.Payload]
+
+    @ObservedObject private var center = MediaPlaybackCenter.shared
+
+    private var isMine: Bool { center.isCurrent(payload) }
+
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color.black, Color(red: 0.08, green: 0.10, blue: 0.16)],
+                           startPoint: .top, endPoint: .bottom).ignoresSafeArea()
+            VStack(spacing: 18) {
+                Image(systemName: "waveform.circle.fill")
+                    .font(.system(size: 132, weight: .thin))
+                    .foregroundStyle(.white.opacity(0.88), Color.accentColor.opacity(0.75))
+                Text(payload.fileName ?? (payload.mediaKind == .voice ? "Голосовое сообщение" : "Аудио"))
+                    .font(.title3.weight(.semibold)).foregroundStyle(.white).lineLimit(2)
+                    .multilineTextAlignment(.center).padding(.horizontal, 32)
+                if center.preparing == MediaPlaybackCenter.identity(payload) {
+                    ProgressView().tint(.white)
+                }
+            }
+            .offset(y: -72)
+
+            VStack {
+                Spacer()
+                PlaybackControls(
+                    current: isMine ? center.current : 0,
+                    duration: isMine ? center.duration : 0,
+                    isPlaying: isMine && center.isPlaying,
+                    rateText: center.rateText,
+                    onSeek: { center.seek(to: $0) },
+                    onSkip: { center.skip($0) },
+                    onToggle: { Task { await center.play(payload, queue: queue) } },
+                    onRate: { center.cycleRate() }
+                )
+            }
+        }
+        .task(id: payload.fileId) {
+            // Открыли карточку — сразу играем, как в Telegram. Уже играющий трек
+            // не перезапускаем: play() сам это различает.
+            await center.play(payload, queue: queue)
+        }
+    }
+}
+
+// MARK: - Общие контролы
+
+private struct PlaybackControls: View {
+    let current: Double
+    let duration: Double
+    let isPlaying: Bool
+    let rateText: String
+    let onSeek: (Double) -> Void
+    let onSkip: (Double) -> Void
+    let onToggle: () -> Void
+    let onRate: () -> Void
+
+    var body: some View {
         VStack(spacing: 12) {
-            Slider(value: Binding(get: { model.current }, set: model.seek),
-                   in: 0...max(1, model.duration))
+            Slider(value: Binding(get: { current }, set: onSeek), in: 0...max(1, duration))
                 .tint(.white)
             HStack {
-                Text(Self.time(model.current))
+                Text(Self.time(current))
                 Spacer()
-                Text("−\(Self.time(max(0, model.duration - model.current)))")
+                Text("−\(Self.time(max(0, duration - current)))")
             }
             .font(.caption.monospacedDigit()).foregroundStyle(.white.opacity(0.75))
             HStack(spacing: 30) {
-                Button { model.skip(-15) } label: {
-                    Image(systemName: "gobackward.15")
-                }
-                Button { model.toggle() } label: {
-                    Image(systemName: model.isPlaying ? "pause.fill" : "play.fill")
+                Button { onSkip(-15) } label: { Image(systemName: "gobackward.15") }
+                Button(action: onToggle) {
+                    Image(systemName: isPlaying ? "pause.fill" : "play.fill")
                         .font(.system(size: 28, weight: .bold))
                         .frame(width: 58, height: 58)
                         .background(.white, in: Circle()).foregroundStyle(.black)
                 }
-                Button { model.skip(15) } label: {
-                    Image(systemName: "goforward.15")
-                }
-                Button { model.cycleRate() } label: {
-                    Text(model.rateText).font(.system(size: 13, weight: .bold)).frame(width: 38)
+                Button { onSkip(15) } label: { Image(systemName: "goforward.15") }
+                Button(action: onRate) {
+                    Text(rateText).font(.system(size: 13, weight: .bold)).frame(width: 38)
                 }
             }
             .font(.system(size: 25, weight: .semibold)).foregroundStyle(.white)
@@ -293,7 +610,7 @@ private struct AetherPlaybackView: View {
 }
 
 @MainActor
-private final class AetherPlayerModel: ObservableObject {
+private final class VideoPlayerModel: ObservableObject {
     let player: AVPlayer
     @Published var current = 0.0
     @Published var duration = 0.0
@@ -307,7 +624,7 @@ private final class AetherPlayerModel: ObservableObject {
         observer = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.2, preferredTimescale: 600), queue: .main
         ) { [weak self] time in
-            Task { @MainActor [weak self] in
+            MainActor.assumeIsolated {
                 guard let self else { return }
                 self.current = time.seconds.isFinite ? max(0, time.seconds) : 0
                 let value = self.player.currentItem?.duration.seconds ?? 0
@@ -329,17 +646,20 @@ private final class AetherPlayerModel: ObservableObject {
     }
 
     func pause() { player.pause(); isPlaying = false }
+
     func finish() {
         pause()
         guard ownsAudioSession else { return }
         ownsAudioSession = false
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
     }
+
     func toggle() { isPlaying ? pause() : play() }
 
     func seek(_ seconds: Double) {
         let clamped = min(max(0, seconds), max(duration, 0))
-        player.seek(to: CMTime(seconds: clamped, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
+        player.seek(to: CMTime(seconds: clamped, preferredTimescale: 600),
+                    toleranceBefore: .zero, toleranceAfter: .zero)
         current = clamped
     }
 
@@ -359,6 +679,7 @@ private final class AetherPlayerModel: ObservableObject {
         // Не перестраиваем voiceChat-сессию активного WebRTC-звонка.
         guard session.mode != .voiceChat && session.mode != .videoChat else { return }
         AudioPlaybackManager.shared.stop()
+        MediaPlaybackCenter.shared.pause()
         try? session.setCategory(.playback, mode: .moviePlayback)
         try? session.setActive(true)
         ownsAudioSession = true

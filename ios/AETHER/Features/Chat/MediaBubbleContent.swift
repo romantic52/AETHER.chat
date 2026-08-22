@@ -31,6 +31,7 @@ struct MediaBubbleContent: View {
 // только после явного тапа пользователя в полноэкранном просмотре.
 struct VideoBubble: View {
     let payload: Wire.Payload
+    @Environment(\.chatGallery) private var gallery
     @State private var showPlayer = false
 
     var body: some View {
@@ -57,7 +58,7 @@ struct VideoBubble: View {
         .contentShape(Rectangle())
         .onTapGesture { showPlayer = true }
         .fullScreenCover(isPresented: $showPlayer) {
-            AetherMediaViewer(payload: payload)
+            gallery.viewer(opening: payload)
         }
     }
 }
@@ -102,6 +103,7 @@ struct ImageBubble: View {
     let payload: Wire.Payload
     let outgoing: Bool
     @Environment(\.palette) private var palette
+    @Environment(\.chatGallery) private var gallery
     @State private var thumb: UIImage?
     @State private var showFull = false
 
@@ -131,8 +133,11 @@ struct ImageBubble: View {
         .contentShape(Rectangle())
         .onTapGesture { showFull = true }
         .task(id: payload.fileId) { await load() }
+        // Открываем не одну карточку, а всю ленту медиа этого чата: листать
+        // фотографии, не выходя и не находя следующую руками, — половина
+        // удобства галереи.
         .fullScreenCover(isPresented: $showFull) {
-            AetherMediaViewer(payload: payload)
+            gallery.viewer(opening: payload)
         }
     }
 
@@ -200,24 +205,42 @@ struct AudioBubble: View {
     let payload: Wire.Payload
     let outgoing: Bool
     @Environment(\.palette) private var palette
+    @Environment(\.chatGallery) private var gallery
+    @ObservedObject private var center = MediaPlaybackCenter.shared
     @State private var showPlayer = false
+
+    private var playing: Bool { center.isCurrent(payload) && center.isPlaying }
+    private var busy: Bool { center.preparing == MediaPlaybackCenter.identity(payload) }
 
     var body: some View {
         HStack(spacing: 12) {
-            Image(systemName: "music.note")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(outgoing ? .white : palette.accent)
-                .frame(width: 46, height: 46)
-                .background((outgoing ? Color.white : palette.accent).opacity(0.16), in: Circle())
+            // Кнопка играет прямо из пузыря: за музыкой не обязательно уходить
+            // на весь экран, а полноэкранный плеер открывается тапом по названию.
+            Button { Task { await center.play(payload, queue: gallery.audioQueue()) } } label: {
+                ZStack {
+                    Circle().fill((outgoing ? Color.white : palette.accent).opacity(0.16))
+                        .frame(width: 46, height: 46)
+                    if busy {
+                        ProgressView().tint(outgoing ? .white : palette.accent)
+                    } else {
+                        Image(systemName: playing ? "pause.fill" : "play.fill")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundStyle(outgoing ? .white : palette.accent)
+                    }
+                }
+            }
+            .buttonStyle(.plain)
+
             VStack(alignment: .leading, spacing: 3) {
                 Text(payload.fileName ?? "Аудио")
                     .font(.system(size: 15, weight: .semibold)).lineLimit(1)
-                Text("Музыка")
+                Text(subtitle)
                     .font(.caption).foregroundStyle(outgoing ? .white.opacity(0.78) : palette.textSecondary)
             }
             Spacer(minLength: 6)
-            Image(systemName: "play.fill")
-                .foregroundStyle(outgoing ? .white : palette.accent)
+            Image(systemName: "chevron.up")
+                .font(.system(size: 12, weight: .bold))
+                .foregroundStyle(outgoing ? .white.opacity(0.7) : palette.textSecondary)
         }
         .padding(.horizontal, 12).padding(.vertical, 10)
         .frame(minWidth: 220, maxWidth: 290, alignment: .leading)
@@ -226,6 +249,18 @@ struct AudioBubble: View {
         .fullScreenCover(isPresented: $showPlayer) { AetherMediaViewer(payload: payload) }
     }
 
+    /// Пока трек наш — показываем время вместо слова «Музыка»: так видно, что
+    /// именно он и играет, даже когда пузырь уехал вверх ленты.
+    private var subtitle: String {
+        guard center.isCurrent(payload), center.duration > 0 else { return "Музыка" }
+        return "\(Self.time(center.current)) / \(Self.time(center.duration))"
+    }
+
+    private static func time(_ value: Double) -> String {
+        guard value.isFinite else { return "0:00" }
+        let seconds = max(0, Int(value.rounded()))
+        return String(format: "%d:%02d", seconds / 60, seconds % 60)
+    }
 }
 
 // Файл-документ: превью/иконка+имя+размер; тап → скачать/расшифровать → QuickLook.
@@ -353,6 +388,8 @@ struct VoiceBubble: View {
     private func toggle() async {
         let id = playbackId
         if audio.playingId == id { audio.stop(); return }
+        // Музыка и голосовое одновременно — каша. Центр глушим до старта.
+        MediaPlaybackCenter.shared.pause()
         loading = true
         let data = await MediaStore.shared.data(payload: payload)
         loading = false
