@@ -413,10 +413,11 @@ struct ChatsListView: View {
     private var folderRow: some View {
         FolderBar(store: folders, selected: $folder,
                   counts: { f in
-                      guard let f else { return 0 }
-                      return visible.filter {
+                      // Непрочитанные, а не число чатов: на чипе полезно видеть,
+                      // где ждут ответа, а не сколько всего сложено в папку.
+                      visible.filter {
                           folders.matches($0, folder: f, isGroup: messaging.isGroup($0.peerId))
-                      }.count
+                      }.reduce(0) { $0 + Int($1.unread) }
                   },
                   onEdit: { f in
                       editingFolder = f
