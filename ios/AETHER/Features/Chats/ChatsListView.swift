@@ -38,6 +38,16 @@ struct ChatsListView: View {
     /// соседей в порядке объявления, и без явного zIndex переезжающая строка
     /// уходит ПОД них: видно чужой текст поверх её аватарки и пустоты по краям.
     @State private var movingId: String?
+    @StateObject private var folders = ChatFoldersStore.shared
+    @State private var folder: ChatFolder?
+    @State private var editingFolder: ChatFolder?
+    @State private var showFolderEditor = false
+    @State private var showFolderOrder = false
+    /// Ручной порядок чатов из режима правки. Пустой — сортируем по времени.
+    @State private var manualOrder: [String] =
+        UserDefaults.standard.stringArray(forKey: "chatManualOrder") ?? []
+    @State private var draggingId: String?
+    @State private var dragDY: CGFloat = 0
 
     private var archived: [Chat] { messaging.chats.filter { $0.archived } }
     private var visible: [Chat] {
@@ -65,12 +75,47 @@ struct ChatsListView: View {
     // открепления строка ещё лежит близко к началу массива и показывалась первой
     // среди незакреплённых, а на своё место по времени уезжала только после
     // следующего перечитывания из базы — отсюда переезд в два шага.
+    /// Чаты текущей папки. Папка «Все» — nil, тогда фильтр не применяется.
+    private func inFolder(_ chats: [Chat]) -> [Chat] {
+        guard let folder else { return chats }
+        return chats.filter { folders.matches($0, folder: folder, isGroup: messaging.isGroup($0.peerId)) }
+    }
+
     private var regular: [Chat] {
-        visible.filter { !$0.pinned }.sorted { $0.lastTs > $1.lastTs }
+        let base = visible.filter { !$0.pinned }
+        guard !manualOrder.isEmpty else { return base.sorted { $0.lastTs > $1.lastTs } }
+        // Расставленные вручную идут в своём порядке, новые чаты — по времени
+        // следом за ними.
+        var rank: [String: Int] = [:]
+        for (i, id) in manualOrder.enumerated() { rank[id] = i }
+        return base.sorted {
+            let a = rank[$0.peerId] ?? Int.max
+            let b = rank[$1.peerId] ?? Int.max
+            return a == b ? $0.lastTs > $1.lastTs : a < b
+        }
+    }
+
+    private var rowHeight: CGFloat { AetherUI.listRowHeight + 0.5 }
+
+    /// Живая перестановка: пока палец едет, строка меняется местами с соседями,
+    /// а смещение уменьшается на пройденный шаг — палец остаётся на строке.
+    private func reorder(_ id: String) {
+        let ids = ordered.map(\.peerId)
+        guard let from = ids.firstIndex(of: id) else { return }
+        let shift = Int((dragDY / rowHeight).rounded())
+        guard shift != 0 else { return }
+        let to = min(max(from + shift, 0), ids.count - 1)
+        guard to != from else { return }
+        var order = ids
+        let item = order.remove(at: from)
+        order.insert(item, at: to)
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) { manualOrder = order }
+        dragDY -= CGFloat(to - from) * rowHeight
+        UISelectionFeedbackGenerator().selectionChanged()
     }
     // Порядок целиком определяется вью: закрепы — по порядку закрепления,
     // остальные — по времени последнего сообщения.
-    private var ordered: [Chat] { pinned + regular }
+    private var ordered: [Chat] { inFolder(pinned + regular) }
 
     @ViewBuilder
     private var searchSections: some View {
@@ -177,6 +222,9 @@ struct ChatsListView: View {
                             }
                             ForEach(ordered, id: \.peerId) { chat in
                                 chatRow(chat)
+                                    .offset(y: draggingId == chat.peerId ? dragDY : 0)
+                                    .zIndex(draggingId == chat.peerId ? 3 : 0)
+                                    .gesture(editMode == .active ? reorderGesture(chat.peerId) : nil)
                                     // Зажатие — предпросмотр переписки и меню
                                     // действий. Чат при этом НЕ открывается и
                                     // прочитанным не становится.
@@ -213,6 +261,7 @@ struct ChatsListView: View {
                             customSearchBar
                         } else {
                             customHeader
+                            folderRow
                         }
                     }
                     .background {
@@ -258,6 +307,16 @@ struct ChatsListView: View {
                     .environmentObject(session)
                     .environmentObject(messaging)
             }
+            .sheet(isPresented: $showFolderOrder) {
+                FolderOrderView(store: folders)
+            }
+            .sheet(isPresented: $showFolderEditor) {
+                FolderEditor(store: folders, existing: editingFolder,
+                             allChats: visible,
+                             titleFor: { $0.title.isEmpty ? $0.peerId : $0.title })
+                    .environmentObject(session)
+                    .environmentObject(messaging)
+            }
             .sheet(isPresented: $newChatPresented) {
                 ContactsView(onPick: { peer in openedPeer = peer })
                     .environmentObject(session)
@@ -288,6 +347,9 @@ struct ChatsListView: View {
         }
     }
 
+    /// Заголовок «Чаты» с кнопками — как в эталоне. Полоса папок идёт
+    /// ОТДЕЛЬНОЙ строкой под ним, а не вместо него: я её было туда затолкал,
+    /// и заголовок пропал совсем.
     private var customHeader: some View {
         ZStack {
             Text("Чаты")
@@ -295,16 +357,38 @@ struct ChatsListView: View {
                 .foregroundStyle(palette.textPrimary)
 
             HStack {
-                Button(editMode == .active ? "Готово" : "Изм.") {
-                    withAnimation(.easeInOut(duration: 0.18)) {
-                        editMode = editMode == .active ? .inactive : .active
+                if editMode == .active {
+                    Button("Готово") {
+                        withAnimation(.easeInOut(duration: 0.18)) { editMode = .inactive }
+                    }
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundStyle(palette.textPrimary)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .liquidGlass(Capsule())
+                } else {
+                    Menu {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.18)) { editMode = .active }
+                        } label: { Label("Переставить чаты", systemImage: "arrow.up.arrow.down") }
+                        Button {
+                            editingFolder = nil
+                            showFolderEditor = true
+                        } label: { Label("Новая папка", systemImage: "folder.badge.plus") }
+                        if !folders.folders.isEmpty {
+                            Button { showFolderOrder = true } label: {
+                                Label("Порядок папок", systemImage: "list.bullet.indent")
+                            }
+                        }
+                    } label: {
+                        Text("Изм.")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(palette.textPrimary)
+                            .padding(.horizontal, 18)
+                            .padding(.vertical, 12)
+                            .liquidGlass(Capsule())
                     }
                 }
-                .font(.system(size: 16, weight: .medium))
-                .foregroundStyle(palette.textPrimary)
-                .padding(.horizontal, 18)
-                .padding(.vertical, 12)
-                .liquidGlass(Capsule())
 
                 Spacer()
 
@@ -326,7 +410,24 @@ struct ChatsListView: View {
         }
         .padding(.horizontal, 16)
         .padding(.top, 8)
-        .padding(.bottom, 12)
+        .padding(.bottom, 10)
+    }
+
+    /// Полоса папок — второй строкой под заголовком.
+    private var folderRow: some View {
+        FolderBar(store: folders, selected: $folder,
+                  counts: { f in
+                      guard let f else { return 0 }
+                      return visible.filter {
+                          folders.matches($0, folder: f, isGroup: messaging.isGroup($0.peerId))
+                      }.count
+                  },
+                  onEdit: { f in
+                      editingFolder = f
+                      showFolderEditor = true
+                  },
+                  onOrder: { showFolderOrder = true })
+            .padding(.bottom, 10)
     }
 
     private var customSearchBar: some View {
@@ -519,6 +620,23 @@ struct ChatsListView: View {
         .frame(minHeight: AetherUI.listRowHeight)
     }
 
+    private func reorderGesture(_ id: String) -> some Gesture {
+        DragGesture(minimumDistance: 6)
+            .onChanged { value in
+                if draggingId == nil {
+                    draggingId = id
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                }
+                dragDY = value.translation.height
+                reorder(id)
+            }
+            .onEnded { _ in
+                draggingId = nil
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) { dragDY = 0 }
+                UserDefaults.standard.set(manualOrder, forKey: "chatManualOrder")
+            }
+    }
+
     @ViewBuilder
     private func chatMenu(_ chat: Chat) -> some View {
         Button { Task { await messaging.setPinned(chat.peerId, !chat.pinned) } } label: {
@@ -534,6 +652,25 @@ struct ChatsListView: View {
         Button { Task { await messaging.setArchived(chat.peerId, true) } } label: {
             Label("В архив", systemImage: "archivebox.fill")
         }
+        Menu {
+            ForEach(folders.folders.filter { $0.rule == .custom }) { f in
+                Button {
+                    var copy = f
+                    if copy.peers.contains(chat.peerId) { copy.peers.removeAll { $0 == chat.peerId } }
+                    else { copy.peers.append(chat.peerId) }
+                    folders.upsert(copy)
+                } label: {
+                    Label(f.label, systemImage: f.peers.contains(chat.peerId) ? "checkmark" : "folder")
+                }
+            }
+            Button {
+                editingFolder = nil
+                showFolderEditor = true
+            } label: { Label("Новая папка", systemImage: "folder.badge.plus") }
+        } label: {
+            Label("В папку", systemImage: "folder")
+        }
+
         Button(role: .destructive) {
             Task {
                 if chat.peerId == session.myId.lowercased() { await messaging.clearSavedMessages() }
@@ -590,6 +727,7 @@ struct ChatsListView: View {
             ],
             trailing: trailing,
             fullSwipeLeading: true,
+            swipeEnabled: editMode != .active,
             onTap: { openedPeer = chat.peerId }
         ) {
             HStack(spacing: 12) {
