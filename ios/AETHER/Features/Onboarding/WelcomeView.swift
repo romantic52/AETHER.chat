@@ -12,6 +12,7 @@ struct WelcomeView: View {
     @State private var userId = ""
     @State private var password = ""
     @State private var busy = false
+    @State private var showPairing = false
     @State private var error: String?
     @State private var appeared = false
     @State private var needsTotp = false
@@ -87,6 +88,19 @@ struct WelcomeView: View {
                     .opacity(busy || userId.isEmpty || password.count < 4 ? 0.6 : 1)
                     .padding(.horizontal, 28)
 
+                    // Вход по QR: устройство ещё не вошло, поэтому точка входа
+                    // именно здесь. Пароль при этом не нужен — подтверждение с
+                    // доверенного устройства само по себе является доказательством.
+                    Button {
+                        showPairing = true
+                    } label: {
+                        Label("Войти по QR с другого устройства", systemImage: "qrcode")
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundStyle(palette.textSecondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.top, 2)
+
                     Spacer(minLength: 8)
                 }
                 .frame(maxWidth: .infinity)
@@ -96,6 +110,9 @@ struct WelcomeView: View {
         }
         .onAppear {
             withAnimation(.easeOut(duration: 0.45)) { appeared = true }
+        }
+        .sheet(isPresented: $showPairing) {
+            PairShowQRView().environmentObject(session)
         }
         #if DEBUG
         .task {

@@ -7,6 +7,7 @@ struct SettingsView: View {
     /// Пуши ведём состоянием, а не NavigationLink: корень вкладки объявляет
     /// видимость дока и должен знать, открыт ли поверх него экран.
     @State private var showProfileEditor = false
+    @State private var showPairScanner = false
     @State private var showSecurity = false
     @Environment(\.palette) private var palette
 
@@ -39,6 +40,9 @@ struct SettingsView: View {
         // пуш с возвратом — отсюда «бар появляется после выхода из чата».
         // Строго ДО navigationDestination: у запушенного экрана своё
         // объявление (.hidden), и оно должно оставаться главнее.
+        .sheet(isPresented: $showPairScanner) {
+            PairScanView().environmentObject(session)
+        }
         .toolbar(.hidden, for: .navigationBar)
         .navigationDestination(isPresented: $showProfileEditor) { ProfileEditorView() }
         .navigationDestination(isPresented: $showSecurity) { SecurityView() }
@@ -645,6 +649,10 @@ struct SettingsView: View {
                         }
                     }
                 }
+            }
+
+            Button { showPairScanner = true } label: {
+                SettingsLabel("Привязать устройство", icon: "qrcode.viewfinder", color: .teal)
             }
 
             Button(role: .destructive) {
