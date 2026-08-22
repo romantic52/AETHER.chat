@@ -50,7 +50,10 @@ struct HomeView: View {
             #endif
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active, session.phase == .ready { messaging.start() }
+            if phase == .active, session.phase == .ready {
+                messaging.start()
+                Task { await ScheduledStore.shared.flushDue(using: messaging) }
+            }
         }
         // Экран смонтирован ещё на фазе загрузки (чтобы бар был на месте с первого
         // кадра), поэтому обмен запускаем не по появлению, а по готовности сессии.
@@ -70,6 +73,9 @@ struct HomeView: View {
         AppRefresh.shared.poll = { [weak messaging] in await messaging?.pollInbox() }
         Task { await MediaStore.shared.bind(core: session.core) }
         if scenePhase == .active { messaging.start() }
+        // Отложенные сообщения: отправляем всё, чей срок наступил, пока нас не
+        // было. Гарантировать минуту iOS не даёт — см. ScheduledMessages.
+        Task { await ScheduledStore.shared.flushDue(using: messaging) }
     }
 
     @ViewBuilder
