@@ -193,6 +193,18 @@ final class AppearanceSettings: ObservableObject {
     @Published var glassTint: Double { didSet { defaults.set(glassTint, forKey: "glassTint") } }
     @Published var glassInteractive: Bool { didSet { defaults.set(glassInteractive, forKey: "glassInteractive") } }
     @Published var glassOnInput: Bool { didSet { defaults.set(glassOnInput, forKey: "glassOnInput") } }
+
+    // MARK: - Экспериментальное: тайминги свайпа по строке списка
+    // Длительность в секундах и «раскачка» вместо жёсткости с затуханием:
+    // так значения читаются напрямую и сверяются с замером по видео.
+    // Замер эталона (Telegram): закрытие ~0.15–0.2с, открытие ~0.3с.
+    @Published var swipeOpenDuration: Double { didSet { defaults.set(swipeOpenDuration, forKey: "swipeOpenDuration") } }
+    @Published var swipeOpenBounce: Double { didSet { defaults.set(swipeOpenBounce, forKey: "swipeOpenBounce") } }
+    @Published var swipeCloseDuration: Double { didSet { defaults.set(swipeCloseDuration, forKey: "swipeCloseDuration") } }
+    @Published var swipeCloseBounce: Double { didSet { defaults.set(swipeCloseBounce, forKey: "swipeCloseBounce") } }
+    @Published var swipeStretch: Double { didSet { defaults.set(swipeStretch, forKey: "swipeStretch") } }
+    @Published var swipeResistance: Double { didSet { defaults.set(swipeResistance, forKey: "swipeResistance") } }
+    @Published var swipeVelocityEnabled: Bool { didSet { defaults.set(swipeVelocityEnabled, forKey: "swipeVelocityEnabled") } }
     @Published var quickReaction: String { didSet { defaults.set(quickReaction, forKey: "quickReaction") } }
     @Published var switchTabOnRelease: Bool { didSet { defaults.set(switchTabOnRelease, forKey: "switchTabOnRelease") } }
     @Published var bubbleRadius: Double { didSet { defaults.set(bubbleRadius, forKey: "bubbleRadius") } }
@@ -214,6 +226,13 @@ final class AppearanceSettings: ObservableObject {
         glassTint = defaults.object(forKey: "glassTint") as? Double ?? 0.12
         glassInteractive = defaults.object(forKey: "glassInteractive") as? Bool ?? true
         glassOnInput = defaults.object(forKey: "glassOnInput") as? Bool ?? true
+        swipeOpenDuration = defaults.object(forKey: "swipeOpenDuration") as? Double ?? 0.3
+        swipeOpenBounce = defaults.object(forKey: "swipeOpenBounce") as? Double ?? 0.15
+        swipeCloseDuration = defaults.object(forKey: "swipeCloseDuration") as? Double ?? 0.18
+        swipeCloseBounce = defaults.object(forKey: "swipeCloseBounce") as? Double ?? 0.0
+        swipeStretch = defaults.object(forKey: "swipeStretch") as? Double ?? 100
+        swipeResistance = defaults.object(forKey: "swipeResistance") as? Double ?? 0.75
+        swipeVelocityEnabled = defaults.object(forKey: "swipeVelocityEnabled") as? Bool ?? true
         quickReaction = defaults.string(forKey: "quickReaction") ?? "❤️"
         switchTabOnRelease = defaults.object(forKey: "switchTabOnRelease") as? Bool ?? false
         bubbleRadius = defaults.object(forKey: "bubbleRadius") as? Double ?? 17

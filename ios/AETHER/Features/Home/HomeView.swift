@@ -15,20 +15,20 @@ struct HomeView: View {
     }
 
     var body: some View {
-        // Нативный TabView вместо самодельного бара — ровно как в PyLyn, где
-        // стоит стоковый TabView с .tabItem и ни строчки кастома: именно поэтому
-        // док там выглядит и ведёт себя системно, это и ЕСТЬ системный бар.
+        // TabView ВНУТРИ NavigationStack, а не наоборот.
         //
-        // Чем заплачено, сознательно:
-        //  • пропал жест перетягивания пальцем по бару — в нативном баре его нет;
-        //  • единый NavigationStack распался на четыре, по одному на вкладку
-        //    (так же в PyLyn). Пуш чата теперь прячет бар средствами системы.
-        //  • вкладки больше не живут одновременно: TabView создаёт их лениво и
-        //    хранит состояние посещённых. Настройка «анимация смены вкладок»
-        //    больше ни на что не влияет.
-        // Взамен: настоящее Liquid Glass, схлопывание бара при скролле и
-        // корректный морфинг подложки — всё то, что руками не воспроизводится.
-        tabs
+        // Так же был устроен самодельный бар: он лежал в общем стеке, поэтому
+        // пуш накрывал экран вместе с ним, а возврат открывал их одним
+        // движением. Обратная схема (стек внутри каждой вкладки) вынуждает
+        // прятать док через .toolbar(.hidden, for: .tabBar), а этот механизм
+        // не умеет вести бар внутри анимации: замер по видео показал, что
+        // контент встаёт, и лишь СЛЕДУЮЩИМ кадром док включается на месте.
+        // В UIKit за плавность отвечает hidesBottomBarWhenPushed, в SwiftUI
+        // аналога нет — зато есть эта расстановка, дающая тот же результат.
+        NavigationStack {
+            tabView
+                .toolbar(.hidden, for: .navigationBar)
+        }
         .environmentObject(messaging)
         .environmentObject(chrome)
         .overlay { CallOverlay(calls: messaging.calls) }
@@ -39,10 +39,7 @@ struct HomeView: View {
                            value: messaging.groupCalls.pendingInvite)
         }
         .onAppear {
-            messaging.rebind(session: session)
-            AppRefresh.shared.poll = { [weak messaging] in await messaging?.pollInbox() }
-            Task { await MediaStore.shared.bind(core: session.core) }
-            if scenePhase == .active { messaging.start() }
+            activateIfReady()
             #if DEBUG
             switch ProcessInfo.processInfo.environment["AETHER_TAB"] {
             case "settings": chrome.tab = .settings
@@ -53,8 +50,11 @@ struct HomeView: View {
             #endif
         }
         .onChange(of: scenePhase) { _, phase in
-            if phase == .active { messaging.start() }
+            if phase == .active, session.phase == .ready { messaging.start() }
         }
+        // Экран смонтирован ещё на фазе загрузки (чтобы бар был на месте с первого
+        // кадра), поэтому обмен запускаем не по появлению, а по готовности сессии.
+        .onChange(of: session.phase) { _, _ in activateIfReady() }
         // Deep link из островка/уведомления: переключаемся на вкладку чатов,
         // сам чат откроет ChatsListView (подписан на то же уведомление).
         .onReceive(NotificationCenter.default.publisher(for: NotificationsManager.openChatNotification)) { _ in
@@ -63,36 +63,66 @@ struct HomeView: View {
         .onDisappear { messaging.stop() }
     }
 
-    // Схлопывание бара при скролле вниз — iOS 26+, на 17–25 просто нет.
+    /// Привязать движок к сессии и запустить обмен — только когда сессия готова.
+    private func activateIfReady() {
+        guard session.phase == .ready else { return }
+        messaging.rebind(session: session)
+        AppRefresh.shared.poll = { [weak messaging] in await messaging?.pollInbox() }
+        Task { await MediaStore.shared.bind(core: session.core) }
+        if scenePhase == .active { messaging.start() }
+    }
+
     @ViewBuilder
-    private var tabs: some View {
-        if #available(iOS 26.0, *) {
-            tabView.tabBarMinimizeBehavior(.onScrollDown)
+    private var tabView: some View {
+        if #available(iOS 18.0, *) {
+            TabView(selection: $chrome.tab) {
+                Tab("Контакты", systemImage: "person.crop.circle", value: AppTab.contacts) {
+                    ContactsView()
+                }
+
+                Tab("Звонки", systemImage: "phone.fill", value: AppTab.calls) {
+                    CallsView()
+                }
+
+                Tab("Чаты", systemImage: "bubble.left.and.bubble.right.fill", value: AppTab.chats) {
+                    ChatsListView()
+                }
+                .badge(Int(messaging.totalUnread))
+
+                Tab("Настройки", systemImage: "gearshape.fill", value: AppTab.settings) {
+                    SettingsView()
+                }
+
+                Tab(value: AppTab.search, role: .search) {
+                    ChatsListView(searchMode: true)
+                }
+            }
         } else {
-            tabView
+            legacyTabView
         }
     }
 
-    private var tabView: some View {
+    private var legacyTabView: some View {
         TabView(selection: $chrome.tab) {
-            NavigationStack { ContactsView() }
+            ContactsView()
                 .tabItem { Label("Контакты", systemImage: "person.crop.circle") }
                 .tag(AppTab.contacts)
 
-            NavigationStack { CallsView() }
+            CallsView()
                 .tabItem { Label("Звонки", systemImage: "phone.fill") }
                 .tag(AppTab.calls)
 
-            NavigationStack { ChatsListView() }
+            ChatsListView()
                 .tabItem { Label("Чаты", systemImage: "bubble.left.and.bubble.right.fill") }
                 .badge(Int(messaging.totalUnread))
                 .tag(AppTab.chats)
 
-            NavigationStack { SettingsView() }
+            SettingsView()
                 .tabItem { Label("Настройки", systemImage: "gearshape.fill") }
                 .tag(AppTab.settings)
         }
     }
+
 }
 
 // Групповой звонок поверх всего (наблюдаем менеджер напрямую, как CallOverlay).
@@ -146,7 +176,7 @@ struct TabBar: View {
 
     private var activePosition: CGFloat { livePosition ?? CGFloat(tabs.firstIndex(of: tab) ?? 0) }
 
-    var body: some View {
+    private var capsule: some View {
         // spacing управляет тем, с какого расстояния контейнер сливает стёкла.
         // При 10 подложка растягивалась в движении на +38pt против +12pt у
         // системного TabView — «жвачка». 4 даёт деформацию близкую к нативной.
@@ -162,10 +192,12 @@ struct TabBar: View {
                     .onChange(of: geo.size.width) { _, w in barWidth = w }
                 }
                 .frame(height: barHeight)
-                .clipShape(Capsule())
+                // Без clipShape: форму задаёт стеклянная капсула, которая шире
+                // полосы вкладок на 8pt с каждой стороны. Своя обрезка полосы
+                // срезала крайнюю подпись («Настройки») о скруглённый угол.
                 .padding(.horizontal, 8)
                 .padding(.vertical, 7)
-                .liquidGlass(Capsule(), interactive: false, glassID: "bar", namespace: glassNS)
+                .liquidGlass(Capsule(), interactive: false, neutral: true, glassID: "bar", namespace: glassNS)
                 // compositingGroup() убран намеренно: он схлопывал бар в отдельный
                 // офскрин-слой и не давал контейнеру слить его с индикатором.
                 // Если вернутся «призраки» при смене вкладок — вернуть его сюда.
@@ -204,9 +236,36 @@ struct TabBar: View {
         // в прозрачной зоне вокруг капсулы (16pt по бокам и снизу).
         .contentShape(Rectangle())
         .gesture(dragGesture)
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            capsule
+            searchButton
+        }
         // Системный док отстоит от краёв на 21pt со всех сторон (замерено).
         .padding(.horizontal, 21)
         .padding(.bottom, 21)
+    }
+
+    /// Поиск отдельным кружком справа от капсулы — как в Telegram. В нативном
+    /// TabView это давала роль .search; здесь рисуем сами, зато бар остаётся
+    /// частью экрана. Высота равна внешней высоте капсулы: barHeight + 7pt
+    /// padding сверху и снизу.
+    private var searchButton: some View {
+        Button {
+            UISelectionFeedbackGenerator().selectionChanged()
+            withAnimation(.snappy(duration: 0.25, extraBounce: 0.02)) { tab = .search }
+        } label: {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(tab == .search ? palette.accent : palette.textPrimary)
+                .frame(width: barHeight + 14, height: barHeight + 14)
+                .liquidGlass(Circle(), interactive: true, neutral: true)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.squish)
+        .accessibilityLabel("Поиск")
     }
 
     private var dragGesture: some Gesture {
@@ -270,12 +329,12 @@ struct TabBar: View {
         return VStack(spacing: 3) {
             ZStack(alignment: .topTrailing) {
                 Image(systemName: icon(for: t))
-                    // 26 вместо 22: в системном доке иконка крупнее и плотнее
-                    // сидит к подписи, у нас она терялась в пустоте.
-                    .font(.system(size: 26, weight: selected ? .semibold : .regular))
-                    .frame(height: 29)
-                    .scaleEffect(selected ? 1.1 : 1.0)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.5), value: selected)
+                    // Замерено по системному доку (снимок эталонного стенда):
+                    // глиф ~24pt, без укрупнения и подпрыгивания на выбранной —
+                    // система меняет только цвет. 26pt + scale 1.1 выдавали
+                    // самоделку и выталкивали подпись за край капсулы.
+                    .font(.system(size: 23, weight: .regular))
+                    .frame(height: 27)
                 if t == .chats && unread > 0 {
                     Text(unread > 99 ? "99+" : "\(unread)")
                         .font(.system(size: 11, weight: .bold))
@@ -289,7 +348,13 @@ struct TabBar: View {
                         .fixedSize()
                 }
             }
-            Text(title(for: t)).font(.system(size: 11, weight: selected ? .semibold : .regular))
+            // 10pt — как в системном баре. На 11pt «Настройки» упиралось в
+            // скруглённый край капсулы и срезалось.
+            Text(title(for: t))
+                .font(.system(size: 10, weight: selected ? .semibold : .medium))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .padding(.horizontal, 2)
         }
         // Неактивные вкладки — textPrimary, а не textSecondary. В системном доке
         // невыбранные иконки и подписи белые и читаются чётко; тусклый серо-синий
@@ -317,6 +382,7 @@ struct TabBar: View {
         case .calls: return "phone.fill"
         case .chats: return "bubble.left.and.bubble.right.fill"
         case .settings: return "gearshape.fill"
+        case .search: return "magnifyingglass"
         }
     }
 
@@ -326,6 +392,7 @@ struct TabBar: View {
         case .calls: return "Звонки"
         case .chats: return "Чаты"
         case .settings: return "Настройки"
+        case .search: return "Поиск"
         }
     }
 }
@@ -354,7 +421,9 @@ private struct NativeHeaderChrome: ViewModifier {
 
 struct CallsView: View {
     @EnvironmentObject private var messaging: Messaging
-    var body: some View { CallsContent(call: messaging.calls, connected: messaging.realtimeConnected) }
+    var body: some View {
+        CallsContent(call: messaging.calls, connected: messaging.realtimeConnected)
+    }
 }
 
 private struct CallsContent: View {

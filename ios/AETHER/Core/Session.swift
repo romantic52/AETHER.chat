@@ -13,6 +13,11 @@ final class Session: ObservableObject {
 
     @Published var phase: Phase = .loading
     @Published var myId: String = ""
+    /// Растёт только при СМЕНЕ аккаунта. Домашний экран пересоздаётся по нему,
+    /// а не по myId: myId на старте меняется с пустого на настоящий, и HomeView
+    /// пересоздавался в момент показа — системный таб-бар при этом прикреплялся
+    /// заново и приезжал позже экрана.
+    @Published private(set) var accountGeneration = 0
     @Published var myUsername: String = ""
     @Published var myDisplayName: String = ""
     @Published var myAvatarFileId: String = ""
@@ -109,6 +114,7 @@ final class Session: ObservableObject {
             Keychain.remove(k)
         }
         authToken = ""
+        accountGeneration += 1
         myId = ""; myUsername = ""; myDisplayName = ""; myAvatarFileId = ""
         if let next = accounts.first {
             await switchAccount(to: next)
@@ -160,6 +166,7 @@ final class Session: ObservableObject {
               let priv = Keychain.string(for: "acct_\(target)_priv"),
               !token.isEmpty else { return }
         heartbeatTask?.cancel()
+        accountGeneration += 1
         phase = .loading
         myUsername = ""; myDisplayName = ""; myAvatarFileId = ""
         // Активные (legacy) ключи — на новый аккаунт; per-account креды не трогаем.

@@ -13,6 +13,9 @@ struct Avatar: View {
     // Локальная подмена фото (см. AvatarStore) — приоритетнее реального avatarURL:
     // это осознанный локальный выбор пользователя ("моё фото для этого контакта").
     @ObservedObject private var avatarStore = AvatarStore.shared
+    /// Картинка держится в самой строке: обновляется ОДНА строка, а не весь
+    /// список, как было при общем счётчике перерисовок.
+    @State private var remote: UIImage?
 
     private var initials: String {
         let base = name.isEmpty ? id : name
@@ -40,7 +43,7 @@ struct Avatar: View {
             Group {
                 if let overrideImage = avatarStore.image(for: id) {
                     Image(uiImage: overrideImage).resizable().scaledToFill()
-                } else if let url = avatarURL, let remote = avatarStore.remoteImage(for: url) {
+                } else if let remote {
                     // Свой кеш (память+диск) вместо AsyncImage: сервер без
                     // cache-заголовков, и AsyncImage качал одно и то же каждый показ.
                     Image(uiImage: remote).resizable().scaledToFill()
@@ -58,6 +61,13 @@ struct Avatar: View {
                     .overlay(Circle().stroke(palette.background, lineWidth: size * 0.05))
             }
         }
+        // Память — сразу и синхронно, чтобы при прокрутке ничего не мигало.
+        // Диск и сеть — фоном, и только для этой строки.
+        .task(id: avatarURL) {
+            guard let url = avatarURL else { remote = nil; return }
+            if let cached = avatarStore.cachedRemote(for: url) { remote = cached; return }
+            remote = await avatarStore.remoteImageAsync(for: url)
+        }
     }
 
     private var placeholder: some View {
@@ -69,3 +79,5 @@ struct Avatar: View {
         }
     }
 }
+
+

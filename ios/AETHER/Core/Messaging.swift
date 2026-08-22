@@ -607,28 +607,47 @@ final class Messaging: ObservableObject {
 
     /// Порядок закрепов: новый закреп всегда встаёт ПЕРВЫМ (выше предыдущих).
     /// Хранится локально — сервер про закрепы не знает.
-    @Published private(set) var pinOrder: [String] =
+    /// Порядок закрепов. НАМЕРЕННО не @Published: если публиковать и его, и
+    /// chats, SwiftUI получает ДВА обновления подряд, и переезд строки
+    /// распадается на два шага — она прыгает к началу списка и лишь потом едет
+    /// на своё место. Читается только из pinRank во время отрисовки, а
+    /// перерисовку вызывает присваивание chats.
+    private(set) var pinOrder: [String] =
         (UserDefaults.standard.array(forKey: "pinOrder") as? [String]) ?? []
 
     func setPinned(_ peer: String, _ v: Bool) async {
         let id = peer.lowercased()
-        if v {
-            guard pinOrder.count < Self.maxPins || pinOrder.contains(id) else { return }
-            pinOrder.removeAll { $0 == id }
-            pinOrder.insert(id, at: 0)
-        } else {
-            pinOrder.removeAll { $0 == id }
-        }
+        if v { guard pinOrder.count < Self.maxPins || pinOrder.contains(id) else { return } }
+        let idx = chats.firstIndex(where: { $0.peerId == id })
+
+        pinOrder.removeAll { $0 == id }
+        if v { pinOrder.insert(id, at: 0) }
         UserDefaults.standard.set(pinOrder, forKey: "pinOrder")
-        // Оптимистично и синхронно: одна анимация переезда строки прямо сейчас,
-        // без задержки на диск. SwiftUI видит ту же строку на новом месте.
-        if let idx = chats.firstIndex(where: { $0.peerId == id }) {
-            withAnimation(.spring(response: 0.42, dampingFraction: 0.8)) {
-                chats[idx].pinned = v
+
+        // Единственное published-изменение: новый порядок и новый флаг видны
+        // SwiftUI одновременно, поэтому строка едет на место одним движением.
+        if let idx {
+            var updated = chats
+            updated[idx].pinned = v
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.9)) {
+                chats = updated
             }
         }
         // Диск — в фоне, без повторной анимации (порядок в памяти уже верный).
         await core.setPinnedFlag(id, v)
+    }
+
+    /// Отметить чат прочитанным. Второе действие левого свайпа — как в Telegram,
+    /// где слева стоят «Не прочитан» и «Закрепить».
+    func markRead(_ peer: String) async {
+        let id = peer.lowercased()
+        await core.clearUnread(id)
+        if let idx = chats.firstIndex(where: { $0.peerId == id }) {
+            var updated = chats
+            updated[idx].unread = 0
+            chats = updated
+        }
+        totalUnread = await core.totalUnread()
     }
 
     /// Позиция чата в списке закрепов (для сортировки; незнакомые — в конец).
