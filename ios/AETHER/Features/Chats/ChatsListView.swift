@@ -301,6 +301,10 @@ struct ChatsListView: View {
                     }
                 }
                 .scrollDismissesKeyboard(.interactively)
+                // Свайп по СЕРЕДИНЕ списка листает папки. Границы берём из
+                // SwipeTuning — те же, по которым строка уступает середину,
+                // иначе между зонами осталась бы мёртвая полоса.
+                .simultaneousGesture(listFolderSwipe)
                 .overlay { if messaging.chats.isEmpty && query.isEmpty { emptyState } }
                 .safeAreaInset(edge: .top) {
                     VStack(spacing: 0) {
@@ -488,6 +492,17 @@ struct ChatsListView: View {
     /// Порядок папок в переключении: «Все» первая, дальше пользовательские —
     /// ровно как на полосе, иначе свайп уводил бы не туда, куда показывает глаз.
     private var folderCarousel: [ChatFolder?] { [nil] + folders.folders.map { Optional($0) } }
+
+    private var listFolderSwipe: some Gesture {
+        DragGesture(minimumDistance: 24, coordinateSpace: .global)
+            .onEnded { value in
+                guard !folders.folders.isEmpty, editMode != .active else { return }
+                guard SwipeTuning.inFolderZone(value.startLocation.x,
+                                               width: UIScreen.main.bounds.width) else { return }
+                guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
+                switchFolder(by: value.translation.width < 0 ? 1 : -1)
+            }
+    }
 
     private var folderSwipe: some Gesture {
         DragGesture(minimumDistance: 24)
@@ -831,6 +846,9 @@ struct ChatsListView: View {
             trailing: trailing,
             fullSwipeLeading: true,
             swipeEnabled: editMode != .active,
+            // Середину строки отдаём папкам только если они есть: иначе жест
+            // упирался бы в пустоту, а треть строки перестала бы свайпаться.
+            reserveMiddle: !folders.folders.isEmpty,
             onTap: { openedPeer = chat.peerId }
         ) {
             HStack(spacing: 12) {
