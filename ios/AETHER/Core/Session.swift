@@ -18,6 +18,8 @@ final class Session: ObservableObject {
     /// пересоздавался в момент показа — системный таб-бар при этом прикреплялся
     /// заново и приезжал позже экрана.
     @Published private(set) var accountGeneration = 0
+    /// Числовой номер аккаунта: логин можно сменить, номер остаётся навсегда.
+    @Published private(set) var myAccountNo: Int64?
     @Published var myUsername: String = ""
     @Published var myDisplayName: String = ""
     @Published var myAvatarFileId: String = ""
@@ -219,6 +221,7 @@ final class Session: ObservableObject {
             myAvatarFileId = p.avatarFileId ?? ""
         }
         if let status = await ProfileHTTP.statusEmoji(myId) { myStatusEmoji = status }
+        myAccountNo = await ProfileHTTP.accountNo(myId)
     }
 
     /// Эмодзи-статус рядом с ником; пустая строка — снять.

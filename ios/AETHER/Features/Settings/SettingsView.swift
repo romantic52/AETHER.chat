@@ -662,6 +662,18 @@ struct SettingsView: View {
             }
         } header: {
             Text(session.accounts.count > 1 ? "Аккаунты" : "Аккаунт")
+        } footer: {
+            if let no = session.myAccountNo {
+                // Номер можно скопировать: логин пользователь вправе сменить,
+                // а по номеру его всегда опознают — например, в поддержке.
+                Button {
+                    UIPasteboard.general.string = String(no)
+                } label: {
+                    Text("ID \(String(no)) · нажмите, чтобы скопировать")
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(palette.textSecondary)
+            }
         }
         .listRowBackground(palette.surface)
     }

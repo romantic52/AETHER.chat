@@ -351,6 +351,19 @@ def init_db() -> None:
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN status_emoji TEXT")
 
+        # Числовой идентификатор аккаунта. Логин (@username) пользователь может
+        # захотеть сменить, а этот номер остаётся с аккаунтом навсегда — по нему
+        # удобно опознавать себя в поддержке и различать тёзок.
+        cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
+                       WHERE table_schema = current_schema() AND table_name='users' AND column_name='account_no')""")
+        if not cur.fetchone()[0]:
+            cur.execute("CREATE SEQUENCE IF NOT EXISTS account_no_seq START 100000")
+            cur.execute("ALTER TABLE users ADD COLUMN account_no BIGINT")
+            # Уже существующим аккаунтам номера раздаются в порядке регистрации.
+            cur.execute("UPDATE users SET account_no = nextval('account_no_seq') WHERE account_no IS NULL")
+            cur.execute("ALTER TABLE users ALTER COLUMN account_no SET DEFAULT nextval('account_no_seq')")
+            cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS users_account_no_idx ON users(account_no)")
+
         # Olm identity-ключ (curve25519) для Double Ratchet — публичный, отдаётся в prekey-bundle.
         cur.execute("""SELECT EXISTS (SELECT 1 FROM information_schema.columns
                        WHERE table_schema = current_schema() AND table_name='users' AND column_name='olm_identity_key')""")
@@ -1647,7 +1660,7 @@ def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_c
 def get_user_profile(user_id: str, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
-            "SELECT user_id, public_key_b64, username, display_name, avatar_file_id, bio, status_emoji, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
+            "SELECT user_id, account_no, public_key_b64, username, display_name, avatar_file_id, bio, status_emoji, last_active FROM users WHERE LOWER(user_id) = LOWER(%s)", (user_id,)
         )
         row = cur.fetchone()
     if not row:
@@ -1688,7 +1701,7 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         if handle_only:
             cur.execute(
-                """SELECT user_id, username, display_name, avatar_file_id, status_emoji FROM users
+                """SELECT user_id, username, display_name, avatar_file_id, status_emoji, account_no FROM users
                    WHERE LOWER(COALESCE(username, '')) LIKE LOWER(%s)
                    ORDER BY (LOWER(COALESCE(username, '')) = %s) DESC,
                             (LOWER(COALESCE(username, '')) LIKE LOWER(%s)) DESC,
@@ -1697,18 +1710,43 @@ def search_users(q: str, current_user: str = Depends(get_current_user)) -> dict:
                 (search_term, exact, prefix_term)
             )
         else:
-            cur.execute(
-                """SELECT user_id, username, display_name, avatar_file_id, status_emoji FROM users
-                   WHERE LOWER(user_id) LIKE LOWER(%s)
-                      OR LOWER(COALESCE(username, '')) LIKE LOWER(%s)
-                      OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)
-                   ORDER BY (LOWER(COALESCE(username, '')) = %s OR LOWER(user_id) = %s) DESC,
-                            (LOWER(COALESCE(username, '')) LIKE LOWER(%s)
-                             OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)) DESC,
-                            user_id ASC
-                   LIMIT 20""",
-                (search_term, search_term, search_term, exact, exact, prefix_term, prefix_term)
-            )
+            # Номер аккаунта: запрос из одних цифр ищет ещё и по нему. Номер —
+            # единственный неизменяемый идентификатор человека: @username он
+            # вправе сменить в любой момент, а номер выдан навсегда.
+            #
+            # Ветвим в Python, а не флагом-параметром внутри SQL: так база не
+            # выводит тип условия из плейсхолдера, и для обычных запросов нет
+            # лишнего CAST по всей таблице. Сравнение обёрнуто в IS TRUE —
+            # иначе NULL-номер в ORDER BY ... DESC уехал бы наверх выдачи.
+            if q.isdigit():
+                cur.execute(
+                    """SELECT user_id, username, display_name, avatar_file_id, status_emoji, account_no FROM users
+                       WHERE LOWER(user_id) LIKE LOWER(%s)
+                          OR LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                          OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)
+                          OR CAST(account_no AS TEXT) LIKE %s
+                       ORDER BY ((CAST(account_no AS TEXT) = %s) IS TRUE) DESC,
+                                (LOWER(COALESCE(username, '')) = %s OR LOWER(user_id) = %s) DESC,
+                                (LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                                 OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)) DESC,
+                                user_id ASC
+                       LIMIT 20""",
+                    (search_term, search_term, search_term, prefix_term,
+                     exact, exact, exact, prefix_term, prefix_term)
+                )
+            else:
+                cur.execute(
+                    """SELECT user_id, username, display_name, avatar_file_id, status_emoji, account_no FROM users
+                       WHERE LOWER(user_id) LIKE LOWER(%s)
+                          OR LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                          OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)
+                       ORDER BY (LOWER(COALESCE(username, '')) = %s OR LOWER(user_id) = %s) DESC,
+                                (LOWER(COALESCE(username, '')) LIKE LOWER(%s)
+                                 OR LOWER(COALESCE(display_name, '')) LIKE LOWER(%s)) DESC,
+                                user_id ASC
+                       LIMIT 20""",
+                    (search_term, search_term, search_term, exact, exact, prefix_term, prefix_term)
+                )
         rows = cur.fetchall()
         
         # Группы/каналы: по имени и id (поиск по @handle — только пользователи)
@@ -2146,6 +2184,9 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     raise HTTPException(403, "Only admins can post to a channel")
                     
             # (#A2) ON CONFLICT: повтор с тем же client_id — не ошибка, а дубликат.
+            # created_at запоминаем: то же значение уходит в WS-событие, чтобы
+            # получатель сдвигал курсор инбокса ровно по нему.
+            created_at = _utc_now()
             cur.execute(
                 """INSERT INTO messages (id, sender_id, recipient_id, envelope_json, created_at, recipient_device_id)
                    VALUES (%s, %s, %s, %s, %s, %s)
@@ -2155,7 +2196,7 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     body.sender_id.lower(),
                     body.recipient_id.lower(),
                     json.dumps(body.envelope),
-                    _utc_now(),
+                    created_at,
                     body.target_device_id if is_user else None,
                 ),
             )
@@ -2177,11 +2218,21 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
 
     # Trigger push notification via WebSocket
     try:
+        # Конверт едет прямо в событии: получателю больше не нужен отдельный
+        # заход за инбоксом, чтобы показать сообщение — это целый сетевой круг,
+        # и на мобильной сети именно он был основной задержкой ответа.
+        # Клиент, который поле не понимает, просто сходит за инбоксом, как раньше.
         push_event = {
             "type": "new_message",
             "message_id": msg_id,
             "sender_id": body.sender_id.lower(),
-            "recipient_id": body.recipient_id.lower()
+            "recipient_id": body.recipient_id.lower(),
+            "envelope": json.dumps(body.envelope),
+            "created_at": created_at,
+            # Личка с несколькими устройствами: копия адресована одному из них,
+            # у остальных ключа от неё нет. Событие уходит всем соединениям
+            # аккаунта, поэтому лишние отсеиваются на клиенте по этому полю.
+            "target_device_id": body.target_device_id if is_user else None,
         }
         
         if is_group:

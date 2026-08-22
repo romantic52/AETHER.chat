@@ -8,10 +8,17 @@ struct FoundUser: Identifiable, Equatable {
     let username: String
     let displayName: String
     let avatarFileId: String
+    /// Неизменяемый номер аккаунта. Показываем его вместо сырого
+    /// идентификатора, когда человек не завёл @username.
+    let accountNo: Int64?
     var id: String { userId }
 
     var title: String { displayName.isEmpty ? (username.isEmpty ? userId : username) : displayName }
-    var subtitle: String { username.isEmpty ? "@\(userId)" : "@\(username)" }
+    var subtitle: String {
+        if !username.isEmpty { return "@\(username)" }
+        if let accountNo { return "ID \(accountNo)" }
+        return "@\(userId)"
+    }
 }
 
 struct FoundGroup: Identifiable, Equatable {
@@ -104,6 +111,20 @@ enum ProfileHTTP {
         return obj["status_emoji"] as? String ?? ""
     }
 
+    /// Числовой номер аккаунта. Берём напрямую с сервера, а не через ядро:
+    /// добавлять поле в Rust значило бы перегенерировать привязки и для
+    /// Android, а номер нужен только для показа.
+    static func accountNo(_ userId: String) async -> Int64? {
+        guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
+              let url = URL(string: "\(CoreClient.baseURL)/users/\(userId)/profile") else { return nil }
+        var req = URLRequest(url: url)
+        req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
+        guard let (data, resp) = try? await URLSession.shared.data(for: req),
+              (resp as? HTTPURLResponse)?.statusCode == 200,
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return (obj["account_no"] as? NSNumber)?.int64Value
+    }
+
     /// Пустая строка — снять статус.
     @discardableResult
     static func setStatusEmoji(_ emoji: String) async -> Bool {
@@ -143,7 +164,8 @@ enum GlobalSearch {
                 userId: id.lowercased(),
                 username: (u["username"] as? String) ?? "",
                 displayName: (u["display_name"] as? String) ?? "",
-                avatarFileId: (u["avatar_file_id"] as? String) ?? ""
+                avatarFileId: (u["avatar_file_id"] as? String) ?? "",
+                accountNo: (u["account_no"] as? NSNumber)?.int64Value
             ))
         }
         for g in obj["groups"] as? [[String: Any]] ?? [] {

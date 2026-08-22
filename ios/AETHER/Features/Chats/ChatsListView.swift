@@ -41,6 +41,9 @@ struct ChatsListView: View {
     @StateObject private var folders = ChatFoldersStore.shared
     @StateObject private var blocks = BlockStore.shared
     @State private var folder: ChatFolder?
+    /// Сортировка списка «Все». У папок она своя и живёт в самой папке;
+    /// «Все» — не папка, поэтому её правило хранится отдельно.
+    @AppStorage("chatsSortAll") private var sortAll: FolderSort = .manual
     @State private var editingFolder: ChatFolder?
     @State private var showFolderEditor = false
     @State private var showFolderOrder = false
@@ -66,10 +69,28 @@ struct ChatsListView: View {
             (messaging.groups.info(chat.peerId)?.name.lowercased().contains(raw) ?? false)
         }
     }
-    // Закрепы — в порядке закрепления: каждый новый выше предыдущих.
-    private var pinned: [Chat] {
-        visible.filter { $0.pinned }
-            .sorted { messaging.pinRank($0.peerId) < messaging.pinRank($1.peerId) }
+    /// Закреплён ли чат в ТЕКУЩЕЙ папке. В «Все» закреп общий и живёт в базе
+    /// ядра; внутри папки — свой список, потому что смысл разный: чат бывает
+    /// нужен первым в рабочей папке и при этом лежать по времени в общем списке.
+    private func isPinned(_ chat: Chat) -> Bool {
+        guard let folder else { return chat.pinned }
+        return folders.isPinned(chat.peerId, in: folder)
+    }
+
+    /// Порядок закрепления: каждый новый выше предыдущих.
+    private func pinRank(_ chat: Chat) -> Int {
+        guard let folder else { return messaging.pinRank(chat.peerId) }
+        return folders.pinRank(chat.peerId, in: folder)
+    }
+
+    private func togglePin(_ chat: Chat) {
+        guard let folder else {
+            Task { await messaging.setPinned(chat.peerId, !chat.pinned) }
+            return
+        }
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.9)) {
+            folders.togglePin(chat.peerId, in: folder)
+        }
     }
     // Сортируем ЗДЕСЬ, а не полагаемся на порядок из базы. Ядро отдаёт чаты
     // запросом «ORDER BY pinned DESC, last_ts DESC», поэтому сразу после
@@ -82,17 +103,37 @@ struct ChatsListView: View {
         return chats.filter { folders.matches($0, folder: folder, isGroup: messaging.isGroup($0.peerId)) }
     }
 
-    private var regular: [Chat] {
-        let base = visible.filter { !$0.pinned }
-        guard !manualOrder.isEmpty else { return base.sorted { $0.lastTs > $1.lastTs } }
-        // Расставленные вручную идут в своём порядке, новые чаты — по времени
-        // следом за ними.
-        var rank: [String: Int] = [:]
-        for (i, id) in manualOrder.enumerated() { rank[id] = i }
-        return base.sorted {
-            let a = rank[$0.peerId] ?? Int.max
-            let b = rank[$1.peerId] ?? Int.max
-            return a == b ? $0.lastTs > $1.lastTs : a < b
+    /// Правило сортировки для того, что открыто сейчас.
+    private var currentSort: FolderSort { folder?.sort ?? sortAll }
+
+    private func regularOrder(_ base: [Chat]) -> [Chat] {
+        switch currentSort {
+        case .recent:
+            return base.sorted { $0.lastTs > $1.lastTs }
+        case .unread:
+            // Внутри каждой половины — по времени: иначе «непрочитанные сверху»
+            // перемешивает свежее со старым и читается как случайный порядок.
+            return base.sorted {
+                let a = $0.unread > 0, b = $1.unread > 0
+                return a == b ? $0.lastTs > $1.lastTs : a
+            }
+        case .alphabet:
+            return base.sorted {
+                let a = ($0.title.isEmpty ? $0.peerId : $0.title)
+                let b = ($1.title.isEmpty ? $1.peerId : $1.title)
+                return a.localizedCaseInsensitiveCompare(b) == .orderedAscending
+            }
+        case .manual:
+            guard !manualOrder.isEmpty else { return base.sorted { $0.lastTs > $1.lastTs } }
+            // Расставленные вручную идут в своём порядке, новые чаты — по времени
+            // следом за ними.
+            var rank: [String: Int] = [:]
+            for (i, id) in manualOrder.enumerated() { rank[id] = i }
+            return base.sorted {
+                let a = rank[$0.peerId] ?? Int.max
+                let b = rank[$1.peerId] ?? Int.max
+                return a == b ? $0.lastTs > $1.lastTs : a < b
+            }
         }
     }
 
@@ -115,8 +156,13 @@ struct ChatsListView: View {
         UISelectionFeedbackGenerator().selectionChanged()
     }
     // Порядок целиком определяется вью: закрепы — по порядку закрепления,
-    // остальные — по времени последнего сообщения.
-    private var ordered: [Chat] { inFolder(pinned + regular) }
+    // остальные — по времени последнего сообщения. Считаем УЖЕ внутри папки:
+    // закреп в папке свой, и делить список до фильтра было бы неверно.
+    private var ordered: [Chat] {
+        let list = inFolder(visible)
+        let pins = list.filter { isPinned($0) }.sorted { pinRank($0) < pinRank($1) }
+        return pins + regularOrder(list.filter { !isPinned($0) })
+    }
 
     @ViewBuilder
     private var searchSections: some View {
@@ -265,6 +311,13 @@ struct ChatsListView: View {
                             folderRow
                         }
                     }
+                    // Свайп по шапке — соседняя папка. По самому списку так
+                    // сделать нельзя: горизонтальное движение там уже занято
+                    // действиями строки (архив, беззвучно, удалить), и два
+                    // разных смысла на одном жесте путали бы сильнее, чем
+                    // помогали. simultaneousGesture — чтобы полоса папок
+                    // по-прежнему прокручивалась, когда чипы не помещаются.
+                    .simultaneousGesture(folderSwipe)
                     .background(
                         // Только градиент, как на всех остальных экранах:
                         // сплошная заливка превращала шапку в панель и ломала
@@ -364,9 +417,14 @@ struct ChatsListView: View {
                     .liquidGlass(Capsule())
                 } else {
                     Menu {
-                        Button {
-                            withAnimation(.easeInOut(duration: 0.18)) { editMode = .active }
-                        } label: { Label("Переставить чаты", systemImage: "arrow.up.arrow.down") }
+                        // Перестановка руками имеет смысл только при правиле
+                        // «как расставлено»: при любом другом список тут же
+                        // пересортируется и труд пропадёт.
+                        if currentSort == .manual {
+                            Button {
+                                withAnimation(.easeInOut(duration: 0.18)) { editMode = .active }
+                            } label: { Label("Переставить чаты", systemImage: "arrow.up.arrow.down") }
+                        }
                         Button {
                             editingFolder = nil
                             showFolderEditor = true
@@ -375,6 +433,24 @@ struct ChatsListView: View {
                             Button { showFolderOrder = true } label: {
                                 Label("Порядок папок", systemImage: "list.bullet.indent")
                             }
+                        }
+                        // Правило сортировки: у папки — в её настройках, потому
+                        // что оно часть папки; здесь — только для списка «Все».
+                        if folder == nil {
+                            Menu {
+                                Picker("Сортировка", selection: $sortAll) {
+                                    ForEach(FolderSort.allCases, id: \.self) {
+                                        Label($0.title, systemImage: $0.icon).tag($0)
+                                    }
+                                }
+                            } label: {
+                                Label("Сортировка", systemImage: "arrow.up.arrow.down.square")
+                            }
+                        } else {
+                            Button {
+                                editingFolder = folder
+                                showFolderEditor = true
+                            } label: { Label("Настроить папку", systemImage: "slider.horizontal.3") }
                         }
                     } label: {
                         Text("Изм.")
@@ -407,6 +483,29 @@ struct ChatsListView: View {
         .padding(.horizontal, 16)
         .padding(.top, 8)
         .padding(.bottom, 10)
+    }
+
+    /// Порядок папок в переключении: «Все» первая, дальше пользовательские —
+    /// ровно как на полосе, иначе свайп уводил бы не туда, куда показывает глаз.
+    private var folderCarousel: [ChatFolder?] { [nil] + folders.folders.map { Optional($0) } }
+
+    private var folderSwipe: some Gesture {
+        DragGesture(minimumDistance: 24)
+            .onEnded { value in
+                // Диагональные движения не считаем: по вертикали здесь скроллят.
+                guard abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
+                switchFolder(by: value.translation.width < 0 ? 1 : -1)
+            }
+    }
+
+    private func switchFolder(by step: Int) {
+        let list = folderCarousel
+        guard list.count > 1 else { return }
+        let current = list.firstIndex { $0?.id == folder?.id } ?? 0
+        let next = current + step
+        guard next >= 0, next < list.count else { return }
+        withAnimation(.easeInOut(duration: 0.2)) { folder = list[next] }
+        UIImpactFeedbackGenerator(style: .soft).impactOccurred()
     }
 
     /// Полоса папок — второй строкой под заголовком.
@@ -636,8 +735,8 @@ struct ChatsListView: View {
 
     @ViewBuilder
     private func chatMenu(_ chat: Chat) -> some View {
-        Button { Task { await messaging.setPinned(chat.peerId, !chat.pinned) } } label: {
-            Label(chat.pinned ? "Открепить" : "Закрепить", systemImage: "pin.fill")
+        Button { togglePin(chat) } label: {
+            Label(isPinned(chat) ? "Открепить" : "Закрепить", systemImage: "pin.fill")
         }
         Button { Task { await messaging.markRead(chat.peerId) } } label: {
             Label("Прочитать", systemImage: "envelope.open.fill")
@@ -714,11 +813,11 @@ struct ChatsListView: View {
             // Слева две кнопки, как в эталоне: на узком ряду из одной кнопки
             // ходу не хватало, и открытие читалось рывком.
             leading: [
-                RowAction(title: chat.pinned ? "Открепить" : "Закрепить",
+                RowAction(title: isPinned(chat) ? "Открепить" : "Закрепить",
                           icon: "pin.fill", tint: palette.accent) {
                     movingId = chat.peerId
+                    togglePin(chat)
                     Task {
-                        await messaging.setPinned(chat.peerId, !chat.pinned)
                         // Держим строку сверху всю анимацию переезда и отпускаем.
                         try? await Task.sleep(nanoseconds: 700_000_000)
                         movingId = nil
@@ -749,7 +848,8 @@ struct ChatsListView: View {
                 ChatRow(chat: chat,
                         myId: session.myId,
                         online: messaging.isOnline(chat.peerId),
-                        typing: messaging.typingPeers.contains(chat.peerId))
+                        typing: messaging.typingPeers.contains(chat.peerId),
+                        pinned: isPinned(chat))
             }
             .padding(.horizontal, 16)
             .animation(.easeInOut(duration: 0.18), value: editMode)
@@ -778,6 +878,9 @@ struct ChatRow: View {
     let myId: String
     var online: Bool
     var typing: Bool
+    /// Закреплён ли чат в ТЕКУЩЕЙ папке: закреп папочный, поэтому строка сама
+    /// его знать не может — считает список.
+    var pinned: Bool
     @Environment(\.palette) private var palette
     @EnvironmentObject var messaging: Messaging
 
@@ -808,7 +911,7 @@ struct ChatRow: View {
                     Spacer(minLength: 4)
                     // Пин виден всегда (бейдж непрочитанных раньше вытеснял его,
                     // и закреплённость чата с непрочитанными была неотличима).
-                    if chat.pinned {
+                    if pinned {
                         Image(systemName: "pin.fill")
                             .font(.system(size: 11))
                             .foregroundStyle(palette.textSecondary)
@@ -855,7 +958,7 @@ struct ChatRow: View {
                 .foregroundStyle(chat.muted ? palette.textSecondary : palette.onAccent)
                 .padding(.horizontal, 7).frame(minWidth: 22, minHeight: 22)
                 .background(chat.muted ? palette.surfaceElevated : palette.accent, in: Capsule())
-        } else if chat.pinned {
+        } else if pinned {
             Image(systemName: "pin.fill")
                 .font(.system(size: 13))
                 .foregroundStyle(palette.textSecondary)

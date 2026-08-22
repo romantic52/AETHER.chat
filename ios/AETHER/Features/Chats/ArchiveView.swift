@@ -75,7 +75,9 @@ struct ArchiveView: View {
             ChatRow(chat: chat,
                     myId: session.myId,
                     online: messaging.isOnline(chat.peerId),
-                    typing: messaging.typingPeers.contains(chat.peerId))
+                    typing: messaging.typingPeers.contains(chat.peerId),
+                    // В архиве папок нет — закреп только общий.
+                    pinned: chat.pinned)
         }
         .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
         .listRowBackground(Color.clear)
