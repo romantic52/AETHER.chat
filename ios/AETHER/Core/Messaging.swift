@@ -720,8 +720,29 @@ final class Messaging: ObservableObject {
             self.receiptNeedsRead[id] = nil
             self.receiptTasks[id] = nil
             let payload = shouldRead ? Wire.read() : Wire.delivered()
-            _ = try? await self.core.sendDirect(to: id, wirePayload: payload)
+            await self.sendControl(to: id, payload: payload)
         }
+    }
+
+    /// Отправить квитанцию с оглядкой на политику чата.
+    ///
+    /// Раньше квитанции уходили через сервер напрямую, минуя роутер. Получалось
+    /// нечестно: сообщение в режиме «только напрямую» на сервер не попадало,
+    /// а подтверждение о его прочтении — попадало. Само содержимое не утекало,
+    /// но сервер узнавал, что этот чат читают и когда. Для режима, весь смысл
+    /// которого в отсутствии сервера, это дыра.
+    private func sendControl(to peer: String, payload: String) async {
+        if router == nil { rebuildRouter() }
+        guard let router else { return }
+        let policy = await policies?.policy(peer: peer, contentKind: "text")
+            ?? EffectivePolicy(deliveryMode: .auto, serverStorage: .encryptedBackup,
+                               transportOrder: [], restrictedBy: nil)
+        // Идентификатор нужен транспорту для идемпотентности на сервере;
+        // в историю такое сообщение не попадает.
+        let control = OutgoingMessage(messageId: newMessageId(), recipient: peer,
+                                      isGroup: false, payloadJson: payload)
+        await router.deliverControl(control, mode: policy.deliveryMode,
+                                    preferredOrder: policy.transportOrder)
     }
 
     private func parseTs(_ iso: String?) -> Int64 {
@@ -752,7 +773,7 @@ final class Messaging: ObservableObject {
         if !isGroup {
             Task { [weak self] in
                 guard let self else { return }
-                _ = try? await self.core.sendDirect(to: peerId, wirePayload: Wire.read())
+                await self.sendControl(to: peerId, payload: Wire.read())
             }
         }
     }

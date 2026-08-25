@@ -102,6 +102,31 @@ final class TransportRouter {
         return .failure(.noRouteAvailable(triedButUnreachable: sawUnreachable))
     }
 
+    /// Доставить служебное сообщение: квитанцию о доставке или прочтении.
+    ///
+    /// Отличий от обычной доставки два, и оба принципиальные.
+    ///
+    /// Первое: журнал не ведётся. Квитанция не лежит в истории, привязывать
+    /// к ней маршрут не к чему, а строки в message_delivery_attempts на
+    /// несуществующее сообщение только замусорили бы Message Info.
+    ///
+    /// Второе: если разрешённых маршрутов нет, квитанция просто НЕ УХОДИТ.
+    /// Она не встаёт в очередь и никуда не переносится: подтверждение
+    /// «прочитано полчаса назад» бесполезно, а вот утечка самого факта
+    /// чтения на сервер, которому этот чат запрещён, — вполне реальна.
+    /// Свежую квитанцию отправит следующее открытие чата.
+    @discardableResult
+    func deliverControl(_ message: OutgoingMessage,
+                        mode: DeliveryMode = .auto,
+                        preferredOrder: [String] = []) async -> Bool {
+        for adapter in candidates(mode: mode, preferredOrder: preferredOrder) {
+            if case .unreachable = await adapter.canReach(message.recipient,
+                                                          isGroup: message.isGroup) { continue }
+            if (try? await adapter.send(message)) != nil { return true }
+        }
+        return false
+    }
+
     /// Маршруты, разрешённые режимом, в порядке предпочтения.
     func candidates(mode: DeliveryMode, preferredOrder: [String] = []) -> [TransportAdapter] {
         // Отсечка по возможностям транспорта, а не по его имени: новый адаптер
