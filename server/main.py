@@ -40,11 +40,17 @@ try:
     from server import server_identity as ident
     from server import routes_server_info
     from server import schema_multiserver
+    from server import roles as server_roles_mod
+    from server import registration_policy
+    from server import routes_admin
 except ImportError:
     import apns
     import server_identity as ident
     import routes_server_info
     import schema_multiserver
+    import roles as server_roles_mod
+    import registration_policy
+    import routes_admin
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -270,6 +276,10 @@ def init_db() -> None:
     # server_id генерируется РОВНО один раз — перегенерация выглядит для всех
     # клиентов как подмена сервера (см. docs/MULTI_SERVER_DESIGN.md, 16).
     ident.ensure_identity()
+    # Владелец: из окружения (AETHER_OWNER_USER) либо одноразовым кодом,
+    # который печатается в лог, пока сервер бесхозный.
+    server_roles_mod.ensure_owner_bootstrap()
+    registration_policy.ensure_bootstrap_code(logger)
 
 
 def _init_schema() -> None:
@@ -718,6 +728,8 @@ class RegisterRequest(BaseModel):
     encrypted_private_key_b64: Optional[str] = Field(default=None, max_length=100_000)
     encrypted_olm_account_b64: Optional[str] = Field(default=None, max_length=100_000)
     password: str = Field(min_length=8, max_length=256)
+    # INVITE_ONLY, а также одноразовый код владельца на свежем сервере.
+    invite_code: Optional[str] = Field(default=None, max_length=64)
 
 
 class LoginRequest(BaseModel):
@@ -832,6 +844,16 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
         exist = cur.fetchone()
         if exist:
             raise HTTPException(400, "Username already taken")
+
+        # Пускает ли сюда сервер вообще. Решение принимается ЗДЕСЬ, а не
+        # клиентом: он читает режим из /server/info только ради правильной
+        # кнопки. Всё внутри одной транзакции с созданием пользователя, чтобы
+        # приглашение не сгорало при неудачной вставке.
+        if registration_policy.try_bootstrap(cur, body.invite_code):
+            role = "OWNER"
+        else:
+            role = registration_policy.enforce(cur, body.invite_code)
+
         cur.execute(
             """INSERT INTO users
                (user_id, public_key_b64, encrypted_private_key_b64,
@@ -840,7 +862,12 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
             (body.user_id.lower(), body.public_key_b64, body.encrypted_private_key_b64,
              body.encrypted_olm_account_b64, hashed, _utc_now()),
         )
-    return {"ok": True, "user_id": body.user_id.lower()}
+        if role != "USER":
+            server_roles_mod.set_role(cur, body.user_id, role, granted_by=None)
+            server_roles_mod.audit_with(cur, "user.register", actor=body.user_id.lower(),
+                                        target=body.user_id.lower(), meta={"role": role},
+                                        ip=server_roles_mod.ip_hash(request))
+    return {"ok": True, "user_id": body.user_id.lower(), "role": role}
 
 
 # --- (#4) Rate-limited login, (#3) session with expiry ---
@@ -850,13 +877,18 @@ def login_user(body: LoginRequest, request: Request) -> dict:
     with db_conn() as cur:
         cur.execute(
             """SELECT password_hash, public_key_b64, encrypted_private_key_b64,
-                      encrypted_olm_account_b64, user_id, totp_secret, totp_enabled
+                      encrypted_olm_account_b64, user_id, totp_secret, totp_enabled,
+                      COALESCE(disabled, 0) AS disabled
                FROM users WHERE LOWER(user_id) = LOWER(%s)""",
             (body.user_id,),
         )
         row = cur.fetchone()
     if not row or not row["password_hash"]:
         raise HTTPException(401, "Invalid username or password")
+    # Заблокированный администратором аккаунт не входит. Живые сессии снимаются
+    # в момент блокировки, здесь закрывается вход по паролю.
+    if row["disabled"]:
+        raise HTTPException(403, "account_disabled")
     if not verify_password(body.password, row["password_hash"]):
         raise HTTPException(401, "Invalid username or password")
     # 2FA: пароль верный, но без валидного кода сессия не выдаётся.
@@ -868,16 +900,25 @@ def login_user(body: LoginRequest, request: Request) -> dict:
     
     # Generate session token with expiry
     token = secrets.token_hex(32)
+    user_id = row["user_id"].lower()
     with db_conn() as cur:
+        refresh, refresh_expires, family = _issue_refresh(cur, user_id)
         cur.execute(
-            "INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (%s, %s, %s, %s)",
-            (token, row["user_id"].lower(), _utc_now(), _session_expires())
+            """INSERT INTO sessions (token, user_id, created_at, expires_at, family_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (token, user_id, _utc_now(), _session_expires(), family)
         )
-    
+
     return {
         "ok": True,
+        # "token" остаётся на месте: по нему живут Android, веб и установленные
+        # сборки iOS. Новые поля они просто не читают.
         "token": token,
-        "user_id": row["user_id"].lower(),
+        "access_token": token,
+        "refresh_token": refresh,
+        "refresh_expires_at": refresh_expires,
+        "user_id": user_id,
+        "role": server_roles_mod.role_of(user_id),
         "public_key_b64": row["public_key_b64"],
         "encrypted_private_key_b64": row["encrypted_private_key_b64"],
         "encrypted_olm_account_b64": row["encrypted_olm_account_b64"],
@@ -890,6 +931,13 @@ def login_user(body: LoginRequest, request: Request) -> dict:
 async def logout(authorization: str = Header(None), current_user: str = Depends(get_current_user)) -> dict:
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
+        # Вместе с сессией гасим и её refresh-цепочку: иначе выход оставлял бы
+        # рабочий ключ к новой сессии.
+        cur.execute("SELECT family_id FROM sessions WHERE token = %s", (token,))
+        row = cur.fetchone()
+        if row and row["family_id"]:
+            cur.execute("UPDATE refresh_tokens SET revoked = 1 WHERE family_id = %s",
+                        (row["family_id"],))
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
     await manager.close_for_token(token)
     return {"ok": True}
@@ -2771,6 +2819,153 @@ def download_avatar(request: Request, file_id: str) -> FileResponse:
 # (#A4) Удалены неиспользуемые API: магазин (items/buy/my-items) и
 # /groups/{id}/link (заглушка «комментариев») — клиент их никогда не звал.
 
+# --- Сессии: access + refresh с ротацией --------------------------------------
+#
+# Раньше выдавался один долгоживущий токен. Мультисерверный клиент держит по
+# отдельной сессии на каждый сервер, поэтому цена утечки токена выше: добавлена
+# короткая access-сессия и refresh с ротацией. Легаси-клиенты продолжают читать
+# поле "token" и работать по-старому — их поведение не изменилось.
+
+REFRESH_LIFETIME_DAYS = 90
+
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
+def _refresh_expires() -> str:
+    return (datetime.now(timezone.utc) + timedelta(days=REFRESH_LIFETIME_DAYS)).isoformat()
+
+
+def _issue_refresh(cur, user_id: str, device_id: str = "primary",
+                   family_id: Optional[str] = None) -> tuple:
+    """Выдать refresh. family_id связывает цепочку ротации одной сессии."""
+    token = secrets.token_urlsafe(48)
+    family = family_id or secrets.token_hex(16)
+    expires = _refresh_expires()
+    cur.execute(
+        """INSERT INTO refresh_tokens (token_hash, user_id, device_id, family_id,
+                                       issued_at, expires_at)
+           VALUES (%s, %s, %s, %s, %s, %s)""",
+        (_hash_token(token), user_id.lower(), device_id, family, _utc_now(), expires),
+    )
+    return token, expires, family
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=16, max_length=256)
+    device_id: str = Field(default="primary", min_length=1, max_length=64,
+                           pattern=r"^[A-Za-z0-9_-]+$")
+
+
+@app.post("/auth/refresh")
+@limiter.limit("60/minute")
+async def refresh_session(body: RefreshRequest, request: Request) -> dict:
+    """Обмен refresh на новую пару. Старый refresh гасится в этот же момент.
+
+    Повторное использование уже потраченного токена означает, что его украли:
+    гасим всю семью и все сессии, выданные по ней. Это дороже для честного
+    клиента с гонкой запросов, но безопаснее — украденный токен не переживает
+    первую же ротацию.
+    """
+    token_hash = _hash_token(body.refresh_token)
+
+    # Читаем состояние отдельной транзакцией. db_conn откатывает всё при любом
+    # исключении, поэтому гасить украденную цепочку в том же блоке, где потом
+    # поднимается 401, нельзя: отзыв откатился бы вместе с ответом.
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT token_hash, user_id, family_id, expires_at, used_at, revoked
+               FROM refresh_tokens WHERE token_hash = %s""", (token_hash,))
+        row = cur.fetchone()
+
+    if not row or row["revoked"]:
+        raise HTTPException(401, "token_invalid")
+
+    if row["used_at"]:
+        # Токен уже потрачен, а его предъявляют снова — значит он у кого-то ещё.
+        # Гасим всю семью и все выданные по ней сессии.
+        with db_conn() as cur:
+            cur.execute("UPDATE refresh_tokens SET revoked = 1 WHERE family_id = %s",
+                        (row["family_id"],))
+            cur.execute("SELECT token FROM sessions WHERE family_id = %s", (row["family_id"],))
+            revoked_tokens = [r["token"] for r in cur.fetchall()]
+            cur.execute("DELETE FROM sessions WHERE family_id = %s", (row["family_id"],))
+            server_roles_mod.audit_with(cur, "session.token_reuse", actor=row["user_id"],
+                                        target=row["family_id"],
+                                        ip=server_roles_mod.ip_hash(request))
+        for t in revoked_tokens:
+            await manager.close_for_token(t)
+        raise HTTPException(401, "token_reused")
+
+    try:
+        if datetime.now(timezone.utc) > datetime.fromisoformat(row["expires_at"]):
+            raise HTTPException(401, "token_expired")
+    except (ValueError, TypeError):
+        pass
+
+    user_id = row["user_id"].lower()
+
+    with db_conn() as cur:
+        cur.execute("SELECT COALESCE(disabled, 0) AS disabled FROM users WHERE LOWER(user_id) = LOWER(%s)",
+                    (user_id,))
+        u = cur.fetchone()
+        if not u or u["disabled"]:
+            raise HTTPException(401, "token_invalid")
+
+    # Обмен целиком в одной транзакции: либо новая пара выдана и старый токен
+    # помечен потраченным, либо не произошло ничего.
+    access = secrets.token_hex(32)
+    with db_conn() as cur:
+        cur.execute(
+            """INSERT INTO sessions (token, user_id, created_at, expires_at, family_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (access, user_id, _utc_now(), _session_expires(), row["family_id"]),
+        )
+        new_refresh, refresh_expires, _ = _issue_refresh(cur, user_id, body.device_id,
+                                                         row["family_id"])
+        cur.execute(
+            "UPDATE refresh_tokens SET used_at = %s, replaced_by = %s WHERE token_hash = %s",
+            (_utc_now(), _hash_token(new_refresh), token_hash),
+        )
+
+    return {
+        "ok": True,
+        "token": access,
+        "access_token": access,
+        "refresh_token": new_refresh,
+        "refresh_expires_at": refresh_expires,
+        "user_id": user_id,
+    }
+
+
+@app.get("/users/me")
+def users_me(current_user: str = Depends(get_current_user)) -> dict:
+    """Кто я и что мне здесь можно. Роль отсюда нужна КЛИЕНТУ только для того,
+    чтобы решить, рисовать ли админские разделы; проверяет права всё равно
+    сервер на каждой ручке."""
+    with db_conn() as cur:
+        cur.execute(
+            """SELECT user_id, username, display_name, avatar_file_id, bio,
+                      account_no, status_emoji, created_at
+               FROM users WHERE LOWER(user_id) = LOWER(%s)""", (current_user,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(404, "user_not_found")
+    return {
+        "server_id": ident.server_id(),
+        "role": server_roles_mod.role_of(current_user),
+        **{k: row[k] for k in row.keys()},
+    }
+
+
+# Документированные пути /auth/* — те же обработчики, что и легаси /users/*.
+# Объявлены ДО зеркалирования, поэтому получают и вариант с префиксом /api/v1.
+app.add_api_route("/auth/register", register_user, methods=["POST"], include_in_schema=False)
+app.add_api_route("/auth/login", login_user, methods=["POST"], include_in_schema=False)
+app.add_api_route("/auth/logout", logout, methods=["POST"], include_in_schema=False)
+
+
 # --- /api/v1: та же поверхность API под версионированным префиксом ---
 # Мультисерверный клиент ходит в /api/v1/..., но переименовать существующие
 # пути нельзя: по ним работают Android, веб и все установленные сборки iOS.
@@ -2807,6 +3002,7 @@ _mirror_api_v1()
 # Тот же роутер монтируется дважды: под /api/v1 (канон) и без префикса
 # (запасной путь для клиента, который ещё не знает про версионирование).
 # Оба — ДО app.mount("/"), иначе StaticFiles перехватит их на себя.
+app.include_router(routes_admin.router, prefix=API_V1)
 app.include_router(routes_server_info.router, prefix=API_V1)
 app.include_router(routes_server_info.router)
 
