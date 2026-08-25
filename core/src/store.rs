@@ -38,6 +38,36 @@ pub struct Chat {
     pub archived: bool,
 }
 
+/// Итоговый маршрут доставки сообщения.
+#[derive(uniffi::Record, Clone)]
+pub struct MessageRoute {
+    pub message_id: String,
+    /// Идентификатор транспорта: "server.<server_id>", "nearby.ble", ...
+    pub transport: String,
+    /// Физический канал, если он отличается от транспорта: bluetooth, wifi_aware, lan.
+    pub physical: Option<String>,
+    /// Какой сервер участвовал. None — сервер не использовался вообще.
+    pub server_id: Option<String>,
+    /// Оставил ли сервер копию у себя (а не только передал и забыл).
+    pub server_stored: bool,
+    pub delivered_ts: Option<i64>,
+    pub read_ts: Option<i64>,
+}
+
+/// Одна попытка доставки — строка журнала для Message Info и повторов.
+#[derive(uniffi::Record, Clone)]
+pub struct DeliveryAttempt {
+    pub message_id: String,
+    pub attempt: i32,
+    pub transport: String,
+    pub device_id: Option<String>,
+    pub started_ts: i64,
+    pub finished_ts: Option<i64>,
+    /// ok | unreachable | rejected | timeout | error
+    pub outcome: Option<String>,
+    pub detail: Option<String>,
+}
+
 /// TOFU-пин публичного ключа собеседника.
 #[derive(uniffi::Record, Clone)]
 pub struct KeyPin {
@@ -154,6 +184,31 @@ CREATE TABLE IF NOT EXISTS pins (
     first_seen INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS meta (k TEXT PRIMARY KEY, v TEXT NOT NULL);
+-- Как сообщение реально было доставлено. Отдельно от messages, потому что
+-- маршрут это свойство ДОСТАВКИ, а не сообщения: одно и то же сообщение может
+-- уйти по Bluetooth, не подтвердиться и уехать через сервер, оставшись тем же
+-- сообщением с тем же id (docs/TRANSPORT_LAYER_DESIGN.md, раздел 2.3).
+CREATE TABLE IF NOT EXISTS message_route (
+    message_id    TEXT PRIMARY KEY,
+    transport     TEXT NOT NULL,
+    physical      TEXT,
+    server_id     TEXT,
+    server_stored INTEGER NOT NULL DEFAULT 0,
+    delivered_ts  INTEGER,
+    read_ts       INTEGER
+);
+-- Журнал попыток: по нему строится Message Info и работает повтор.
+CREATE TABLE IF NOT EXISTS message_delivery_attempts (
+    message_id  TEXT NOT NULL,
+    attempt     INTEGER NOT NULL,
+    transport   TEXT NOT NULL,
+    device_id   TEXT,
+    started_ts  INTEGER NOT NULL,
+    finished_ts INTEGER,
+    outcome     TEXT,
+    detail      TEXT,
+    PRIMARY KEY (message_id, attempt)
+);
 CREATE TABLE IF NOT EXISTS olm_sessions (
     peer_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
@@ -383,6 +438,97 @@ impl CoreStore {
 
     /// Заменить локальный id на серверный (после успешной отправки), выставив статус.
     /// Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
+    // --- Маршрут доставки -----------------------------------------------------
+
+    /// Записать, чем сообщение реально ушло. Вызывается ПОСЛЕ подтверждения:
+    /// до него маршрут ещё не известен, а попытки лежат в отдельной таблице.
+    pub fn set_route(&self, r: MessageRoute) -> Result<(), CoreError> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO message_route
+                (message_id, transport, physical, server_id, server_stored, delivered_ts, read_ts)
+             VALUES (?1,?2,?3,?4,?5,?6,?7)
+             ON CONFLICT(message_id) DO UPDATE SET
+                transport=excluded.transport, physical=excluded.physical,
+                server_id=excluded.server_id, server_stored=excluded.server_stored,
+                delivered_ts=COALESCE(excluded.delivered_ts, message_route.delivered_ts),
+                read_ts=COALESCE(excluded.read_ts, message_route.read_ts)",
+            params![r.message_id, r.transport, r.physical, r.server_id,
+                    r.server_stored as i64, r.delivered_ts, r.read_ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn route_for(&self, message_id: String) -> Result<Option<MessageRoute>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT message_id, transport, physical, server_id, server_stored, delivered_ts, read_ts
+             FROM message_route WHERE message_id=?1",
+        )?;
+        let mut rows = st.query(params![message_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(MessageRoute {
+                message_id: row.get(0)?,
+                transport: row.get(1)?,
+                physical: row.get(2)?,
+                server_id: row.get(3)?,
+                server_stored: row.get::<_, i64>(4)? != 0,
+                delivered_ts: row.get(5)?,
+                read_ts: row.get(6)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Добавить попытку. Номер назначается сам — вызывающему не нужно
+    /// помнить, сколько их уже было.
+    pub fn add_delivery_attempt(&self, message_id: String, transport: String,
+                                device_id: Option<String>, started_ts: i64) -> Result<i32, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let next: i32 = c.query_row(
+            "SELECT COALESCE(MAX(attempt), 0) + 1 FROM message_delivery_attempts WHERE message_id=?1",
+            params![message_id], |r| r.get(0))?;
+        c.execute(
+            "INSERT INTO message_delivery_attempts
+                (message_id, attempt, transport, device_id, started_ts)
+             VALUES (?1,?2,?3,?4,?5)",
+            params![message_id, next, transport, device_id, started_ts],
+        )?;
+        Ok(next)
+    }
+
+    pub fn finish_delivery_attempt(&self, message_id: String, attempt: i32, outcome: String,
+                                   detail: Option<String>, finished_ts: i64) -> Result<(), CoreError> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "UPDATE message_delivery_attempts SET outcome=?3, detail=?4, finished_ts=?5
+             WHERE message_id=?1 AND attempt=?2",
+            params![message_id, attempt, outcome, detail, finished_ts],
+        )?;
+        Ok(())
+    }
+
+    pub fn delivery_attempts(&self, message_id: String) -> Result<Vec<DeliveryAttempt>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT message_id, attempt, transport, device_id, started_ts, finished_ts, outcome, detail
+             FROM message_delivery_attempts WHERE message_id=?1 ORDER BY attempt",
+        )?;
+        let rows = st.query_map(params![message_id], |row| {
+            Ok(DeliveryAttempt {
+                message_id: row.get(0)?,
+                attempt: row.get(1)?,
+                transport: row.get(2)?,
+                device_id: row.get(3)?,
+                started_ts: row.get(4)?,
+                finished_ts: row.get(5)?,
+                outcome: row.get(6)?,
+                detail: row.get(7)?,
+            })
+        })?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
     pub fn replace_message_id(&self, old_id: String, new_id: String, status: i32) -> Result<(), CoreError> {
         let c = self.conn.lock().unwrap();
         let exists: i64 = c.query_row("SELECT COUNT(*) FROM messages WHERE id=?1", params![new_id], |r| r.get(0))?;
@@ -1209,6 +1355,55 @@ mod tests {
         assert!(s.olm_pin_get("bob_1::ios".into()).unwrap().is_none());
         assert!(s.olm_pin_get("bobx1::ios".into()).unwrap().is_some(), "чужой пир не тронут");
         assert_eq!(s.olm_session_get("bobx1::ios".into()).unwrap().as_deref(), Some(untouched.as_str()));
+    }
+
+    #[test]
+    fn route_and_attempts_survive_transport_change() {
+        let s = store();
+        let mid = crate::message::new_message_id();
+
+        // Первая попытка — Bluetooth, подтверждения не дождались.
+        let a1 = s.add_delivery_attempt(mid.clone(), "nearby.ble".into(), Some("pixel".into()), 100).unwrap();
+        s.finish_delivery_attempt(mid.clone(), a1, "timeout".into(), None, 120).unwrap();
+
+        // Вторая — через сервер, успешно. Сообщение ТО ЖЕ: id не менялся.
+        let a2 = s.add_delivery_attempt(mid.clone(), "server.cloud".into(), None, 130).unwrap();
+        s.finish_delivery_attempt(mid.clone(), a2, "ok".into(), None, 140).unwrap();
+        assert_eq!((a1, a2), (1, 2), "номера попыток идут подряд");
+
+        s.set_route(MessageRoute {
+            message_id: mid.clone(),
+            transport: "server.cloud".into(),
+            physical: None,
+            server_id: Some("cloud".into()),
+            server_stored: true,
+            delivered_ts: Some(140),
+            read_ts: None,
+        }).unwrap();
+
+        let attempts = s.delivery_attempts(mid.clone()).unwrap();
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].transport, "nearby.ble");
+        assert_eq!(attempts[0].outcome.as_deref(), Some("timeout"));
+        assert_eq!(attempts[1].outcome.as_deref(), Some("ok"));
+
+        let route = s.route_for(mid.clone()).unwrap().expect("маршрут записан");
+        assert_eq!(route.transport, "server.cloud");
+        assert!(route.server_stored);
+
+        // Отметка о прочтении не должна затирать время доставки.
+        s.set_route(MessageRoute {
+            message_id: mid.clone(),
+            transport: "server.cloud".into(),
+            physical: None,
+            server_id: Some("cloud".into()),
+            server_stored: true,
+            delivered_ts: None,
+            read_ts: Some(200),
+        }).unwrap();
+        let route = s.route_for(mid).unwrap().unwrap();
+        assert_eq!(route.delivered_ts, Some(140), "время доставки сохранено");
+        assert_eq!(route.read_ts, Some(200));
     }
 
     #[test]

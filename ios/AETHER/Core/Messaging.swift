@@ -574,6 +574,7 @@ final class Messaging: ObservableObject {
     }
 
     private func handleIncoming(_ item: InboxItem) async -> IncomingResult {
+        // Быстрая отсечка по серверному id — дёшево и не требует расшифровки.
         if await core.messageExists(item.id) { return .duplicate }
         // Заблокированный отправитель: сообщение не сохраняем, но считаем
         // обработанным — иначе оно не подтвердится серверу и будет приходить
@@ -581,6 +582,14 @@ final class Messaging: ObservableObject {
         if BlockStore.shared.isBlocked(item.senderId) { return .processed(changed: false) }
         guard let opened = try? await core.open(item: item),
               let payload = Wire.parse(opened.plaintext) else { return .undecryptable }
+
+        // Настоящая дедупликация — по идентификатору ИЗ КОНВЕРТА. Серверный id
+        // у каждой копии свой (одна на устройство получателя) и меняется при
+        // смене транспорта, поэтому по нему одно и то же сообщение выглядело бы
+        // разными. Клиенты старых версий поля не шлют — для них идентичностью
+        // остаётся серверный id, и это правильно.
+        let messageId = messageIdFromPayload(payloadJson: opened.plaintext) ?? item.id
+        if messageId != item.id, await core.messageExists(messageId) { return .duplicate }
 
         let myId = myId.lowercased()
         let isGroup = opened.isGroup
@@ -590,7 +599,7 @@ final class Messaging: ObservableObject {
 
         switch payload.type {
         case "text", "media":
-            let store = ChatMessage(id: item.id, peerId: peerId, outgoing: senderId == myId,
+            let store = ChatMessage(id: messageId, peerId: peerId, outgoing: senderId == myId,
                                     senderId: senderId, payloadJson: opened.plaintext,
                                     status: 1, ts: ts, reactions: [:], edited: false, deleted: false,
                                     payload: payload)
@@ -806,42 +815,75 @@ final class Messaging: ObservableObject {
     }
 
     private func optimisticSend(to peer: String, payload: String, isGroup: Bool) -> String {
-        let localId = "local_\(UUID().uuidString)"
+        // Идентификатор создаём ЗДЕСЬ и больше не меняем никогда.
+        //
+        // Раньше клиент клал сообщение с локальным id и подменял его серверным.
+        // Так нельзя: при смене маршрута (не подтвердился Bluetooth — ушло через
+        // сервер) id сменился бы, и получатель не распознал бы дубликат. Сам id
+        // едет внутри шифрованного payload, поэтому одинаков для всех копий и
+        // всех транспортов, а сервер его не видит.
+        let mid = newMessageId()
+        let body = withMessageId(payload, mid)
         let ts = Int64(Date().timeIntervalSince1970 * 1000)
-        let stored = StoredMessage(id: localId, peerId: peer.lowercased(), outgoing: true,
-                                   senderId: myId.lowercased(), payloadJson: payload,
+        let stored = StoredMessage(id: mid, peerId: peer.lowercased(), outgoing: true,
+                                   senderId: myId.lowercased(), payloadJson: body,
                                    status: 0, ts: ts, reactionsJson: "{}", edited: false, deleted: false)
         Task {
             await core.insertMessage(stored)
             await core.touchChat(peer: peer.lowercased(), isGroup: isGroup, title: peer,
-                                 lastText: Wire.preview(payload), lastTs: ts, incUnread: false)
+                                 lastText: Wire.preview(body), lastTs: ts, incUnread: false)
             await refreshChats()
             inboxTick.fire()
-            await deliverPending(localId: localId, peer: peer, payload: payload, isGroup: isGroup)
+            await deliverPending(localId: mid, peer: peer, payload: body, isGroup: isGroup)
         }
-        return localId
+        return mid
+    }
+
+    /// Вписать логический id в payload. Если payload вдруг не разобрался —
+    /// отправляем как есть: потеря дедупликации хуже, чем неотправленное
+    /// сообщение, но ронять отправку из-за этого нельзя.
+    private func withMessageId(_ payload: String, _ mid: String) -> String {
+        (try? payloadWithMessageId(payloadJson: payload, messageId: mid)) ?? payload
     }
 
     private func deliverPending(localId: String, peer: String, payload: String, isGroup: Bool) async {
+        // Пока транспорт один, он и записывается. Когда появится роутер,
+        // здесь будет перебор маршрутов — и каждый оставит свою строку в
+        // журнале попыток, не создавая нового сообщения.
+        let transport = "server.\(ServerContext.serverId)"
+        let attempt = await core.beginAttempt(localId, transport: transport)
         do {
-            let realId: String
             if isGroup {
                 guard let key = await core.groupKey(peer.lowercased()) else {
+                    await core.endAttempt(localId, attempt: attempt, outcome: "error",
+                                          detail: "нет ключа группы")
                     await core.updateStatus(localId, -1); inboxTick.fire(); return
                 }
-                realId = try await core.sendGroup(groupId: peer, groupKey: key, wirePayload: payload)
+                _ = try await core.sendGroup(groupId: peer, groupKey: key,
+                                             wirePayload: payload, clientId: localId)
             } else {
-                realId = try await core.sendDirect(to: peer, wirePayload: payload)
+                _ = try await core.sendDirect(to: peer, wirePayload: payload, clientId: localId)
             }
-            await core.replaceMessageId(old: localId, new: realId, status: 1)
+            // id не трогаем — он тот же, что был при создании.
+            await core.updateStatus(localId, 1)
+            await core.endAttempt(localId, attempt: attempt, outcome: "ok")
+            await core.setRoute(MessageRoute(
+                messageId: localId, transport: transport, physical: nil,
+                serverId: ServerContext.serverId, serverStored: true,
+                deliveredTs: nil, readTs: nil))
         } catch {
+            await core.endAttempt(localId, attempt: attempt, outcome: "error",
+                                  detail: String(describing: error))
             await core.updateStatus(localId, -1)
         }
         inboxTick.fire()
     }
 
     func retryMessage(_ message: ChatMessage, isGroup: Bool) {
-        guard message.status == -1, message.id.hasPrefix("local_") else { return }
+        // Признак неотправленного — статус. Раньше проверялся ещё и префикс
+        // local_, но идентификаторы больше не переименовываются, и префикса
+        // не существует.
+        guard message.status == -1 else { return }
         Task {
             await core.updateStatus(message.id, 0)
             inboxTick.fire()
@@ -882,14 +924,16 @@ final class Messaging: ObservableObject {
                    fileName: String? = nil, caption: String? = nil,
                    duration: Double? = nil, isGroup: Bool = false,
                    replyToId: String? = nil, replyToText: String? = nil) {
-        let localId = "local_\(UUID().uuidString)"
+        // Тот же сквозной идентификатор, что и у текста: он же служит ключом
+        // кэша медиа, пока файл не загружен и настоящего file_id ещё нет.
+        let localId = newMessageId()
         let ts = Int64(Date().timeIntervalSince1970 * 1000)
         let size = Int64(data.count)
         // Оптимистичный payload: file_id = localId, ключей ещё нет — превью берётся из кэша по localId.
-        let payload0 = Wire.media(fileId: localId, symKey: "", mimeType: mime, nonce: "",
-                                  kind: kind, duration: duration, fileName: fileName,
-                                  fileSize: size, caption: caption,
-                                  replyToId: replyToId, replyToText: replyToText)
+        let payload0 = withMessageId(Wire.media(fileId: localId, symKey: "", mimeType: mime, nonce: "",
+                                                kind: kind, duration: duration, fileName: fileName,
+                                                fileSize: size, caption: caption,
+                                                replyToId: replyToId, replyToText: replyToText), localId)
         let stored = StoredMessage(id: localId, peerId: peer.lowercased(), outgoing: true,
                                    senderId: myId.lowercased(), payloadJson: payload0,
                                    status: 0, ts: ts, reactionsJson: "{}", edited: false, deleted: false)
@@ -902,21 +946,34 @@ final class Messaging: ObservableObject {
             do {
                 let up = try await core.uploadMedia(data)
                 await MediaStore.shared.seed(fileId: up.fileId, data: data)
-                let payload = Wire.media(fileId: up.fileId, symKey: up.symKey, mimeType: mime,
-                                         nonce: up.nonce, kind: kind, duration: duration,
-                                         fileName: fileName, fileSize: size, caption: caption,
-                                         replyToId: replyToId, replyToText: replyToText)
+                let payload = withMessageId(Wire.media(fileId: up.fileId, symKey: up.symKey, mimeType: mime,
+                                                       nonce: up.nonce, kind: kind, duration: duration,
+                                                       fileName: fileName, fileSize: size, caption: caption,
+                                                       replyToId: replyToId, replyToText: replyToText), localId)
                 await core.updatePayload(localId, payload)   // финальный payload без пометки «изменено»
-                let realId: String
-                if isGroup {
-                    guard let key = await core.groupKey(peer.lowercased()) else {
-                        throw CoreError.BadInput(msg: "Нет ключа группы")
+                let transport = "server.\(ServerContext.serverId)"
+                let attempt = await core.beginAttempt(localId, transport: transport)
+                do {
+                    if isGroup {
+                        guard let key = await core.groupKey(peer.lowercased()) else {
+                            throw CoreError.BadInput(msg: "Нет ключа группы")
+                        }
+                        _ = try await core.sendGroup(groupId: peer, groupKey: key,
+                                                     wirePayload: payload, clientId: localId)
+                    } else {
+                        _ = try await core.sendDirect(to: peer, wirePayload: payload, clientId: localId)
                     }
-                    realId = try await core.sendGroup(groupId: peer, groupKey: key, wirePayload: payload)
-                } else {
-                    realId = try await core.sendDirect(to: peer, wirePayload: payload)
+                } catch {
+                    await core.endAttempt(localId, attempt: attempt, outcome: "error",
+                                          detail: String(describing: error))
+                    throw error
                 }
-                await core.replaceMessageId(old: localId, new: realId, status: 1)
+                await core.updateStatus(localId, 1)
+                await core.endAttempt(localId, attempt: attempt, outcome: "ok")
+                await core.setRoute(MessageRoute(
+                    messageId: localId, transport: transport, physical: nil,
+                    serverId: ServerContext.serverId, serverStored: true,
+                    deliveredTs: nil, readTs: nil))
             } catch {
                 await core.updateStatus(localId, -1)
             }
@@ -987,7 +1044,7 @@ final class Messaging: ObservableObject {
 
     func flushOutgoing() async {
         let pending = await core.pendingOutgoing()
-        for m in pending where m.id.hasPrefix("local_") {
+        for m in pending {
             if let payload = Wire.parse(m.payloadJson), payload.type == "media",
                (payload.symKey ?? "").isEmpty {
                 await core.updateStatus(m.id, -1)

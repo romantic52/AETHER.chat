@@ -873,9 +873,10 @@ actor CoreClient {
         throw firstError ?? CoreError.Crypto(msg: "у получателя нет доступных устройств")
     }
 
-    func sendGroup(groupId: String, groupKey: String, wirePayload: String) throws -> String {
+    func sendGroup(groupId: String, groupKey: String, wirePayload: String,
+                   clientId: String? = nil) throws -> String {
         let envelope = try sealGroup(plaintextJson: wirePayload, groupKeyB64: groupKey)
-        return try api.sendMessage(recipientId: groupId, envelopeJson: envelope, clientId: nil)
+        return try api.sendMessage(recipientId: groupId, envelopeJson: envelope, clientId: clientId)
     }
 
     // MARK: - Приём
@@ -1287,6 +1288,32 @@ actor CoreClient {
     func replaceMessageId(old: String, new: String, status: Int32) { try? store.replaceMessageId(oldId: old, newId: new, status: status) }
     func markDeleted(_ id: String) { try? store.markDeleted(id: id) }
     func pendingOutgoing() -> [StoredMessage] { (try? store.getPendingOutgoing()) ?? [] }
+
+    // MARK: - Маршрут доставки
+    //
+    // Маршрут — свойство ДОСТАВКИ, а не сообщения: одно и то же сообщение
+    // может не подтвердиться по одному каналу и уехать по другому, оставшись
+    // тем же сообщением с тем же id.
+
+    func setRoute(_ route: MessageRoute) { try? store.setRoute(r: route) }
+    func routeFor(_ messageId: String) -> MessageRoute? { (try? store.routeFor(messageId: messageId)) ?? nil }
+    func deliveryAttempts(_ messageId: String) -> [DeliveryAttempt] {
+        (try? store.deliveryAttempts(messageId: messageId)) ?? []
+    }
+
+    @discardableResult
+    func beginAttempt(_ messageId: String, transport: String, deviceId: String? = nil) -> Int32 {
+        let ts = Int64(Date().timeIntervalSince1970 * 1000)
+        return (try? store.addDeliveryAttempt(messageId: messageId, transport: transport,
+                                              deviceId: deviceId, startedTs: ts)) ?? 0
+    }
+
+    func endAttempt(_ messageId: String, attempt: Int32, outcome: String, detail: String? = nil) {
+        guard attempt > 0 else { return }
+        let ts = Int64(Date().timeIntervalSince1970 * 1000)
+        try? store.finishDeliveryAttempt(messageId: messageId, attempt: attempt,
+                                         outcome: outcome, detail: detail, finishedTs: ts)
+    }
 
     func touchChat(peer: String, isGroup: Bool, title: String, lastText: String, lastTs: Int64, incUnread: Bool) {
         try? store.touchChat(peerId: peer, isGroup: isGroup, title: title, lastText: lastText, lastTs: lastTs, incUnread: incUnread)
