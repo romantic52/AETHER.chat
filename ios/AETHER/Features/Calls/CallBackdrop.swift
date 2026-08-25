@@ -20,121 +20,167 @@ enum CallMood: Equatable {
         }
     }
 
-    /// Три цвета пятен фона. dark/light-варианты, плюс акцент темы в нейтральном
-    /// состоянии — чтобы экран звонка не выпадал из выбранной палитры.
-    func blobs(_ palette: Palette, dark: Bool) -> [Color] {
+    /// Три опорных цвета настроения: основной, тёмный и подсветка.
+    private func keys(_ palette: Palette, dark: Bool) -> (Color, Color, Color) {
         switch self {
         case .neutral:
             return dark
-                ? [Palette.rgb(0x6B7280), Palette.rgb(0x39404D), palette.accent.opacity(0.75)]
-                : [Palette.rgb(0xB6BECC), Palette.rgb(0xD8DEE7), palette.accent.opacity(0.45)]
+                ? (Palette.rgb(0x6B7280), Palette.rgb(0x2F3540), palette.accent)
+                : (Palette.rgb(0xB6BECC), Palette.rgb(0xDCE1E9), palette.accent)
         case .connected:
             return dark
-                ? [Palette.rgb(0x22C55E), Palette.rgb(0x0F7A50), Palette.rgb(0x6EE7B7)]
-                : [Palette.rgb(0x86EFAC), Palette.rgb(0xBBF7D0), Palette.rgb(0x34D399)]
+                ? (Palette.rgb(0x22C55E), Palette.rgb(0x0B5F3E), Palette.rgb(0x7DF3C0))
+                : (Palette.rgb(0x6EE7B7), Palette.rgb(0xBBF7D0), Palette.rgb(0x22C55E))
         case .failed:
             return dark
-                ? [Palette.rgb(0xEF4444), Palette.rgb(0x8F1D1D), Palette.rgb(0xFB7185)]
-                : [Palette.rgb(0xFCA5A5), Palette.rgb(0xFECACA), Palette.rgb(0xF87171)]
+                ? (Palette.rgb(0xEF4444), Palette.rgb(0x6E1616), Palette.rgb(0xFB7185))
+                : (Palette.rgb(0xFCA5A5), Palette.rgb(0xFEE2E2), Palette.rgb(0xF87171))
         }
     }
 
-    /// Насколько плотно настроение проступает поверх фона темы.
-    var strength: Double {
-        switch self {
-        case .neutral: return 0.55
-        case .connected: return 0.7
-        case .failed: return 0.8
-        }
+    /// 16 цветов сетки 4×4, сверху вниз: густое настроение вверху и по центру,
+    /// внизу — чистый фон темы, чтобы панель управления читалась.
+    func mesh(_ palette: Palette, dark: Bool) -> [Color] {
+        let (main, deep, glow) = keys(palette, dark: dark)
+        let bg = palette.background
+        func m(_ c: Color, _ t: Double) -> Color { .callMix(c, bg, t) }
+        return [
+            m(deep, 0.45), m(main, 0.30), m(glow, 0.40), m(deep, 0.50),
+            m(main, 0.22), main,          glow,          m(main, 0.28),
+            m(deep, 0.35), m(glow, 0.30), m(main, 0.20), m(deep, 0.40),
+            bg,            m(deep, 0.72), m(main, 0.78), bg,
+        ]
     }
 }
 
-// Живой градиентный фон: два слоя размытых пятен, вращающихся навстречу друг
-// другу, плюс «дыхание» масштабом. Анимация идёт на трансформациях уже
-// растеризованного слоя (drawingGroup), поэтому размытие не пересчитывается покадрово.
+// Текучий фон: сетка 4×4, у которой углы прибиты к углам экрана, точки на
+// рёбрах ездят вдоль своего ребра, а четыре внутренние плавают свободно —
+// каждая по своей синусоиде со своей частотой и фазой. Отсюда ощущение
+// переливающейся жидкости, а не нескольких кругов, наложенных друг на друга.
+// На iOS 17 (без MeshGradient) — те же независимо плавающие размытые пятна.
 struct CallBackdrop: View {
     var mood: CallMood
-    /// Ускоряет дыхание, пока идёт дозвон — экран «звенит» вместе с гудками.
+    /// Ускоряет течение, пока идёт дозвон.
     var pulsing: Bool = false
 
     @Environment(\.palette) private var palette
     @EnvironmentObject private var appearance: AppearanceSettings
 
-    @State private var spin = false
-    @State private var counterSpin = false
-    @State private var breathe = false
+    @State private var previous: CallMood?
+    @State private var changedAt = Date.distantPast
+
+    var body: some View {
+        let dark = appearance.theme.isDark
+        let target = mood.mesh(palette, dark: dark)
+        let source = (previous ?? mood).mesh(palette, dark: dark)
+
+        TimelineView(.animation) { context in
+            // Смена настроения перетекает вручную: цвета пересчитываются каждый
+            // кадр, поэтому обычная .animation по ним не работает.
+            let shift = min(max(context.date.timeIntervalSince(changedAt) / 0.9, 0), 1)
+            let eased = shift * shift * (3 - 2 * shift)
+            let colors = zip(source, target).map { Color.callMix($0, $1, eased) }
+            let t = context.date.timeIntervalSinceReferenceDate * (pulsing ? 0.17 : 0.11)
+
+            ZStack {
+                palette.background
+                flow(colors: colors, t: t)
+                LinearGradient(colors: [.clear, palette.background.opacity(dark ? 0.55 : 0.4)],
+                               startPoint: .center, endPoint: .bottom)
+            }
+        }
+        .ignoresSafeArea()
+        .onChange(of: mood) { old, _ in
+            previous = old
+            changedAt = .now
+        }
+    }
+
+    @ViewBuilder
+    private func flow(colors: [Color], t: Double) -> some View {
+        if #available(iOS 18.0, *) {
+            MeshGradient(width: 4, height: 4, points: Self.points(t), colors: colors, smoothsColors: true)
+        } else {
+            FloatingBlobs(colors: colors, t: t)
+        }
+    }
+
+    /// Углы фиксированы (иначе по краям вылезает фон), рёберные точки скользят
+    /// только вдоль своего ребра, внутренние — свободно. Амплитуды подобраны так,
+    /// чтобы соседние точки не пересекались: на пересечении сетка рвётся.
+    private static func points(_ t: Double) -> [SIMD2<Float>] {
+        func w(_ base: Double, _ amplitude: Double, _ frequency: Double, _ phase: Double) -> Float {
+            Float(base + sin(t * frequency + phase) * amplitude)
+        }
+        let a = 1.0 / 3.0, b = 2.0 / 3.0
+        return [
+            SIMD2(0, 0),
+            SIMD2(w(a, 0.09, 1.10, 0.0), 0),
+            SIMD2(w(b, 0.09, 0.90, 1.7), 0),
+            SIMD2(1, 0),
+
+            SIMD2(0, w(a, 0.08, 0.80, 2.4)),
+            SIMD2(w(a, 0.14, 1.30, 0.6), w(a, 0.12, 1.00, 3.1)),
+            SIMD2(w(b, 0.14, 1.05, 2.2), w(a, 0.12, 1.25, 0.9)),
+            SIMD2(1, w(a, 0.08, 1.15, 4.0)),
+
+            SIMD2(0, w(b, 0.08, 1.00, 1.2)),
+            SIMD2(w(a, 0.15, 0.95, 4.4), w(b, 0.13, 1.20, 2.0)),
+            SIMD2(w(b, 0.15, 1.35, 3.0), w(b, 0.13, 0.85, 5.2)),
+            SIMD2(1, w(b, 0.08, 0.90, 2.8)),
+
+            SIMD2(0, 1),
+            SIMD2(w(a, 0.09, 1.20, 5.0), 1),
+            SIMD2(w(b, 0.09, 1.00, 0.4), 1),
+            SIMD2(1, 1),
+        ]
+    }
+}
+
+// Фолбэк для iOS 17: пять пятен, каждое по своей траектории Лиссажу.
+private struct FloatingBlobs: View {
+    let colors: [Color]
+    let t: Double
+
+    private let picks = [5, 6, 9, 10, 1]
 
     var body: some View {
         GeometryReader { geo in
             let side = max(geo.size.width, geo.size.height)
-            let colors = mood.blobs(palette, dark: appearance.theme.isDark)
-
             ZStack {
-                palette.background
-
-                LinearGradient(
-                    colors: [colors[0].opacity(mood.strength * 0.55), palette.background.opacity(0.0)],
-                    startPoint: .top, endPoint: .center
-                )
-
-                blobLayer(colors: colors, side: side, seed: 0)
-                    .rotationEffect(.degrees(spin ? 360 : 0))
-                    .scaleEffect(breathe ? 1.10 : 0.94)
-
-                blobLayer(colors: Array(colors.reversed()), side: side, seed: 1)
-                    .rotationEffect(.degrees(counterSpin ? -360 : 0))
-                    .scaleEffect(breathe ? 0.96 : 1.12)
-                    .opacity(0.75)
-
-                // Мягкое затемнение к низу, чтобы панель управления читалась.
-                LinearGradient(
-                    colors: [.clear, palette.background.opacity(appearance.theme.isDark ? 0.75 : 0.55)],
-                    startPoint: .center, endPoint: .bottom
-                )
+                ForEach(0..<5, id: \.self) { i in
+                    let f = Double(i)
+                    Circle()
+                        .fill(colors[picks[i]])
+                        .frame(width: side * (0.62 + 0.09 * sin(f * 1.3)),
+                               height: side * (0.62 + 0.09 * cos(f * 0.9)))
+                        .offset(x: side * 0.30 * sin(t * (0.9 + f * 0.13) + f * 1.1),
+                                y: side * 0.28 * cos(t * (0.7 + f * 0.17) + f * 1.7))
+                }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            .blur(radius: side * 0.12)
             .clipped()
         }
-        .ignoresSafeArea()
-        .animation(.easeInOut(duration: 0.75), value: mood)
-        .onAppear(perform: startAnimations)
-        .onChange(of: pulsing) { _, _ in restartBreathing() }
     }
+}
 
-    private func blobLayer(colors: [Color], side: CGFloat, seed: Int) -> some View {
-        let offsets: [CGSize] = seed == 0
-            ? [CGSize(width: -side * 0.22, height: -side * 0.26),
-               CGSize(width: side * 0.28, height: -side * 0.06),
-               CGSize(width: -side * 0.06, height: side * 0.30)]
-            : [CGSize(width: side * 0.24, height: side * 0.22),
-               CGSize(width: -side * 0.30, height: side * 0.04),
-               CGSize(width: side * 0.02, height: -side * 0.32)]
-
-        return ZStack {
-            ForEach(0..<3, id: \.self) { i in
-                Circle()
-                    .fill(
-                        RadialGradient(colors: [colors[i].opacity(mood.strength), colors[i].opacity(0)],
-                                       center: .center, startRadius: 0, endRadius: side * 0.42)
-                    )
-                    .frame(width: side * (0.9 - CGFloat(i) * 0.08), height: side * (0.9 - CGFloat(i) * 0.08))
-                    .offset(offsets[i])
-            }
-        }
-        .blur(radius: side * 0.06)
-        .drawingGroup()
-    }
-
-    private func startAnimations() {
-        guard !spin else { return }
-        withAnimation(.linear(duration: 34).repeatForever(autoreverses: false)) { spin = true }
-        withAnimation(.linear(duration: 52).repeatForever(autoreverses: false)) { counterSpin = true }
-        restartBreathing()
-    }
-
-    private func restartBreathing() {
-        let period = pulsing ? 2.4 : 5.5
-        withAnimation(.easeInOut(duration: period).repeatForever(autoreverses: true)) { breathe = true }
+private extension Color {
+    /// Линейная смесь двух цветов. Нужна и для перетекания настроения, и для
+    /// разбавления опорных цветов фоном темы: Color.mix появился только в iOS 18.
+    static func callMix(_ a: Color, _ b: Color, _ t: Double) -> Color {
+        guard t > 0.001 else { return a }
+        guard t < 0.999 else { return b }
+        var r1: CGFloat = 0, g1: CGFloat = 0, b1: CGFloat = 0, a1: CGFloat = 0
+        var r2: CGFloat = 0, g2: CGFloat = 0, b2: CGFloat = 0, a2: CGFloat = 0
+        UIColor(a).getRed(&r1, green: &g1, blue: &b1, alpha: &a1)
+        UIColor(b).getRed(&r2, green: &g2, blue: &b2, alpha: &a2)
+        let k = CGFloat(t)
+        return Color(.sRGB,
+                     red: r1 + (r2 - r1) * k,
+                     green: g1 + (g2 - g1) * k,
+                     blue: b1 + (b2 - b1) * k,
+                     opacity: a1 + (a2 - a1) * k)
     }
 }
 

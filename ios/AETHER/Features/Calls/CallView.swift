@@ -86,7 +86,7 @@ struct CallView: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .liquidGlass(Capsule())
+        .liquidGlass(Capsule(style: .continuous), neutral: true)
     }
 
     private var moodTint: Color {
@@ -112,7 +112,7 @@ struct CallView: View {
     // MARK: - Управление
 
     @ViewBuilder private var controlsStack: some View {
-        VStack(spacing: 18) {
+        VStack(spacing: 12) {
             if showEffects && call.isVideo && call.state != .incoming {
                 EffectsTray(effects: call.effects)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -141,9 +141,9 @@ struct CallView: View {
     }
 
     private var activeControls: some View {
-        GlassGroup(spacing: 14) {
-            VStack(spacing: 16) {
-                HStack(spacing: 10) {
+        GlassGroup(spacing: 16) {
+            VStack(spacing: 18) {
+                HStack(spacing: 6) {
                     controlButton(call.micOn ? "mic.fill" : "mic.slash.fill",
                                   title: call.micOn ? "Микрофон" : "Без звука",
                                   on: call.micOn) { call.toggleMic() }
@@ -162,9 +162,9 @@ struct CallView: View {
                     controlButton(call.speakerOn ? "speaker.wave.2.fill" : "speaker.fill",
                                   title: "Динамик", on: call.speakerOn) { call.toggleSpeaker() }
                 }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 12)
-                .liquidGlass(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .liquidGlass(Capsule(style: .continuous), interactive: true, neutral: true)
 
                 Button { call.hangup() } label: {
                     Image(systemName: "phone.down.fill")
@@ -176,7 +176,6 @@ struct CallView: View {
                                            startPoint: .top, endPoint: .bottom),
                             in: Circle()
                         )
-                        .overlay(Circle().stroke(.white.opacity(0.22), lineWidth: 1))
                         .shadow(color: Palette.rgb(0xD91E36).opacity(0.5), radius: 18, y: 8)
                 }
                 .buttonStyle(.squish)
@@ -186,22 +185,20 @@ struct CallView: View {
 
     private func controlButton(_ icon: String, title: String, on: Bool, _ action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            VStack(spacing: 5) {
                 Image(systemName: icon)
-                    .font(.system(size: 20, weight: .semibold))
+                    .font(.system(size: 19, weight: .semibold))
                     .foregroundStyle(on ? palette.textPrimary : palette.background)
-                    .frame(width: 54, height: 54)
-                    .background(
-                        Circle().fill(on
-                                      ? AnyShapeStyle(palette.textPrimary.opacity(0.14))
-                                      : AnyShapeStyle(palette.textPrimary.opacity(0.92)))
-                    )
-                    .overlay(Circle().stroke(.white.opacity(on ? 0.16 : 0), lineWidth: 0.8))
+                    .frame(width: 50, height: 50)
+                    .background(Circle().fill(on
+                                              ? AnyShapeStyle(palette.textPrimary.opacity(0.13))
+                                              : AnyShapeStyle(palette.textPrimary.opacity(0.92))))
                 Text(title)
-                    .font(.system(size: 10, weight: .medium))
+                    .font(.system(size: 9.5, weight: .medium))
                     .foregroundStyle(palette.textSecondary)
-                    .lineLimit(1)
+                    .lineLimit(1).minimumScaleFactor(0.8)
             }
+            .frame(width: 62)
         }
         .buttonStyle(.squish)
     }
@@ -217,7 +214,6 @@ struct CallView: View {
                         .foregroundStyle(.white)
                         .frame(width: 82, height: 82)
                         .background(LinearGradient(colors: colors, startPoint: .top, endPoint: .bottom), in: Circle())
-                        .overlay(Circle().stroke(.white.opacity(0.25), lineWidth: 1))
                         .shadow(color: colors[1].opacity(0.55), radius: 22, y: 10)
                 }
                 .buttonStyle(.squish)
@@ -251,40 +247,39 @@ struct CallView: View {
     }
 }
 
-// Панель масок и жестов. Маска накладывается на кадр до отправки, так что
-// собеседник видит то же самое; жесты распознаются локально с камеры.
+// Панель масок и жестов: круглые чипы в капсуле и отдельная пилюля с жестами.
+// Маска накладывается на кадр до отправки, так что собеседник видит то же самое.
 private struct EffectsTray: View {
     @ObservedObject var effects: VideoEffects
     @Environment(\.palette) private var palette
 
     var body: some View {
-        VStack(spacing: 12) {
-            ScrollView(.horizontal, showsIndicators: false) {
-                HStack(spacing: 10) {
+        GlassGroup(spacing: 12) {
+            VStack(spacing: 10) {
+                HStack(spacing: 6) {
                     ForEach(CallMask.allCases) { mask in
                         chip(mask)
                     }
                 }
-                .padding(.horizontal, 4)
-            }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 10)
+                .liquidGlass(Capsule(style: .continuous), interactive: true, neutral: true)
 
-            Divider().overlay(palette.divider)
-
-            Toggle(isOn: $effects.gesturesEnabled) {
-                HStack(spacing: 8) {
-                    Text("✌️").font(.system(size: 15))
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text("Жесты").font(.system(size: 14, weight: .medium))
-                            .foregroundStyle(palette.textPrimary)
-                        Text("Знак рукой превращается в эмодзи")
-                            .font(.system(size: 11)).foregroundStyle(palette.textSecondary)
-                    }
+                HStack(spacing: 10) {
+                    Text(effects.mask.title)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(palette.textPrimary)
+                    Spacer(minLength: 8)
+                    Text("✌️").font(.system(size: 14))
+                    Toggle("Жесты", isOn: $effects.gesturesEnabled)
+                        .labelsHidden()
+                        .tint(palette.accent)
                 }
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .liquidGlass(Capsule(style: .continuous), neutral: true)
             }
-            .tint(palette.accent)
         }
-        .padding(14)
-        .liquidGlass(RoundedRectangle(cornerRadius: Radius.panel, style: .continuous))
     }
 
     private func chip(_ mask: CallMask) -> some View {
@@ -292,20 +287,13 @@ private struct EffectsTray: View {
         return Button {
             withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) { effects.mask = mask }
         } label: {
-            VStack(spacing: 6) {
-                Text(mask.chip)
-                    .font(.system(size: 24))
-                    .frame(width: 54, height: 54)
-                    .background(
-                        Circle().fill(selected ? palette.accent.opacity(0.9) : palette.textPrimary.opacity(0.12))
-                    )
-                    .overlay(Circle().stroke(palette.accent.opacity(selected ? 0 : 0.001), lineWidth: 1))
-                    .scaleEffect(selected ? 1.06 : 1)
-                Text(mask.title)
-                    .font(.system(size: 10, weight: selected ? .semibold : .regular))
-                    .foregroundStyle(selected ? palette.textPrimary : palette.textSecondary)
-            }
-            .frame(width: 62)
+            Text(mask.chip)
+                .font(.system(size: 21))
+                .frame(width: 44, height: 44)
+                .background(Circle().fill(selected
+                                          ? AnyShapeStyle(palette.accent.opacity(0.85))
+                                          : AnyShapeStyle(palette.textPrimary.opacity(0.12))))
+                .scaleEffect(selected ? 1.06 : 1)
         }
         .buttonStyle(.squish)
     }
@@ -326,7 +314,7 @@ private struct SignFlash: View {
                         .font(.system(size: 13, weight: .semibold))
                         .foregroundStyle(palette.textPrimary)
                         .padding(.horizontal, 12).padding(.vertical, 6)
-                        .liquidGlass(Capsule())
+                        .liquidGlass(Capsule(style: .continuous), neutral: true)
                 }
                 .transition(.scale(scale: 0.4).combined(with: .opacity))
                 .offset(y: -40)
