@@ -130,7 +130,22 @@ final class Messaging: ObservableObject {
     func rebind(session: Session) {
         self.session = session
         groups.bind(session: session, messaging: self)
+        rebuildRouter()
     }
+
+    /// Пересобрать набор транспортов под активное пространство.
+    ///
+    /// Зовётся при каждой привязке: у другого сервера другой идентификатор,
+    /// а значит и другой транспорт. Локальные транспорты (Bluetooth, Wi-Fi)
+    /// добавятся сюда же и от пространства зависеть не будут.
+    private func rebuildRouter() {
+        let r = TransportRouter(core: core)
+        r.register(ServerTransport(core: core, serverId: ServerContext.serverId))
+        router = r
+    }
+
+    /// Маршрутизатор доставки. Создаётся вместе с привязкой к сессии.
+    private var router: TransportRouter?
 
     /// Признак группового чата (для UI).
     /// Признак группы: сначала смотрим локальный SQLite-флаг чата (синхронно доступен
@@ -846,34 +861,20 @@ final class Messaging: ObservableObject {
         (try? payloadWithMessageId(payloadJson: payload, messageId: mid)) ?? payload
     }
 
+    /// Отдать сообщение маршрутизатору. Журнал попыток и запись маршрута
+    /// ведёт он же — здесь остаётся только статус в истории чата.
     private func deliverPending(localId: String, peer: String, payload: String, isGroup: Bool) async {
-        // Пока транспорт один, он и записывается. Когда появится роутер,
-        // здесь будет перебор маршрутов — и каждый оставит свою строку в
-        // журнале попыток, не создавая нового сообщения.
-        let transport = "server.\(ServerContext.serverId)"
-        let attempt = await core.beginAttempt(localId, transport: transport)
-        do {
-            if isGroup {
-                guard let key = await core.groupKey(peer.lowercased()) else {
-                    await core.endAttempt(localId, attempt: attempt, outcome: "error",
-                                          detail: "нет ключа группы")
-                    await core.updateStatus(localId, -1); inboxTick.fire(); return
-                }
-                _ = try await core.sendGroup(groupId: peer, groupKey: key,
-                                             wirePayload: payload, clientId: localId)
-            } else {
-                _ = try await core.sendDirect(to: peer, wirePayload: payload, clientId: localId)
-            }
-            // id не трогаем — он тот же, что был при создании.
+        if router == nil { rebuildRouter() }
+        guard let router else { await core.updateStatus(localId, -1); inboxTick.fire(); return }
+
+        let outgoing = OutgoingMessage(messageId: localId, recipient: peer,
+                                       isGroup: isGroup, payloadJson: payload)
+        switch await router.deliver(outgoing) {
+        case .success:
+            // Идентификатор не трогаем: он тот же, что был при создании,
+            // независимо от того, какой маршрут сработал.
             await core.updateStatus(localId, 1)
-            await core.endAttempt(localId, attempt: attempt, outcome: "ok")
-            await core.setRoute(MessageRoute(
-                messageId: localId, transport: transport, physical: nil,
-                serverId: ServerContext.serverId, serverStored: true,
-                deliveredTs: nil, readTs: nil))
-        } catch {
-            await core.endAttempt(localId, attempt: attempt, outcome: "error",
-                                  detail: String(describing: error))
+        case .failure:
             await core.updateStatus(localId, -1)
         }
         inboxTick.fire()
@@ -951,30 +952,11 @@ final class Messaging: ObservableObject {
                                                        fileName: fileName, fileSize: size, caption: caption,
                                                        replyToId: replyToId, replyToText: replyToText), localId)
                 await core.updatePayload(localId, payload)   // финальный payload без пометки «изменено»
-                let transport = "server.\(ServerContext.serverId)"
-                let attempt = await core.beginAttempt(localId, transport: transport)
-                do {
-                    if isGroup {
-                        guard let key = await core.groupKey(peer.lowercased()) else {
-                            throw CoreError.BadInput(msg: "Нет ключа группы")
-                        }
-                        _ = try await core.sendGroup(groupId: peer, groupKey: key,
-                                                     wirePayload: payload, clientId: localId)
-                    } else {
-                        _ = try await core.sendDirect(to: peer, wirePayload: payload, clientId: localId)
-                    }
-                } catch {
-                    await core.endAttempt(localId, attempt: attempt, outcome: "error",
-                                          detail: String(describing: error))
-                    throw error
-                }
-                await core.updateStatus(localId, 1)
-                await core.endAttempt(localId, attempt: attempt, outcome: "ok")
-                await core.setRoute(MessageRoute(
-                    messageId: localId, transport: transport, physical: nil,
-                    serverId: ServerContext.serverId, serverStored: true,
-                    deliveredTs: nil, readTs: nil))
+                await deliverPending(localId: localId, peer: peer,
+                                     payload: payload, isGroup: isGroup)
             } catch {
+                // Сюда попадает только сбой загрузки файла: доставку
+                // отрабатывает deliverPending и статус ставит сам.
                 await core.updateStatus(localId, -1)
             }
             await refreshChats(); inboxTick.fire()
