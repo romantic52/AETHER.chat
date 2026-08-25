@@ -38,6 +38,33 @@ pub struct Chat {
     pub archived: bool,
 }
 
+/// Политика доставки одного чата.
+#[derive(uniffi::Record, Clone)]
+pub struct ChatDeliveryPolicy {
+    pub peer_id: String,
+    /// AUTO | DIRECT_ONLY | DIRECT_PLUS_BACKUP | SERVER
+    pub delivery_mode: String,
+    /// Порядок транспортов, заданный пользователем. JSON-массив идентификаторов.
+    pub transport_order: Option<String>,
+    /// NEVER | RELAY_ONLY | ENCRYPTED_BACKUP | ASK
+    pub server_storage: String,
+    pub updated_ts: i64,
+}
+
+impl ChatDeliveryPolicy {
+    /// Умолчание = сегодняшнее поведение. Появление политики само по себе
+    /// ничего не должно менять ни в одной существующей установке.
+    pub fn default_for(peer_id: &str) -> Self {
+        ChatDeliveryPolicy {
+            peer_id: peer_id.to_string(),
+            delivery_mode: "AUTO".into(),
+            transport_order: None,
+            server_storage: "ENCRYPTED_BACKUP".into(),
+            updated_ts: 0,
+        }
+    }
+}
+
 /// Итоговый маршрут доставки сообщения.
 #[derive(uniffi::Record, Clone)]
 pub struct MessageRoute {
@@ -196,6 +223,25 @@ CREATE TABLE IF NOT EXISTS message_route (
     server_stored INTEGER NOT NULL DEFAULT 0,
     delivered_ts  INTEGER,
     read_ts       INTEGER
+);
+-- Политика доставки чата: как отправлять и что можно отдавать серверу.
+-- Отдельно от чата: доставка и хранение — разные вещи (раздел 7 проекта),
+-- и обе меняются независимо от того, кто собеседник.
+CREATE TABLE IF NOT EXISTS chat_delivery_policy (
+    peer_id         TEXT PRIMARY KEY,
+    delivery_mode   TEXT NOT NULL DEFAULT 'AUTO',
+    transport_order TEXT,
+    server_storage  TEXT NOT NULL DEFAULT 'ENCRYPTED_BACKUP',
+    updated_ts      INTEGER NOT NULL DEFAULT 0
+);
+-- Что конкретному серверу вообще разрешено получать, по категориям контента.
+-- Пустая таблица означает «разрешено всё» — так поведение существующих
+-- установок не меняется от одного лишь появления политики.
+CREATE TABLE IF NOT EXISTS server_storage_policy (
+    server_id    TEXT NOT NULL,
+    content_kind TEXT NOT NULL,
+    allowed      INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (server_id, content_kind)
 );
 -- Журнал попыток: по нему строится Message Info и работает повтор.
 CREATE TABLE IF NOT EXISTS message_delivery_attempts (
@@ -438,6 +484,72 @@ impl CoreStore {
 
     /// Заменить локальный id на серверный (после успешной отправки), выставив статус.
     /// Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
+    // --- Политика доставки ---------------------------------------------------
+
+    /// Политика чата. Записи нет — отдаём умолчание, а не ошибку: чат мог
+    /// существовать задолго до появления политик.
+    pub fn chat_policy(&self, peer_id: String) -> Result<ChatDeliveryPolicy, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT peer_id, delivery_mode, transport_order, server_storage, updated_ts
+             FROM chat_delivery_policy WHERE peer_id=?1",
+        )?;
+        let mut rows = st.query(params![peer_id.to_lowercase()])?;
+        if let Some(row) = rows.next()? {
+            return Ok(ChatDeliveryPolicy {
+                peer_id: row.get(0)?,
+                delivery_mode: row.get(1)?,
+                transport_order: row.get(2)?,
+                server_storage: row.get(3)?,
+                updated_ts: row.get(4)?,
+            });
+        }
+        Ok(ChatDeliveryPolicy::default_for(&peer_id.to_lowercase()))
+    }
+
+    pub fn set_chat_policy(&self, p: ChatDeliveryPolicy) -> Result<(), CoreError> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO chat_delivery_policy
+                (peer_id, delivery_mode, transport_order, server_storage, updated_ts)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(peer_id) DO UPDATE SET
+                delivery_mode=excluded.delivery_mode,
+                transport_order=excluded.transport_order,
+                server_storage=excluded.server_storage,
+                updated_ts=excluded.updated_ts",
+            params![p.peer_id.to_lowercase(), p.delivery_mode, p.transport_order,
+                    p.server_storage, p.updated_ts],
+        )?;
+        Ok(())
+    }
+
+    /// Разрешено ли отдавать серверу контент такой категории.
+    /// Отсутствие записи = разрешено: иначе включение функции молча запретило бы всё.
+    pub fn server_allows(&self, server_id: String, content_kind: String) -> Result<bool, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT allowed FROM server_storage_policy WHERE server_id=?1 AND content_kind=?2",
+        )?;
+        let mut rows = st.query(params![server_id, content_kind])?;
+        match rows.next()? {
+            Some(row) => Ok(row.get::<_, i64>(0)? != 0),
+            None => Ok(true),
+        }
+    }
+
+    pub fn set_server_allows(&self, server_id: String, content_kind: String,
+                             allowed: bool) -> Result<(), CoreError> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO server_storage_policy (server_id, content_kind, allowed)
+             VALUES (?1,?2,?3)
+             ON CONFLICT(server_id, content_kind) DO UPDATE SET allowed=excluded.allowed",
+            params![server_id, content_kind, allowed as i64],
+        )?;
+        Ok(())
+    }
+
     // --- Маршрут доставки -----------------------------------------------------
 
     /// Записать, чем сообщение реально ушло. Вызывается ПОСЛЕ подтверждения:
@@ -1355,6 +1467,37 @@ mod tests {
         assert!(s.olm_pin_get("bob_1::ios".into()).unwrap().is_none());
         assert!(s.olm_pin_get("bobx1::ios".into()).unwrap().is_some(), "чужой пир не тронут");
         assert_eq!(s.olm_session_get("bobx1::ios".into()).unwrap().as_deref(), Some(untouched.as_str()));
+    }
+
+    #[test]
+    fn policy_defaults_preserve_existing_behaviour() {
+        let s = store();
+        // Чат без записи: умолчание, а не ошибка — политики появились позже чатов.
+        let p = s.chat_policy("bob".into()).unwrap();
+        assert_eq!(p.delivery_mode, "AUTO");
+        assert_eq!(p.server_storage, "ENCRYPTED_BACKUP");
+
+        // Категория без записи: разрешено. Иначе одно лишь появление функции
+        // молча запретило бы отправку всего.
+        assert!(s.server_allows("cloud".into(), "image".into()).unwrap());
+
+        s.set_chat_policy(ChatDeliveryPolicy {
+            peer_id: "BOB".into(),           // регистр не должен создавать вторую запись
+            delivery_mode: "DIRECT_ONLY".into(),
+            transport_order: Some("[\"nearby.ble\"]".into()),
+            server_storage: "NEVER".into(),
+            updated_ts: 5,
+        }).unwrap();
+        let p = s.chat_policy("bob".into()).unwrap();
+        assert_eq!(p.delivery_mode, "DIRECT_ONLY");
+        assert_eq!(p.server_storage, "NEVER");
+        assert_eq!(p.transport_order.as_deref(), Some("[\"nearby.ble\"]"));
+
+        s.set_server_allows("cloud".into(), "image".into(), false).unwrap();
+        assert!(!s.server_allows("cloud".into(), "image".into()).unwrap());
+        // Запрет одной категории не трогает остальные и другие серверы.
+        assert!(s.server_allows("cloud".into(), "text".into()).unwrap());
+        assert!(s.server_allows("home".into(), "image".into()).unwrap());
     }
 
     #[test]

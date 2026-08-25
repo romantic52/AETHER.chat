@@ -1289,6 +1289,25 @@ actor CoreClient {
     func markDeleted(_ id: String) { try? store.markDeleted(id: id) }
     func pendingOutgoing() -> [StoredMessage] { (try? store.getPendingOutgoing()) ?? [] }
 
+    // MARK: - Политика доставки
+
+    func chatPolicy(_ peer: String) -> ChatDeliveryPolicy {
+        (try? store.chatPolicy(peerId: peer.lowercased()))
+            ?? ChatDeliveryPolicy(peerId: peer.lowercased(), deliveryMode: "AUTO",
+                                  transportOrder: nil, serverStorage: "ENCRYPTED_BACKUP",
+                                  updatedTs: 0)
+    }
+
+    func setChatPolicy(_ policy: ChatDeliveryPolicy) { try? store.setChatPolicy(p: policy) }
+
+    func serverAllows(serverId: String, contentKind: String) -> Bool {
+        (try? store.serverAllows(serverId: serverId, contentKind: contentKind)) ?? true
+    }
+
+    func setServerAllows(serverId: String, contentKind: String, allowed: Bool) {
+        try? store.setServerAllows(serverId: serverId, contentKind: contentKind, allowed: allowed)
+    }
+
     // MARK: - Маршрут доставки
     //
     // Маршрут — свойство ДОСТАВКИ, а не сообщения: одно и то же сообщение

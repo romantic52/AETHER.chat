@@ -142,10 +142,19 @@ final class Messaging: ObservableObject {
         let r = TransportRouter(core: core)
         r.register(ServerTransport(core: core, serverId: ServerContext.serverId))
         router = r
+        policyEngine = MessagePolicyEngine(core: core)
+    }
+
+    /// Политика доставки — для интерфейса чата и настроек.
+    var policies: MessagePolicyEngine? {
+        if policyEngine == nil { rebuildRouter() }
+        return policyEngine
     }
 
     /// Маршрутизатор доставки. Создаётся вместе с привязкой к сессии.
     private var router: TransportRouter?
+    /// Каскад политик: настройки чата, запреты по категориям, разовый выбор.
+    private var policyEngine: MessagePolicyEngine?
 
     /// Признак группового чата (для UI).
     /// Признак группы: сначала смотрим локальный SQLite-флаг чата (синхронно доступен
@@ -869,13 +878,26 @@ final class Messaging: ObservableObject {
 
         let outgoing = OutgoingMessage(messageId: localId, recipient: peer,
                                        isGroup: isGroup, payloadJson: payload)
-        switch await router.deliver(outgoing) {
+        let kind = MessagePolicyEngine.contentKind(payload)
+        let policy = await policies?.policy(peer: peer, contentKind: kind)
+            ?? EffectivePolicy(deliveryMode: .auto, serverStorage: .encryptedBackup,
+                               transportOrder: [], restrictedBy: nil)
+
+        switch await router.deliver(outgoing, mode: policy.deliveryMode,
+                                    preferredOrder: policy.transportOrder) {
         case .success:
             // Идентификатор не трогаем: он тот же, что был при создании,
             // независимо от того, какой маршрут сработал.
             await core.updateStatus(localId, 1)
-        case .failure:
-            await core.updateStatus(localId, -1)
+        case .failure(let failure):
+            // «Только напрямую» и получателя рядом нет — это НЕ ошибка.
+            // Сообщение ждёт, а не уезжает молча через сервер: именно ради
+            // этого различия режим и существует.
+            if case .noRouteAvailable = failure, !policy.allowsServer {
+                await core.updateStatus(localId, MessageStatus.waitingForNearby)
+            } else {
+                await core.updateStatus(localId, -1)
+            }
         }
         inboxTick.fire()
     }

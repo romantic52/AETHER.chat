@@ -3,6 +3,7 @@ import PhotosUI
 
 struct SettingsView: View {
     @EnvironmentObject var session: Session
+    @EnvironmentObject var messaging: Messaging
     @EnvironmentObject var appearance: AppearanceSettings
     /// Пуши ведём состоянием, а не NavigationLink: корень вкладки объявляет
     /// видимость дока и должен знать, открыт ли поверх него экран.
@@ -18,6 +19,7 @@ struct SettingsView: View {
             List {
                 profileSection
                 serversSection
+                deliverySection
                 accountsSection
                 privacySection
                 securitySection
@@ -150,6 +152,17 @@ struct SettingsView: View {
     @State private var showAddAccount = false
     @State private var wallpaperItem: PhotosPickerItem?
     @ObservedObject private var wallpaperStore = WallpaperStore.shared
+
+    private var deliverySection: some View {
+        Section {
+            NavigationLink {
+                DeliverySettingsView().environmentObject(session).environmentObject(messaging)
+            } label: {
+                SettingsLabel("Доставка и данные", icon: "arrow.triangle.branch", color: .teal)
+            }
+            .listRowBackground(palette.surface)
+        }
+    }
 
     private var serversSection: some View {
         Section {

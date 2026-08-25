@@ -217,6 +217,10 @@ struct MessageBubble: View {
         case 2: doubleCheck(color: secondary)
         case 3: doubleCheck(color: readTick)
         case -1: Image(systemName: "exclamationmark.circle").font(.system(size: 11)).foregroundStyle(palette.danger)
+        // Ждёт получателя рядом: не ошибка и не «отправляется» — сообщение
+        // намеренно никуда не уедет, пока человек не окажется поблизости.
+        case 4: Image(systemName: "dot.radiowaves.left.and.right")
+                    .font(.system(size: 10)).foregroundStyle(secondary)
         default: EmptyView()
         }
     }
