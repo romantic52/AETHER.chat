@@ -26,6 +26,8 @@ struct MessageBubble: View {
     var onEdit: () -> Void
     var onDelete: () -> Void
     var onRetry: () -> Void
+    /// Показать «О сообщении». Необязательный: у каналов и превью его нет.
+    var onInfo: (() -> Void)? = nil
 
     @Environment(\.palette) private var palette
     @State private var dragX: CGFloat = 0
@@ -278,6 +280,9 @@ struct MessageBubble: View {
             if message.outgoing {
                 Button { onEdit() } label: { Label("Изменить", systemImage: "pencil") }
             }
+        }
+        if let onInfo {
+            Button { onInfo() } label: { Label("О сообщении", systemImage: "info.circle") }
         }
         if message.outgoing {
             Button(role: .destructive) { onDelete() } label: { Label("Удалить", systemImage: "trash") }

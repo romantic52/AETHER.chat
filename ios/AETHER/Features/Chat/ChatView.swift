@@ -66,6 +66,8 @@ struct ChatView: View {
 
     // Группа/канал.
     @State private var showGroupProfile = false
+    /// Сообщение, для которого открыт экран «О сообщении».
+    @State private var infoMessage: ChatMessage?
     /// Отложенная отправка — долгое нажатие на кнопке отправки.
     @State private var showSchedule = false
     @State private var scheduleAt = Date().addingTimeInterval(3600)
@@ -316,6 +318,10 @@ struct ChatView: View {
                     pendingKeyKind = await messaging.pendingOlmAlertKind(for: peerId)
                 }
             }
+        }
+        .sheet(item: $infoMessage) { msg in
+            MessageInfoView(message: msg, peerTitle: title)
+                .environmentObject(session)
         }
         .sheet(item: $pickerFor) { msg in
             ReactionPicker { emoji in
@@ -617,7 +623,8 @@ struct ChatView: View {
                                 onPicker: { pickerFor = msg },
                                 onEdit: { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { editing = msg; draft = msg.payload?.text ?? ""; inputFocused = true } },
                                 onDelete: { vm.delete(msg) },
-                                onRetry: { vm.retry(msg) }
+                                onRetry: { vm.retry(msg) },
+                                onInfo: { infoMessage = msg }
                             )
                             // Комментарии: у канала с обсуждением — лёгкая кнопка под
                             // постом (БЕЗ стекла: 40 glassEffect на экран = лаги).
