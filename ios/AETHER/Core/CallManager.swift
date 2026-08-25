@@ -38,6 +38,12 @@ final class CallManager: NSObject, ObservableObject {
     @Published private(set) var remoteTrackReady = false
     @Published private(set) var history: [Record] = []
     @Published private(set) var endMessage: String?
+    /// Чем закончился последний звонок — фон экрана красит по нему финальный кадр.
+    @Published private(set) var lastResult: Record.Result?
+
+    /// Маски и жесты для исходящего видео; живёт дольше одного звонка,
+    /// чтобы выбранная маска не сбрасывалась между вызовами.
+    let effects = VideoEffects()
 
     var client: WebRTCClient?
     private var pendingRemoteCandidates: [RTCIceCandidate] = []
@@ -91,7 +97,7 @@ final class CallManager: NSObject, ObservableObject {
 
     private func beginOutgoing() {
         state = .dialing
-        let c = WebRTCClient(isVideo: isVideo)
+        let c = WebRTCClient(isVideo: isVideo, effects: effects)
         c.delegate = self
         client = c
         c.setSpeaker(speakerOn)
@@ -199,7 +205,7 @@ final class CallManager: NSObject, ObservableObject {
     private func beginAccepting() {
         guard let offerSdp = pendingOfferSdp else { return }
         state = .connecting
-        let c = WebRTCClient(isVideo: isVideo)
+        let c = WebRTCClient(isVideo: isVideo, effects: effects)
         c.delegate = self
         client = c
         c.setSpeaker(speakerOn)
@@ -261,6 +267,8 @@ final class CallManager: NSObject, ObservableObject {
         pendingRemoteCandidates.removeAll()
         pendingOfferSdp = nil
         endMessage = nil
+        lastResult = nil
+        effects.resetTransient()
         callCreatedAt = Date()
         callStartedAt = nil
         self.direction = direction
@@ -302,6 +310,7 @@ final class CallManager: NSObject, ObservableObject {
         pendingOfferSdp = nil
         writeHistory(result: result)
         endMessage = message
+        lastResult = result
         state = .ended
 
         Task { @MainActor [weak self] in
@@ -373,6 +382,7 @@ final class CallManager: NSObject, ObservableObject {
         callStartedAt = nil
         callCreatedAt = nil
         endMessage = nil
+        effects.resetTransient()
     }
 
     private func scheduleTimeout() {

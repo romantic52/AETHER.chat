@@ -22,6 +22,8 @@ final class WebRTCClient: NSObject {
 
     private let peerConnection: RTCPeerConnection
     private var videoCapturer: RTCCameraVideoCapturer?
+    /// Маски/жесты накладываются на кадр до отправки — их видит и собеседник.
+    private let effects: VideoEffects?
     private(set) var localVideoTrack: RTCVideoTrack?
     private(set) var remoteVideoTrack: RTCVideoTrack?
     private var localAudioTrack: RTCAudioTrack?
@@ -42,7 +44,8 @@ final class WebRTCClient: NSObject {
                      username: Secrets.turnUsername, credential: Secrets.turnCredential),
     ]
 
-    init(isVideo: Bool) {
+    init(isVideo: Bool, effects: VideoEffects? = nil) {
+        self.effects = effects
         let config = RTCConfiguration()
         config.iceServers = Self.iceServers
         config.sdpSemantics = .unifiedPlan
@@ -76,7 +79,12 @@ final class WebRTCClient: NSObject {
 
         if isVideo {
             let videoSource = Self.factory.videoSource()
-            videoCapturer = RTCCameraVideoCapturer(delegate: videoSource)
+            if let effects {
+                effects.attach(to: videoSource)
+                videoCapturer = RTCCameraVideoCapturer(delegate: effects)
+            } else {
+                videoCapturer = RTCCameraVideoCapturer(delegate: videoSource)
+            }
             let videoTrack = Self.factory.videoTrack(with: videoSource, trackId: "AETHER_video")
             peerConnection.add(videoTrack, streamIds: [streamId])
             localVideoTrack = videoTrack
@@ -201,6 +209,7 @@ final class WebRTCClient: NSObject {
 
     func close() {
         videoCapturer?.stopCapture()
+        effects?.detach()
         rendererLock.lock()
         let local = Array(localRenderers.values)
         let remote = Array(remoteRenderers.values)
