@@ -17,6 +17,7 @@ struct SettingsView: View {
             palette.background.ignoresSafeArea()
             List {
                 profileSection
+                serversSection
                 accountsSection
                 privacySection
                 securitySection
@@ -150,6 +151,25 @@ struct SettingsView: View {
     @State private var wallpaperItem: PhotosPickerItem?
     @ObservedObject private var wallpaperStore = WallpaperStore.shared
 
+    private var serversSection: some View {
+        Section {
+            NavigationLink {
+                ServersListView().environmentObject(session)
+            } label: {
+                HStack {
+                    SettingsLabel("Серверы", icon: "server.rack", color: .indigo)
+                    Spacer()
+                    Text(session.activeServer?.displayName ?? "")
+                        .font(.system(size: 15))
+                        .foregroundStyle(palette.textSecondary)
+                }
+            }
+            .listRowBackground(palette.surface)
+        } footer: {
+            Text("Официальная инфраструктура Aether и ваши собственные серверы. Каждый сервер независим: своя учётная запись, своя переписка, свои ключи.")
+        }
+    }
+
     private var accountsSection: some View {
         Section {
             ForEach(session.accounts, id: \.self) { id in
@@ -178,9 +198,9 @@ struct SettingsView: View {
                 .listRowBackground(palette.surface)
             }
         } header: {
-            Text("Аккаунты")
+            Text("Аккаунты на \(session.activeServer?.displayName ?? "сервере")")
         } footer: {
-            Text("До \(Session.maxAccounts) аккаунтов на устройстве. Переписка и настройки каждого хранятся отдельно.")
+            Text("До \(Session.maxAccounts) аккаунтов на одном сервере. Переписка и настройки каждого хранятся отдельно. Аккаунты других серверов — в переключателе пространства.")
         }
         .sheet(isPresented: $showStatusPicker) { statusPickerSheet }
         .sheet(isPresented: $showAddAccount) {

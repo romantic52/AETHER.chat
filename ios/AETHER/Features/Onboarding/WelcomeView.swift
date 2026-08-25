@@ -8,12 +8,36 @@ struct WelcomeView: View {
     @Environment(\.palette) private var palette
 
     enum Mode { case login, register }
+    /// Выбор инфраструктуры, а не режима приложения: официальные серверы
+    /// Aether или сервер, который пользователь поднял сам.
+    enum Infra { case official, custom }
+
     @State private var mode: Mode = .login
+    @State private var infra: Infra = .official
+    /// Одна шторка на экран.
+    ///
+    /// Несколько .sheet на ОДНОМ вью SwiftUI не обслуживает: срабатывает не та,
+    /// что просили, — здесь строка сервера просто ничего не открывала. Поэтому
+    /// все шторки экрана сведены в одно состояние.
+    enum Sheet: Identifiable {
+        case pairing
+        case addServer
+        case auth(ServerRecord)
+
+        var id: String {
+            switch self {
+            case .pairing: return "pairing"
+            case .addServer: return "add"
+            case .auth(let server): return "auth-" + server.id
+            }
+        }
+    }
+    @State private var sheet: Sheet?
+    @StateObject private var registry = ServerRegistry.shared
     @State private var userId = ""
     @State private var password = ""
     @State private var busy = false
-    @State private var showPairing = false
-    @State private var error: String?
+        @State private var error: String?
     @State private var appeared = false
     @State private var needsTotp = false
     @State private var totpCode = ""
@@ -37,14 +61,16 @@ struct WelcomeView: View {
                     }
                     .opacity(appeared ? 1 : 0)
 
-                    // Переключатель Вход/Регистрация.
-                    Picker("", selection: $mode) {
-                        Text("Вход").tag(Mode.login)
-                        Text("Регистрация").tag(Mode.register)
+                    Picker("", selection: $infra) {
+                        Text("Наши серверы").tag(Infra.official)
+                        Text("Пользовательские").tag(Infra.custom)
                     }
                     .pickerStyle(.segmented)
-                    .padding(.horizontal, 32)
+                    .padding(.horizontal, 24)
 
+                    if infra == .custom {
+                        customServers
+                    } else {
                     VStack(spacing: 14) {
                         field(icon: "at", placeholder: "Имя пользователя", text: $userId)
                             .textInputAutocapitalization(.never)
@@ -88,11 +114,14 @@ struct WelcomeView: View {
                     .opacity(busy || userId.isEmpty || password.count < 4 ? 0.6 : 1)
                     .padding(.horizontal, 28)
 
+                    modeSwitch
+                        .padding(.top, 2)
+
                     // Вход по QR: устройство ещё не вошло, поэтому точка входа
                     // именно здесь. Пароль при этом не нужен — подтверждение с
                     // доверенного устройства само по себе является доказательством.
                     Button {
-                        showPairing = true
+                        sheet = .pairing
                     } label: {
                         Label("Войти по QR с другого устройства", systemImage: "qrcode")
                             .font(.system(size: 15, weight: .medium))
@@ -100,6 +129,7 @@ struct WelcomeView: View {
                     }
                     .buttonStyle(.plain)
                     .padding(.top, 2)
+                    }
 
                     Spacer(minLength: 8)
                 }
@@ -111,8 +141,18 @@ struct WelcomeView: View {
         .onAppear {
             withAnimation(.easeOut(duration: 0.45)) { appeared = true }
         }
-        .sheet(isPresented: $showPairing) {
-            PairShowQRView().environmentObject(session)
+        .sheet(item: $sheet) { which in
+            switch which {
+            case .pairing:
+                PairShowQRView().environmentObject(session)
+            case .addServer:
+                NavigationStack { AddServerView().environmentObject(session) }
+            case .auth(let record):
+                NavigationStack {
+                    ServerAuthView(server: record) { sheet = nil }
+                        .environmentObject(session)
+                }
+            }
         }
         #if DEBUG
         .task {
@@ -125,6 +165,92 @@ struct WelcomeView: View {
             }
         }
         #endif
+    }
+
+    /// Нижний переключатель Вход ●────○ Регистрация.
+    private var modeSwitch: some View {
+        HStack(spacing: 14) {
+            Text("Вход")
+                .foregroundStyle(mode == .login ? palette.textPrimary : palette.textSecondary)
+            Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+                    mode = mode == .login ? .register : .login
+                    error = nil
+                }
+            } label: {
+                Capsule()
+                    .fill(palette.surfaceElevated)
+                    .frame(width: 56, height: 30)
+                    .overlay(alignment: mode == .login ? .leading : .trailing) {
+                        Circle().fill(palette.accent).frame(width: 24, height: 24).padding(3)
+                    }
+            }
+            .buttonStyle(.plain)
+            Text("Регистрация")
+                .foregroundStyle(mode == .register ? palette.textPrimary : palette.textSecondary)
+        }
+        .font(.system(size: 15, weight: .medium))
+    }
+
+    /// Вкладка «Пользовательские»: сохранённые серверы и добавление нового.
+    private var customServers: some View {
+        VStack(spacing: 14) {
+            let saved = registry.ordered.filter { !$0.isOfficial }
+            if saved.isEmpty {
+                VStack(spacing: 8) {
+                    Text("Свои серверы")
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    Text("Подключитесь к серверу Aether, который подняли вы или ваши знакомые. Он независим: своя учётная запись, своя переписка, свои правила.")
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .padding(.vertical, 8)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(saved) { server in
+                        Button { sheet = .auth(server) } label: {
+                            HStack(spacing: 12) {
+                                Image(systemName: "server.rack")
+                                    .foregroundStyle(palette.accent).frame(width: 24)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(server.displayName)
+                                        .font(.system(size: 16, weight: .medium))
+                                        .foregroundStyle(palette.textPrimary)
+                                    Text(server.hostLabel)
+                                        .font(.caption).foregroundStyle(palette.textSecondary)
+                                }
+                                Spacer()
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(palette.textSecondary)
+                            }
+                            .padding(16)
+                            // Без этого нажимается только текст: середина
+                            // строки прозрачна, и тап по ней проваливается.
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        if server.id != saved.last?.id {
+                            Rectangle().fill(palette.divider).frame(height: 0.5).padding(.leading, 52)
+                        }
+                    }
+                }
+                .background(palette.surface, in: RoundedRectangle(cornerRadius: 18))
+            }
+
+            Button { sheet = .addServer } label: {
+                Label("Добавить сервер", systemImage: "plus")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 16)
+                    .background(palette.accent, in: Capsule())
+                    .foregroundStyle(palette.onAccent)
+            }
+            .buttonStyle(.squish)
+        }
+        .padding(.horizontal, 24)
     }
 
     private func field(icon: String, placeholder: String, text: Binding<String>) -> some View {

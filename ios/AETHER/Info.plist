@@ -37,12 +37,17 @@
 	<string>1</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSAppTransportSecurity</key>
+	<dict>
+		<key>NSAllowsLocalNetworking</key>
+		<true/>
+	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Æther использует камеру для фото, видео-кружков и звонков.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>Face ID разблокирует доступ к вашим чатам.</string>
 	<key>NSLocalNetworkUsageDescription</key>
-	<string>Æther использует локальную сеть для прямого соединения во время звонков.</string>
+	<string>Æther использует локальную сеть для прямого соединения во время звонков и для подключения к серверам в вашей сети.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>Æther использует микрофон для голосовых сообщений и звонков.</string>
 	<key>NSPhotoLibraryUsageDescription</key>

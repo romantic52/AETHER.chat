@@ -6,6 +6,7 @@ uniffi::setup_scaffolding!();
 
 pub mod api;
 pub mod crypto;
+pub mod discovery;
 pub mod protocol;
 pub mod ratchet;
 pub mod store;

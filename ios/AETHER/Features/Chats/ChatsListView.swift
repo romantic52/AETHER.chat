@@ -30,6 +30,7 @@ struct ChatsListView: View {
     @State private var newGroupPresented = false
     @State private var newChannelPresented = false
     @State private var showComposeMenu = false
+    @State private var showSpaceSwitcher = false
     @State private var showArchive = false
     @State private var editMode: EditMode = .inactive
     /// Какая строка сейчас раскрыта свайпом — открытие одной закрывает соседку.
@@ -390,6 +391,9 @@ struct ChatsListView: View {
                 guard let peer = (note.userInfo?["peer"] as? String)?.lowercased(), !peer.isEmpty else { return }
                 openedPeer = peer
             }
+            .sheet(isPresented: $showSpaceSwitcher) {
+                SpaceSwitcher().environmentObject(session)
+            }
             #if DEBUG
             .onChange(of: messaging.chats.count) { _, _ in tryAutoOpen() }
             .task {
@@ -405,9 +409,23 @@ struct ChatsListView: View {
     /// и заголовок пропал совсем.
     private var customHeader: some View {
         ZStack {
-            Text("Чаты")
-                .font(.system(size: 17, weight: .semibold))
-                .foregroundStyle(palette.textPrimary)
+            // Заголовок — это переключатель пространства. Пока сервер один,
+            // выглядит как обычное название; как только появляется свой
+            // сервер, отсюда видно, где ты находишься.
+            Button {
+                showSpaceSwitcher = true
+            } label: {
+                HStack(spacing: 4) {
+                    Text(session.activeSpaceTitle)
+                        .font(.system(size: 17, weight: .semibold))
+                        .foregroundStyle(palette.textPrimary)
+                    Image(systemName: "chevron.down")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(palette.textSecondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
 
             HStack {
                 if editMode == .active {
@@ -607,7 +625,7 @@ struct ChatsListView: View {
     private func globalUserRow(_ p: FoundUser) -> some View {
         HStack(spacing: 12) {
             Avatar(id: p.userId, name: p.title, size: AetherUI.listAvatar,
-                   avatarURL: p.avatarFileId.isEmpty ? nil : URL(string: "\(CoreClient.baseURL)/avatars/\(p.avatarFileId)"),
+                   avatarURL: p.avatarFileId.isEmpty ? nil : URL(string: "\(ServerContext.origin)/avatars/\(p.avatarFileId)"),
                    online: messaging.isOnline(p.userId))
             VStack(alignment: .leading, spacing: 2) {
                 Text(p.title)
@@ -629,7 +647,7 @@ struct ChatsListView: View {
         HStack(spacing: 12) {
             Avatar(id: g.groupId, name: g.name, size: AetherUI.listAvatar,
                    avatarURL: g.avatarFileId.isEmpty ? nil
-                       : URL(string: "\(CoreClient.baseURL)/avatars/\(g.avatarFileId)"),
+                       : URL(string: "\(ServerContext.origin)/avatars/\(g.avatarFileId)"),
                    online: false)
             VStack(alignment: .leading, spacing: 2) {
                 Text(g.name)

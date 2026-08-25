@@ -57,7 +57,13 @@ targets:
           - UIInterfaceOrientationPortrait
         NSCameraUsageDescription: "Æther использует камеру для фото, видео-кружков и звонков."
         NSMicrophoneUsageDescription: "Æther использует микрофон для голосовых сообщений и звонков."
-        NSLocalNetworkUsageDescription: "Æther использует локальную сеть для прямого соединения во время звонков."
+        NSLocalNetworkUsageDescription: "Æther использует локальную сеть для прямого соединения во время звонков и для подключения к серверам в вашей сети."
+        # Разрешает открытый HTTP ТОЛЬКО к локальной сети (.local и приватные
+        # диапазоны) — для серверов, поднятых дома. Для публичных адресов ATS
+        # продолжает требовать TLS: это ключ Apple ровно для этого случая,
+        # а не общее ослабление проверок.
+        NSAppTransportSecurity:
+          NSAllowsLocalNetworking: true
         NSPhotoLibraryUsageDescription: "Æther получает доступ к фото для отправки медиа."
         NSFaceIDUsageDescription: "Face ID разблокирует доступ к вашим чатам."
         UIBackgroundModes:

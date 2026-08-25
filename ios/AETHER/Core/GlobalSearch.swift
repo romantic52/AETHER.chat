@@ -56,7 +56,7 @@ enum ChannelDirectory {
     static func markViews(_ messageIds: [String]) async -> [String: Int] {
         guard !messageIds.isEmpty,
               let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
-              let url = URL(string: "\(CoreClient.baseURL)/messages/views") else { return [:] }
+              let url = URL(string: "\(ServerContext.apiBase)/messages/views") else { return [:] }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -81,7 +81,7 @@ enum ChannelDirectory {
     /// nil = успех; строка = ошибка (detail из FastAPI либо генерик).
     private static func requestDetailed(_ path: String, method: String, body: [String: Any]?) async -> String? {
         guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
-              let url = URL(string: "\(CoreClient.baseURL)/\(path)") else { return "Нет сессии" }
+              let url = URL(string: "\(ServerContext.apiBase)/\(path)") else { return "Нет сессии" }
         var req = URLRequest(url: url)
         req.httpMethod = method
         req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
@@ -102,7 +102,7 @@ enum ChannelDirectory {
 enum ProfileHTTP {
     static func statusEmoji(_ userId: String) async -> String? {
         guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
-              let url = URL(string: "\(CoreClient.baseURL)/users/\(userId)/profile") else { return nil }
+              let url = URL(string: "\(ServerContext.apiBase)/users/\(userId)/profile") else { return nil }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
@@ -116,7 +116,7 @@ enum ProfileHTTP {
     /// Android, а номер нужен только для показа.
     static func accountNo(_ userId: String) async -> Int64? {
         guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
-              let url = URL(string: "\(CoreClient.baseURL)/users/\(userId)/profile") else { return nil }
+              let url = URL(string: "\(ServerContext.apiBase)/users/\(userId)/profile") else { return nil }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),
@@ -129,7 +129,7 @@ enum ProfileHTTP {
     @discardableResult
     static func setStatusEmoji(_ emoji: String) async -> Bool {
         guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
-              let url = URL(string: "\(CoreClient.baseURL)/users/me/profile") else { return false }
+              let url = URL(string: "\(ServerContext.apiBase)/users/me/profile") else { return false }
         var req = URLRequest(url: url)
         req.httpMethod = "PUT"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
@@ -150,7 +150,7 @@ enum GlobalSearch {
     static func search(_ query: String) async -> Results {
         guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
               let encoded = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-              let url = URL(string: "\(CoreClient.baseURL)/users/search?q=\(encoded)") else { return Results() }
+              let url = URL(string: "\(ServerContext.apiBase)/users/search?q=\(encoded)") else { return Results() }
         var req = URLRequest(url: url)
         req.setValue("Bearer \(bearer)", forHTTPHeaderField: "Authorization")
         guard let (data, resp) = try? await URLSession.shared.data(for: req),

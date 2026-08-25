@@ -236,16 +236,33 @@ impl ApiClient {
         public_key_b64: String,
         encrypted_private_key_b64: String,
     ) -> Result<AuthSession, CoreError> {
+        self.register_invite(user_id, password, public_key_b64, encrypted_private_key_b64, None)
+    }
+
+    /// Регистрация с кодом приглашения — для серверов в режиме INVITE_ONLY, а
+    /// также одноразовым кодом владельца на свежем самохосте.
+    ///
+    /// Отдельный метод, а не параметр у register: менять сигнатуру нельзя,
+    /// её зовут Android и веб через те же UniFFI-привязки.
+    pub fn register_invite(
+        &self,
+        user_id: String,
+        password: String,
+        public_key_b64: String,
+        encrypted_private_key_b64: String,
+        invite_code: Option<String>,
+    ) -> Result<AuthSession, CoreError> {
         let req = self.agent.post(&format!("{}/users/register", self.base));
-        let v = self.call(
-            req,
-            Some(serde_json::json!({
-                "user_id": user_id,
-                "password": password,
-                "public_key_b64": public_key_b64,
-                "encrypted_private_key_b64": encrypted_private_key_b64,
-            })),
-        )?;
+        let mut body = serde_json::json!({
+            "user_id": user_id,
+            "password": password,
+            "public_key_b64": public_key_b64,
+            "encrypted_private_key_b64": encrypted_private_key_b64,
+        });
+        if let Some(code) = invite_code.filter(|c| !c.trim().is_empty()) {
+            body["invite_code"] = serde_json::Value::String(code.trim().to_string());
+        }
+        let v = self.call(req, Some(body))?;
         // Сервер на /register возвращает {ok, user_id} без токена — устанавливаем сессию логином.
         if v.get("token").and_then(|t| t.as_str()).map_or(true, str::is_empty) {
             return self.login(user_id, password);

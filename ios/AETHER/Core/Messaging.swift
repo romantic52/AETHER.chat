@@ -218,7 +218,7 @@ final class Messaging: ObservableObject {
         reconnectTask?.cancel()
         let generation = UUID()
         wsGeneration = generation
-        let url = "\(Secrets.wsBaseURL)/ws?token=\(token)"
+        let url = "\(ServerContext.wsEndpoint)?token=\(token)"
         let client = WsClient()
         let bridge = WsBridge(
             onOpen: { [weak self] in
@@ -1069,7 +1069,7 @@ final class Messaging: ObservableObject {
         let id = peer.lowercased()
         let fid = profiles[id]?.avatarFileId ?? groups.info(id)?.avatarFileId ?? avatarIds[id]
         guard let fid, !fid.isEmpty else { return nil }
-        return URL(string: "\(CoreClient.baseURL)/avatars/\(fid)")
+        return URL(string: "\(ServerContext.origin)/avatars/\(fid)")
     }
 
     func statusEmoji(_ peer: String) -> String? {

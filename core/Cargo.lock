@@ -1360,6 +1360,7 @@ dependencies = [
  "aether-ratchet-core",
  "base64",
  "crypto_box",
+ "ed25519-dalek",
  "hmac",
  "pbkdf2",
  "rand_core",

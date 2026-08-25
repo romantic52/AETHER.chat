@@ -60,7 +60,7 @@ struct PairShowQRView: View {
 
     private func run() async {
         do {
-            let created = try await service.start(host: Secrets.baseURL)
+            let created = try await service.start(host: ServerContext.origin)
             draft = created
             waiting = true
             // Заявка живёт 10 минут; спрашиваем раз в две секунды.

@@ -57,4 +57,39 @@ enum Keychain {
     static let kPublicKey = "identity_public_key"
     static let kPrivateKey = "identity_private_key"
     static let kPin = "app_pin"
+
+    // MARK: - Пространство имён по серверам
+    //
+    // Раньше креды аккаунта лежали под acct_<логин>_*. Пока сервер был один,
+    // это работало; с пользовательскими серверами одинаковый логин на двух
+    // серверах затирал бы чужую запись и подставлял токен не туда. Первичным
+    // ключом стала ПАРА (server_id, логин).
+
+    static func accessKey(_ serverId: String, _ userId: String) -> String {
+        "srv.\(serverId).acct.\(userId.lowercased()).access"
+    }
+    static func refreshKey(_ serverId: String, _ userId: String) -> String {
+        "srv.\(serverId).acct.\(userId.lowercased()).refresh"
+    }
+    static func publicKeyKey(_ serverId: String, _ userId: String) -> String {
+        "srv.\(serverId).acct.\(userId.lowercased()).pub"
+    }
+    static func privateKeyKey(_ serverId: String, _ userId: String) -> String {
+        "srv.\(serverId).acct.\(userId.lowercased()).priv"
+    }
+    /// Ключ SQLCipher для баз этого сервера. У каждого сервера свой.
+    static func dbKeyKey(_ serverId: String) -> String {
+        "srv.\(serverId).dbkey"
+    }
+    /// Поданная и ещё не решённая заявка на регистрацию (request_id + claim_token).
+    static func pendingRequestKey(_ serverId: String) -> String {
+        "srv.\(serverId).pending_request"
+    }
+
+    static func removeSpace(serverId: String, userId: String) {
+        remove(accessKey(serverId, userId))
+        remove(refreshKey(serverId, userId))
+        remove(publicKeyKey(serverId, userId))
+        remove(privateKeyKey(serverId, userId))
+    }
 }

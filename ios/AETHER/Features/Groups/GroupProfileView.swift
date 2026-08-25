@@ -98,7 +98,7 @@ struct GroupProfileView: View {
                 ZStack(alignment: .bottomTrailing) {
                     if let fid = info?.avatarFileId, !fid.isEmpty {
                         Avatar(id: groupId, name: info?.name ?? groupId, size: 110,
-                               avatarURL: URL(string: "\(CoreClient.baseURL)/avatars/\(fid)"))
+                               avatarURL: URL(string: "\(ServerContext.origin)/avatars/\(fid)"))
                     } else {
                         ZStack {
                             Circle().fill(LinearGradient(colors: [palette.accent, palette.accent.opacity(0.6)],

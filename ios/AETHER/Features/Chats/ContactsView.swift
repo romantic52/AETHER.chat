@@ -108,7 +108,7 @@ struct ContactsView: View {
                             Button { pick(p.userId) } label: {
                                 HStack(spacing: 12) {
                                     Avatar(id: p.userId, name: p.displayName ?? p.username ?? p.userId, size: 50,
-                                           avatarURL: (p.avatarFileId ?? "").isEmpty ? nil : URL(string: "\(CoreClient.baseURL)/avatars/\(p.avatarFileId!)"),
+                                           avatarURL: (p.avatarFileId ?? "").isEmpty ? nil : URL(string: "\(ServerContext.origin)/avatars/\(p.avatarFileId!)"),
                                            online: messaging.isOnline(p.userId))
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(p.displayName ?? p.username ?? p.userId)

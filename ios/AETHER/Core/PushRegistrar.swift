@@ -26,7 +26,7 @@ enum PushRegistrar {
 
     private static func post(_ path: String, token: String) async {
         guard let bearer = Keychain.string(for: Keychain.kToken), !bearer.isEmpty,
-              let url = URL(string: "\(CoreClient.baseURL)/\(path)") else { return }
+              let url = URL(string: "\(ServerContext.apiBase)/\(path)") else { return }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")

@@ -18,10 +18,12 @@ struct KeyTrustAlert: Error {
 }
 
 actor CoreClient {
-    static let baseURL = Secrets.baseURL
-
-    private let api: ApiClient
-    private lazy var store: CoreStore = CoreClient.openStoreRecovering(path: CoreClient.databasePath())
+    // Клиент API активного пространства. Пересоздаётся при переключении
+    // сервера: у каждого сервера свой адрес, свой токен и своя база.
+    private var api: ApiClient
+    private lazy var store: CoreStore = CoreClient.openStoreRecovering(
+        path: CoreClient.databasePath(ServerContext.dbFileName),
+        serverId: ServerContext.serverId)
     private var peerKeyCache: [String: (key: String, fetchedAt: Date)] = [:]
 
     // Текущая криптоидентичность (после логина/восстановления сессии).
@@ -32,19 +34,35 @@ actor CoreClient {
     private var myOlmIdentity: String = ""
 
     init() {
-        self.api = ApiClient(baseUrl: CoreClient.baseURL)
+        self.api = ApiClient(baseUrl: ServerContext.apiBase)
     }
 
-    static func databasePath() -> String {
-        let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent("aether.sqlite").path
+    /// Переключение на другое пространство: другой сервер, другой аккаунт,
+    /// другая база. Ничего от прежнего пространства не переиспользуется.
+    func bindSpace(serverId: String, apiBase: String, userId: String, dbFileName: String) {
+        api = ApiClient(baseUrl: apiBase)
+        store = CoreClient.openStoreRecovering(path: CoreClient.databasePath(dbFileName),
+                                               serverId: serverId)
+        try? store.metaSet(key: "account_owner", value: userId.lowercased())
+        try? store.metaSet(key: "server_id", value: serverId)
+        // Кеши прежнего пространства обнуляются целиком: ключи, устройства и
+        // тревоги доверия принадлежали другому серверу и другому аккаунту.
+        peerKeyCache.removeAll(keepingCapacity: true)
+        myOlmIdentity = ""
+        cachedDeviceId = ""
+        deviceCache.removeAll(keepingCapacity: true)
+        pendingKeyChanges.removeAll()
+        pendingInboundKeys.removeAll()
+        pendingMasterChanges.removeAll()
+        pendingUnsignedDevices.removeAll()
+        myId = ""
+        myPublicKey = ""
+        myPrivateKey = ""
     }
 
-    private static func accountDatabasePath(_ userId: String) -> String {
-        let safe = userId.lowercased().map { $0.isLetter || $0.isNumber ? $0 : "_" }
-        let name = "aether_\(String(safe)).sqlite"
+    static func databasePath(_ fileName: String = "aether.sqlite") -> String {
         let dir = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        return dir.appendingPathComponent(name).path
+        return dir.appendingPathComponent(fileName).path
     }
 
     // Ключ шифрования локальной базы (SQLCipher): 32 байта, живёт в Keychain.
@@ -59,27 +77,39 @@ actor CoreClient {
 
     /// Сохранённый ключ БД, если он ДОСТУПЕН прямо сейчас. Ничего не генерирует:
     /// nil может означать и «первый запуск», и «Keychain ещё заперт» — решает вызывающий.
-    private static func storedDbKey() -> String? {
-        if let key = Keychain.string(for: kDbKey) {
+    private static func storedDbKey(serverId: String) -> String? {
+        let scoped = Keychain.dbKeyKey(serverId)
+        if let key = Keychain.string(for: scoped) {
             #if DEBUG
-            UserDefaults.standard.set(key, forKey: kDbKey)
+            UserDefaults.standard.set(key, forKey: scoped)
             #endif
             return key
         }
+        // Наследство одного сервера: общий ключ базы. Копируем его под
+        // серверное имя, НЕ создавая новый — иначе существующая база не
+        // откроется (инцидент 10.07, см. комментарий к openStoreRecovering).
+        if let legacy = Keychain.string(for: kDbKey) {
+            Keychain.set(legacy, for: scoped)
+            #if DEBUG
+            UserDefaults.standard.set(legacy, forKey: scoped)
+            #endif
+            return legacy
+        }
         #if DEBUG
-        if let key = UserDefaults.standard.string(forKey: kDbKey) {
-            Keychain.set(key, for: kDbKey)
+        if let key = UserDefaults.standard.string(forKey: scoped)
+            ?? UserDefaults.standard.string(forKey: kDbKey) {
+            Keychain.set(key, for: scoped)
             return key
         }
         #endif
         return nil
     }
 
-    private static func makeAndStoreDbKey() -> String {
+    private static func makeAndStoreDbKey(serverId: String) -> String {
         let key = randomKeyB64()
-        Keychain.set(key, for: kDbKey)
+        Keychain.set(key, for: Keychain.dbKeyKey(serverId))
         #if DEBUG
-        UserDefaults.standard.set(key, forKey: kDbKey)
+        UserDefaults.standard.set(key, forKey: Keychain.dbKeyKey(serverId))
         #endif
         return key
     }
@@ -91,11 +121,11 @@ actor CoreClient {
     // случае падаем (перезапуск безопаснее потери переписки). Переименование в
     // .corrupt-* — только когда база реально не открывается ВАЛИДНЫМ ключом,
     // и файл при этом остаётся рядом как бэкап.
-    private static func openStoreRecovering(path: String) -> CoreStore {
+    private static func openStoreRecovering(path: String, serverId: String) -> CoreStore {
         let fm = FileManager.default
         let dbExists = fm.fileExists(atPath: path)
 
-        var key = storedDbKey()
+        var key = storedDbKey(serverId: serverId)
         if key == nil, dbExists {
             // База есть, ключа «нет» — при холодном старте почти наверняка Keychain
             // ещё заперт: ждём его (10с ретраев). Если после этого ключа всё равно
@@ -105,10 +135,10 @@ actor CoreClient {
             // corrupt-пути) и стартуем свежую с новым ключом.
             for _ in 0..<20 where key == nil {
                 Thread.sleep(forTimeInterval: 0.5)
-                key = storedDbKey()
+                key = storedDbKey(serverId: serverId)
             }
         }
-        let effectiveKey = key ?? makeAndStoreDbKey()   // nil здесь = первый запуск ИЛИ ключ утерян
+        let effectiveKey = key ?? makeAndStoreDbKey(serverId: serverId)   // nil здесь = первый запуск ИЛИ ключ утерян
 
         if let store = try? CoreStore.open(path: path, encryptionKeyB64: effectiveKey) { return store }
         // Валидный ключ, но база не открылась — настоящее повреждение.
@@ -120,25 +150,10 @@ actor CoreClient {
         return try! CoreStore.open(path: path, encryptionKeyB64: effectiveKey)
     }
 
-    private func selectStore(for userId: String) {
-        let legacyPath = Self.databasePath()
-        let legacy = Self.openStoreRecovering(path: legacyPath)
-        let owner = (try? legacy.metaGet(key: "account_owner")) ?? nil
-        if owner == nil || owner == userId {
-            if owner == nil { try? legacy.metaSet(key: "account_owner", value: userId) }
-            store = legacy
-        } else {
-            let account = Self.openStoreRecovering(path: Self.accountDatabasePath(userId))
-            try? account.metaSet(key: "account_owner", value: userId)
-            store = account
-        }
-    }
-
     // MARK: - Идентичность / сессия
 
     func setIdentity(id: String, publicKey: String, privateKey: String) {
         if myId != id {
-            selectStore(for: id)
             peerKeyCache.removeAll(keepingCapacity: true)
             myOlmIdentity = ""   // у нового аккаунта свой Olm-аккаунт в его store
             // Всё, что привязано к прежнему аккаунту, обнуляем: иначе ключи
@@ -167,14 +182,16 @@ actor CoreClient {
 
     /// Регистрация: ядро генерит пару, шифрует приватный ключ паролем (PBKDF2+AES-GCM),
     /// шлёт на сервер. Возвращает сессию; приватный ключ оседает в акторе (Keychain — снаружи).
-    func register(userId: String, password: String) throws -> (session: AuthSession, privateKey: String) {
+    func register(userId: String, password: String,
+                  inviteCode: String? = nil) throws -> (session: AuthSession, privateKey: String) {
         let kp = generateKeypair()
         let encPriv = try encryptPrivateKey(privateKeyB64: kp.privateB64, password: password)
-        let session = try api.register(
+        let session = try api.registerInvite(
             userId: userId,
             password: password,
             publicKeyB64: kp.publicB64,
-            encryptedPrivateKeyB64: encPriv
+            encryptedPrivateKeyB64: encPriv,
+            inviteCode: inviteCode
         )
         setIdentity(id: session.userId, publicKey: kp.publicB64, privateKey: kp.privateB64)
         return (session, kp.privateB64)

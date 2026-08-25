@@ -18,6 +18,8 @@ aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 hmac = "0.12"
 sha2 = "0.10"
+# Проверка подписи /server/info. Уже в дереве через ratchet-core — новой загрузки нет.
+ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 rand_core = { version = "0.6", features = ["getrandom"] }
 base64 = "0.22"
 serde = { version = "1", features = ["derive"] }
