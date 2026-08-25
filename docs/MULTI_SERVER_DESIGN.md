@@ -721,6 +721,15 @@ AETHER-SERVER-INFO-1
 времени больше чем на 5 минут (с оговоркой на кривые часы — тогда предупреждение,
 а не отказ).
 
+**И ещё одно, обязательное.** Сервер собирает `api_url` из переменной окружения
+`AETHER_PUBLIC_URL`, а когда её нет — из заголовка `Host`. `Host` подконтролен
+тому, кто делает запрос, поэтому клиент **обязан сверить, что хост в `api_url` и
+`websocket_url` совпадает с origin, куда он сам постучался**. Не совпало —
+относиться как к смене идентификатора сервера (раздел 16.2), а не молча идти по
+названному адресу. Иначе подпись «заверяла» бы строку, которую подставил
+посторонний. Владельцу самохоста за реверс-прокси правильнее задать
+`AETHER_PUBLIC_URL` явно.
+
 ### 8.2 Аутентификация
 
 ```
@@ -1908,3 +1917,31 @@ _mirror_api_v1()   # ВЫЗЫВАТЬ ПОСЛЕ всех @app.* и до include
 * **Автоматическое доверие официальному серверу в коде клиента** — §1.4.
 * **Кнопка «принять недоверенный сертификат»** — 16.4.
 * **Гарантия удаления данных с чужого сервера** — 14.5, обещать нельзя.
+
+---
+
+## Приложение В. Локальная разработка сервера
+
+Боевой VPS до готовности этапа 2 не трогаем, поэтому серверная часть
+разрабатывается и проверяется на машине разработчика.
+
+```bash
+brew install postgresql@16 && brew services start postgresql@16
+export PATH="/opt/homebrew/opt/postgresql@16/bin:$PATH"
+psql -h 127.0.0.1 -d postgres -c "CREATE ROLE sm_user LOGIN PASSWORD 'sm_pass'"
+psql -h 127.0.0.1 -d postgres -c "CREATE DATABASE secure_messenger OWNER sm_user"
+
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+DB_HOST=127.0.0.1 .venv/bin/python -m uvicorn server.main:app --port 8099
+```
+
+Проверка:
+
+```bash
+AETHER_URL=http://127.0.0.1:8099 .venv/bin/python server/test_server_info.py
+AETHER_URL=http://127.0.0.1:8099 .venv/bin/python server/test_logout.py
+AETHER_URL=http://127.0.0.1:8099 .venv/bin/python server/test_prekeys.py
+```
+
+`.venv/` в git не попадает. Свежая база стартует в режиме `APPROVAL` —
+это и есть проверка дефолта из раздела 18.1.

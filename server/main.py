@@ -32,12 +32,19 @@ from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
 from fastapi.staticfiles import StaticFiles
+from fastapi.routing import APIRoute, APIWebSocketRoute
 
 # Работает и как пакет server.main (uvicorn server.main:app), и из папки server/.
 try:
     from server import apns
+    from server import server_identity as ident
+    from server import routes_server_info
+    from server import schema_multiserver
 except ImportError:
     import apns
+    import server_identity as ident
+    import routes_server_info
+    import schema_multiserver
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -254,6 +261,18 @@ def get_current_user(authorization: str = Header(None)) -> str:
 
 
 def init_db() -> None:
+    _init_schema()
+    # Роли, заявки, инвайты, аудит, refresh-токены, импорт данных.
+    # Только добавление таблиц: этой же базой пользуются работающие клиенты.
+    with db_conn() as cur:
+        schema_multiserver.apply(cur)
+    # Постоянный server_id, ключ подписи и политика регистрации. Идемпотентно:
+    # server_id генерируется РОВНО один раз — перегенерация выглядит для всех
+    # клиентов как подмена сервера (см. docs/MULTI_SERVER_DESIGN.md, 16).
+    ident.ensure_identity()
+
+
+def _init_schema() -> None:
     with db_conn() as cur:
         cur.execute(
             """
@@ -2751,5 +2770,51 @@ def download_avatar(request: Request, file_id: str) -> FileResponse:
 
 # (#A4) Удалены неиспользуемые API: магазин (items/buy/my-items) и
 # /groups/{id}/link (заглушка «комментариев») — клиент их никогда не звал.
+
+# --- /api/v1: та же поверхность API под версионированным префиксом ---
+# Мультисерверный клиент ходит в /api/v1/..., но переименовать существующие
+# пути нельзя: по ним работают Android, веб и все установленные сборки iOS.
+# Поэтому каждый уже объявленный маршрут получает АЛИАС — тот же самый
+# обработчик, только с префиксом. Тела функций не трогаются вообще.
+#
+# Вызывать строго ПОСЛЕ всех @app.* и ДО app.mount("/"): Mount("/") совпадает
+# с любым путём и перехватил бы всё, что добавлено после него.
+API_V1 = "/api/v1"
+
+
+def _mirror_api_v1() -> None:
+    for r in list(app.router.routes):
+        if isinstance(r, APIRoute) and not r.path.startswith(API_V1):
+            app.add_api_route(
+                API_V1 + r.path,
+                r.endpoint,
+                methods=list(r.methods or []),
+                name=(r.name or "route") + "_v1",
+                response_model=r.response_model,
+                status_code=r.status_code,
+                dependencies=r.dependencies,
+                response_class=r.response_class,
+                include_in_schema=False,   # в схеме остаётся одна копия пути
+            )
+        elif isinstance(r, APIWebSocketRoute) and not r.path.startswith(API_V1):
+            app.add_api_websocket_route(
+                API_V1 + r.path, r.endpoint, name=(r.name or "ws") + "_v1")
+
+
+_mirror_api_v1()
+
+# --- Обнаружение сервера ---
+# Тот же роутер монтируется дважды: под /api/v1 (канон) и без префикса
+# (запасной путь для клиента, который ещё не знает про версионирование).
+# Оба — ДО app.mount("/"), иначе StaticFiles перехватит их на себя.
+app.include_router(routes_server_info.router, prefix=API_V1)
+app.include_router(routes_server_info.router)
+
+
+@app.get("/.well-known/aether")
+def well_known_aether(request: Request, nonce: str = "") -> dict:
+    """Точка обнаружения по RFC 8615: клиенту достаточно ввести домен."""
+    return routes_server_info.build_info(request, (nonce or "").strip()[:64])
+
 
 app.mount("/", StaticFiles(directory=WEB_DIR, html=True), name="web")
