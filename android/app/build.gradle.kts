@@ -22,6 +22,13 @@ android {
         versionCode = 1
         versionName = "0.1.0"
 
+        // Ядро собирается только под эти две архитектуры. Без фильтра в APK
+        // попадают armeabi-v7a и x86 от WebRTC и JNA — на 32-битном устройстве
+        // система выберет их и упадёт, не найдя libsm_core.
+        ndk {
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+
         buildConfigField(
             "String",
             "TURN_HOST",
