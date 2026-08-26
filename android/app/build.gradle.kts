@@ -1,7 +1,15 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
 }
+
+val localProperties = Properties().apply {
+    rootProject.file("local.properties").takeIf { it.isFile }?.inputStream()?.use { load(it) }
+}
+
+fun String.asBuildConfigString() = "\"${replace("\\", "\\\\").replace("\"", "\\\"")}\""
 
 android {
     namespace = "org.groktest.securemessenger"
@@ -13,6 +21,22 @@ android {
         targetSdk = 34
         versionCode = 1
         versionName = "0.1.0"
+
+        buildConfigField(
+            "String",
+            "TURN_HOST",
+            localProperties.getProperty("aether.turnHost", "").asBuildConfigString()
+        )
+        buildConfigField(
+            "String",
+            "TURN_USERNAME",
+            localProperties.getProperty("aether.turnUsername", "").asBuildConfigString()
+        )
+        buildConfigField(
+            "String",
+            "TURN_CREDENTIAL",
+            localProperties.getProperty("aether.turnCredential", "").asBuildConfigString()
+        )
     }
 
     signingConfigs {
@@ -50,7 +74,7 @@ android {
         jvmTarget = "17"
     }
     buildFeatures {
-        viewBinding = true
+        buildConfig = true
         compose = true
     }
     composeOptions {
@@ -76,7 +100,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.12.0")
     implementation("androidx.appcompat:appcompat:1.6.1")
     implementation("com.google.android.material:material:1.11.0")
-    implementation("androidx.constraintlayout:constraintlayout:2.1.4")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
     // Блокировка приложения отпечатком/лицом
     implementation("androidx.biometric:biometric:1.1.0")
@@ -101,9 +124,6 @@ dependencies {
     // uCrop for image cropping
     implementation("com.github.yalantis:ucrop:2.2.8")
     
-    // Palette for color extraction
-    implementation("androidx.palette:palette-ktx:1.0.0")
-
     // WorkManager — отложенные сообщения
     implementation("androidx.work:work-runtime-ktx:2.9.0")
 
@@ -114,4 +134,7 @@ dependencies {
     implementation("androidx.camera:camera-lifecycle:$cameraxVersion")
     implementation("androidx.camera:camera-video:$cameraxVersion")
     implementation("androidx.camera:camera-view:$cameraxVersion")
+
+    // Сканирование QR привязки устройства (оффлайн-модель в APK)
+    implementation("com.google.mlkit:barcode-scanning:17.2.0")
 }

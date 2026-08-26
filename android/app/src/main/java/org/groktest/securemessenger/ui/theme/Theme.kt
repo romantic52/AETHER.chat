@@ -2,11 +2,14 @@ package org.groktest.securemessenger.ui.theme
 
 import android.app.Activity
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
@@ -19,7 +22,23 @@ fun SecureMessengerTheme(
     // Тема выбирается пользователем (см. ThemePalettes / экран Кастомизации).
     val palette = ThemePalettes.byKey(themeSettings.themeKey.value)
     val isDark = palette.isDark
-    val colorScheme = palette.scheme
+    val baseScheme = palette.scheme
+    val colorScheme = if (themeSettings.customAccentEnabled.value) {
+        val accent = ensureContrast(
+            color = themeSettings.getAccentColor().copy(alpha = 1f),
+            background = baseScheme.background,
+            toward = baseScheme.onBackground,
+        )
+        val outgoing = lerp(baseScheme.tertiary, accent, 0.42f)
+        baseScheme.copy(
+            primary = accent,
+            onPrimary = if (accent.luminance() > 0.179f) Color.Black else Color.White,
+            tertiary = outgoing,
+            onTertiary = if (outgoing.luminance() > 0.179f) Color.Black else Color.White,
+        )
+    } else {
+        baseScheme
+    }
 
     val fontFamilyStr = themeSettings.fontFamilyStyle.value
     val fontFamily = when (fontFamilyStr) {
@@ -64,7 +83,38 @@ fun SecureMessengerTheme(
 
     MaterialTheme(
         colorScheme = colorScheme,
+        shapes = Shapes(
+            extraSmall = AetherCompactShape,
+            small = AetherCompactShape,
+            medium = AetherCompactShape,
+            large = aetherLargeShape(),
+            extraLarge = aetherLargeShape(),
+        ),
         typography = typography,
         content = content
     )
+}
+
+private fun ensureContrast(
+    color: Color,
+    background: Color,
+    toward: Color,
+    target: Float = 4.5f,
+): Color {
+    fun ratio(first: Color, second: Color): Float =
+        (maxOf(first.luminance(), second.luminance()) + 0.05f) /
+            (minOf(first.luminance(), second.luminance()) + 0.05f)
+
+    if (ratio(color, background) >= target) return color
+    var low = 0f
+    var high = 1f
+    repeat(12) {
+        val middle = (low + high) / 2f
+        if (ratio(lerp(color, toward, middle), background) >= target) {
+            high = middle
+        } else {
+            low = middle
+        }
+    }
+    return lerp(color, toward, high)
 }

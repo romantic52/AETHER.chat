@@ -5,8 +5,13 @@ import android.os.Bundle
 import androidx.fragment.app.FragmentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Modifier
@@ -27,6 +32,7 @@ import org.groktest.securemessenger.ui.screens.CallOverlay
 import org.groktest.securemessenger.ui.screens.LoginScreen
 import org.groktest.securemessenger.ui.theme.SecureMessengerTheme
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
@@ -41,6 +47,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.mutableStateOf
 
+private fun androidx.navigation.NavHostController.navigateSingle(route: String) {
+    navigate(route) { launchSingleTop = true }
+}
+
 class MainActivity : FragmentActivity() {
 
     // (#A2) Вся логика сообщений — в MessageRepository (создаётся после логина,
@@ -53,18 +63,27 @@ class MainActivity : FragmentActivity() {
     override fun onResume() {
         super.onResume()
         AetherService.appInForeground = true
+        repo?.setAppActive(true)
         org.groktest.securemessenger.data.AppLock.onResumed(this)
     }
 
     override fun onPause() {
         super.onPause()
         AetherService.appInForeground = false
+        repo?.setAppActive(false)
         org.groktest.securemessenger.data.AppLock.onPaused()
     }
 
     @OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Один общий загрузчик умеет брать лёгкий первый кадр видео без запуска плеера.
+        coil.Coil.setImageLoader(
+            coil.ImageLoader.Builder(applicationContext)
+                .components { add(coil.decode.VideoFrameDecoder.Factory()) }
+                .build()
+        )
 
         // Замок приложения: если включён PIN — блокируем сразу при старте
         org.groktest.securemessenger.data.AppLock.onStart(this)
@@ -77,13 +96,6 @@ class MainActivity : FragmentActivity() {
             }
         }
         
-        // Локальное хранилище — в ядре (SQLite в Rust, зашифровано ключом из
-        // Keystore). Единый объект играет роль messageDao+chatDao+pinnedKeyDao.
-        val store = org.groktest.securemessenger.data.CoreStore.create(this)
-        // P6: единая точка доверия к публичным ключам (TOFU-пиннинг).
-        // Все получения ключей собеседников идут через trustStore, не через api напрямую.
-        val trustStore = org.groktest.securemessenger.crypto.KeyTrustStore(store)
-
         setContent {
             val themeSettings = remember { ThemeSettings(this@MainActivity) }
             val folderSettings = remember { org.groktest.securemessenger.ui.theme.ChatFolderSettings(this@MainActivity) }
@@ -97,10 +109,35 @@ class MainActivity : FragmentActivity() {
                 val navController = rememberNavController()
                 val coroutineScope = rememberCoroutineScope()
                 val sessionPrefs = remember { org.groktest.securemessenger.data.SessionPrefs(this@MainActivity) }
+                val initialStoreAccount = remember {
+                    sessionPrefs.load()?.username?.lowercase() ?: "__anonymous__"
+                }
+                var storeAccount by remember { mutableStateOf(initialStoreAccount) }
+                var store by remember {
+                    mutableStateOf(
+                        org.groktest.securemessenger.data.CoreStore.create(
+                            this@MainActivity,
+                            initialStoreAccount,
+                        )
+                    )
+                }
+                var trustStore by remember {
+                    mutableStateOf(org.groktest.securemessenger.crypto.KeyTrustStore(store))
+                }
+                var olmTrustStore by remember {
+                    mutableStateOf(org.groktest.securemessenger.crypto.KeyTrustStore(store, "olm"))
+                }
+                var myOlmIdentity by remember { mutableStateOf("") }
 
                 // Активный звонок: (peerId, isVideoCall, isIncoming).
                 // Оверлей поверх NavHost — звонок можно свернуть и пользоваться приложением.
                 var activeCall by remember { mutableStateOf<Triple<String, Boolean, Boolean>?>(null) }
+                // Свёрнут ли звонок в мини-пилюлю: тогда контент приложения
+                // сдвигается вниз, чтобы пилюля не перекрывала шапки экранов.
+                var callMinimized by remember { mutableStateOf(false) }
+                androidx.compose.runtime.LaunchedEffect(activeCall) {
+                    if (activeCall != null) callMinimized = false
+                }
 
                 androidx.compose.foundation.layout.Box(
                     modifier = Modifier
@@ -108,58 +145,84 @@ class MainActivity : FragmentActivity() {
                         .background(androidx.compose.material3.MaterialTheme.colorScheme.background),
                     contentAlignment = androidx.compose.ui.Alignment.Center
                 ) {
-                    androidx.compose.foundation.layout.Box(
+                    val callBarVisible = activeCall != null && callMinimized
+                    androidx.compose.foundation.layout.Column(
                         modifier = Modifier
                             .fillMaxHeight()
                             .widthIn(max = 600.dp)
                     ) {
+                        // Резерв под мини-пилюлю звонка: контент уезжает вниз,
+                        // как в Telegram, и шапки экранов не перекрываются.
+                        if (callBarVisible) {
+                            androidx.compose.foundation.layout.Spacer(
+                                Modifier.statusBarsPadding().height(56.dp)
+                            )
+                        }
+                        androidx.compose.foundation.layout.Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(
+                                    if (callBarVisible) {
+                                        Modifier.consumeWindowInsets(WindowInsets.statusBars)
+                                    } else {
+                                        Modifier
+                                    }
+                                )
+                        ) {
                         NavHost(
                             navController = navController,
                             startDestination = "login",
                             enterTransition = {
                                 androidx.compose.animation.slideInHorizontally(
                                     initialOffsetX = { it },
-                                    animationSpec = androidx.compose.animation.core.tween(220)
+                                    animationSpec = androidx.compose.animation.core.tween(
+                                        themeSettings.motionDuration(300),
+                                        easing = androidx.compose.animation.core.FastOutSlowInEasing
+                                    )
                                 )
                             },
-                            exitTransition = {
-                                androidx.compose.animation.slideOutHorizontally(
-                                    targetOffsetX = { -it / 3 },
-                                    animationSpec = androidx.compose.animation.core.tween(220)
-                                ) + androidx.compose.animation.fadeOut(
-                                    animationSpec = androidx.compose.animation.core.tween(220)
-                                )
-                            },
-                            popEnterTransition = {
-                                androidx.compose.animation.slideInHorizontally(
-                                    initialOffsetX = { -it / 3 },
-                                    animationSpec = androidx.compose.animation.core.tween(220)
-                                ) + androidx.compose.animation.fadeIn(
-                                    animationSpec = androidx.compose.animation.core.tween(220)
-                                )
-                            },
+                            exitTransition = { androidx.compose.animation.ExitTransition.None },
+                            popEnterTransition = { androidx.compose.animation.EnterTransition.None },
                             popExitTransition = {
                                 androidx.compose.animation.slideOutHorizontally(
                                     targetOffsetX = { it },
-                                    animationSpec = androidx.compose.animation.core.tween(220)
+                                    animationSpec = androidx.compose.animation.core.tween(
+                                        themeSettings.motionDuration(300),
+                                        easing = androidx.compose.animation.core.FastOutSlowInEasing
+                                    )
                                 )
                             }
                         ) {
                             composable("login") {
-                        // Миграция: удаляем старый небезопасный "server|username|password"
-                        val legacyPrefs = getSharedPreferences("AetherPrefs", MODE_PRIVATE)
-                        if (legacyPrefs.contains("saved_login")) {
-                            legacyPrefs.edit().remove("saved_login").apply()
-                        }
                         val savedSession = remember { sessionPrefs.load() }
+                        val legacyLogin = remember { sessionPrefs.legacyLogin() }
 
                         LoginScreen(
                             savedSession = savedSession,
+                            legacyLogin = legacyLogin,
                             onLoginSuccess = { prefs, kp, apiInstance, id, rememberMe ->
+                                val accountId = id.lowercase()
+                                if (storeAccount != accountId) {
+                                    repo?.shutdown()
+                                    store = org.groktest.securemessenger.data.CoreStore.create(
+                                        this@MainActivity,
+                                        accountId,
+                                    )
+                                    trustStore = org.groktest.securemessenger.crypto.KeyTrustStore(store)
+                                    olmTrustStore = org.groktest.securemessenger.crypto.KeyTrustStore(store, "olm")
+                                    myOlmIdentity = ""
+                                    storeAccount = accountId
+                                }
                                 keys = kp
                                 api = apiInstance
                                 myId = id
                                 trustStore.keyFetcher = { apiInstance.getPublicKey(it) }
+                                olmTrustStore.keyFetcher = {
+                                    apiInstance.claimOlmKeys(id, it).identityKeyB64
+                                }
+                                olmTrustStore.onKeyAccepted = {
+                                    store.metaSet("olm_session_reset.${it.lowercase()}", "1")
+                                }
 
                                 // Пароль не сохраняем: только server|username + токен сессии
                                 val token = apiInstance.token
@@ -167,6 +230,9 @@ class MainActivity : FragmentActivity() {
                                     sessionPrefs.save(prefs.substringBefore("|"), id, token)
                                 } else {
                                     sessionPrefs.clear()
+                                }
+                                if (legacyLogin?.username?.equals(id, ignoreCase = true) == true) {
+                                    sessionPrefs.clearLegacyLogin()
                                 }
 
                                 org.groktest.securemessenger.api.ServerConfig.baseUrl = prefs.substringBefore("|")
@@ -194,8 +260,13 @@ class MainActivity : FragmentActivity() {
                                                     val p = apiInstance.getUserProfile(chat.peerId)
                                                     store.updateChat(
                                                         chat.copy(
-                                                            name = p.displayName.ifBlank { chat.name },
-                                                            avatarFileId = p.avatarFileId
+                                                            name = p.displayName.ifBlank {
+                                                                p.username.ifBlank {
+                                                                    chat.name.takeUnless { it == "null" } ?: chat.peerId
+                                                                }
+                                                            },
+                                                            avatarFileId = p.avatarFileId,
+                                                            statusEmoji = p.statusEmoji,
                                                         )
                                                     )
                                                 } catch (e: Exception) {}
@@ -214,9 +285,12 @@ class MainActivity : FragmentActivity() {
                                     myId = id,
                                     store = store,
                                     trustStore = trustStore,
-                                    resolver = contentResolver
+                                    olmTrustStore = olmTrustStore,
+                                    resolver = contentResolver,
+                                    cacheRoot = cacheDir
                                 )
                                 repo = r
+                                r.setAppActive(true)
                                 // Пуш по WebSocket → мгновенная синхронизация
                                 AetherService.onNewMessage = { r.onPushReceived() }
                                 // Имя/мьют чата для уведомлений (из ядрового хранилища).
@@ -225,6 +299,11 @@ class MainActivity : FragmentActivity() {
                                     try { kotlinx.coroutines.runBlocking { store.getChat(pid) } } catch (e: Exception) { null }
                                 }
                                 r.start()
+                                coroutineScope.launch(Dispatchers.IO) {
+                                    runCatching { r.myOlmIdentity() }.getOrNull()?.let { identity ->
+                                        withContext(Dispatchers.Main) { myOlmIdentity = identity }
+                                    }
+                                }
 
 
                                 val serverUrl = prefs.substringBefore("|")
@@ -257,7 +336,10 @@ class MainActivity : FragmentActivity() {
                             myId = myId,
                             chatListFlow = store.getChatList(),
                             onChatSelected = { peerId ->
-                                navController.navigate("chat/$peerId")
+                                coroutineScope.launch {
+                                    withContext(Dispatchers.IO) { store.preloadMessages(peerId) }
+                                    navController.navigateSingle("chat/$peerId")
+                                }
                             },
                             onLogout = {
                                 sessionPrefs.clear()
@@ -281,16 +363,16 @@ class MainActivity : FragmentActivity() {
                                 }
                             },
                             onNewChat = {
-                                navController.navigate("search")
+                                navController.navigateSingle("search")
                             },
                             onNavigateToCustomization = {
-                                navController.navigate("customization")
+                                navController.navigateSingle("customization")
                             },
                             onNavigateToSearch = {
-                                navController.navigate("search")
+                                navController.navigateSingle("search")
                             },
                             onCreateGroupClick = { asChannel ->
-                                navController.navigate("create_group?name=&channel=$asChannel")
+                                navController.navigateSingle("create_group?name=&channel=$asChannel")
                             },
                             onAction = { peerId, action ->
                                 coroutineScope.launch(Dispatchers.IO) {
@@ -303,11 +385,12 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
                             },
-                            onNavigateToProfileSettings = { navController.navigate("profile_settings") },
-                            onNavigateToNotificationsSettings = { navController.navigate("notifications_settings") },
-                            onNavigateToPrivacySettings = { navController.navigate("privacy_settings") },
-                            onNavigateToAboutApp = { navController.navigate("about_app") },
-                            onNavigateToSecret = { navController.navigate("secret_settings") },
+                            onNavigateToProfileSettings = { navController.navigateSingle("profile_settings") },
+                            onNavigateToNotificationsSettings = { navController.navigateSingle("notifications_settings") },
+                            onNavigateToPrivacySettings = { navController.navigateSingle("privacy_settings") },
+                            onNavigateToSecuritySettings = { navController.navigateSingle("security_settings") },
+                            onNavigateToAboutApp = { navController.navigateSingle("about_app") },
+                            onNavigateToExperiments = { navController.navigateSingle("secret_settings") },
                             onStartAudioCall = { peerId -> activeCall = Triple(peerId, false, false) },
                             onStartVideoCall = { peerId -> activeCall = Triple(peerId, true, false) }
                         )
@@ -354,6 +437,59 @@ class MainActivity : FragmentActivity() {
                         }
                     }
 
+                    composable("security_settings") {
+                        val apiSafe = api
+                        if (apiSafe == null) {
+                            androidx.compose.runtime.LaunchedEffect(Unit) {
+                                navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                            }
+                            return@composable
+                        }
+                        org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
+                            org.groktest.securemessenger.ui.screens.SecurityScreen(
+                                api = apiSafe,
+                                myId = myId,
+                                onBack = { navController.popBackStack() },
+                                onPairDevice = { navController.navigateSingle("pair_device") },
+                                onLoggedOut = {
+                                    // Сервер уже отозвал сессию этого устройства («Выйти»
+                                    // на экране безопасности) — локально гасим всё, как при logout.
+                                    sessionPrefs.clear()
+                                    repo?.shutdown()
+                                    repo = null
+                                    AetherService.onNewMessage = null
+                                    AetherService.chatLookup = null
+                                    stopService(Intent(this@MainActivity, AetherService::class.java))
+                                    api = null
+                                    keys = null
+                                    myId = ""
+                                    navController.navigate("login") {
+                                        popUpTo(0) { inclusive = true }
+                                    }
+                                }
+                            )
+                        }
+                    }
+
+                    composable("pair_device") {
+                        val apiSafe = api
+                        val keysSafe = keys
+                        if (apiSafe == null || keysSafe == null) {
+                            androidx.compose.runtime.LaunchedEffect(Unit) {
+                                navController.navigate("login") { popUpTo(0) { inclusive = true } }
+                            }
+                            return@composable
+                        }
+                        org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
+                            org.groktest.securemessenger.ui.screens.PairDeviceScreen(
+                                api = apiSafe,
+                                myId = myId,
+                                keys = keysSafe,
+                                onBack = { navController.popBackStack() },
+                            )
+                        }
+                    }
+
                     composable("about_app") {
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             org.groktest.securemessenger.ui.screens.AboutAppScreen(
@@ -369,11 +505,13 @@ class MainActivity : FragmentActivity() {
                                 api = apiSafe,
                                 myId = myId,
                                 onBack = { navController.popBackStack() },
-                                onNavigateToProfile = { navController.navigate("profile_settings") },
-                                onNavigateToNotifications = { navController.navigate("notifications_settings") },
-                                onNavigateToPrivacy = { navController.navigate("privacy_settings") },
-                                onNavigateToAbout = { navController.navigate("about_app") },
-                                onNavigateToCustomization = { navController.navigate("customization") }
+                                onNavigateToProfile = { navController.navigateSingle("profile_settings") },
+                                onNavigateToNotifications = { navController.navigateSingle("notifications_settings") },
+                                onNavigateToPrivacy = { navController.navigateSingle("privacy_settings") },
+                                onNavigateToSecurity = { navController.navigateSingle("security_settings") },
+                                onNavigateToAbout = { navController.navigateSingle("about_app") },
+                                onNavigateToCustomization = { navController.navigateSingle("customization") },
+                                onNavigateToExperiments = { navController.navigateSingle("secret_settings") }
                             )
                         }
                     }
@@ -398,13 +536,22 @@ class MainActivity : FragmentActivity() {
                             org.groktest.securemessenger.ui.screens.SearchScreen(
                                 api = apiSafe,
                                 onBack = { navController.popBackStack() },
-                                onUserSelected = { peerId ->
-                                    // Pop search and open chat
-                                    navController.popBackStack()
-                                    navController.navigate("chat/$peerId")
+                                onResultSelected = { result ->
+                                    coroutineScope.launch {
+                                        repo?.let { repoSafe ->
+                                            withContext(Dispatchers.IO) {
+                                                repoSafe.ensureChatExists(
+                                                    result.userId,
+                                                    forceGroup = result.isGroup
+                                                )
+                                            }
+                                        }
+                                        navController.popBackStack()
+                                        navController.navigateSingle("chat/${Uri.encode(result.userId)}")
+                                    }
                                 },
                                 onCreateChannel = { name ->
-                                    navController.navigate("create_group?name=${Uri.encode(name)}&channel=true")
+                                    navController.navigateSingle("create_group?name=${Uri.encode(name)}&channel=true")
                                 }
                             )
                         }
@@ -436,7 +583,7 @@ class MainActivity : FragmentActivity() {
                                 onBack = { navController.popBackStack() },
                                 onGroupCreated = { groupId ->
                                     navController.popBackStack()
-                                    navController.navigate("chat/$groupId")
+                                    navController.navigateSingle("chat/$groupId")
                                 }
                             )
                         }
@@ -462,26 +609,38 @@ class MainActivity : FragmentActivity() {
                                 kotlinx.coroutines.withContext(Dispatchers.IO) { repoSafe.discussionGroupFor(peerId) }
                             } catch (e: Exception) { null }
                         }
-                        // Человеческое имя чата для шапки (вместо технического group_/channel_ id)
-                        val peerName by androidx.compose.runtime.produceState(initialValue = peerId, peerId) {
-                            value = try {
-                                kotlinx.coroutines.withContext(Dispatchers.IO) { store.getChat(peerId)?.name?.takeIf { it.isNotBlank() } ?: peerId }
-                            } catch (e: Exception) { peerId }
-                        }
+                        val peerChat = store.cachedChat(peerId)
+                        val peerName = peerChat?.name?.takeIf { it.isNotBlank() } ?: peerId
+                        val peerType = peerChat?.type ?: 0
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             ChatScreen(
                                 peerId = peerId,
                                 peerDisplayName = peerName,
+                                chatType = peerType,
                                 messagesFlow = store.getMessagesForPeer(peerId),
                                 onBack = { navController.popBackStack() },
                                 onAudioCall = { activeCall = Triple(peerId, false, false) },
                                 onVideoCall = { activeCall = Triple(peerId, true, false) },
-                                onOpenSafety = if (peerId.startsWith("channel_", ignoreCase = true)) null else ({
-                                    navController.navigate("safety/$peerId")
+                                onOpenSafety = if (peerType == 1 || peerType == 2) null else ({
+                                    navController.navigateSingle("safety/$peerId")
                                 }),
-                                // Статус «был(а) в сети»: last_active из профиля собеседника
-                                fetchPeerLastActive = {
-                                    withContext(Dispatchers.IO) { api?.getUserProfile(peerId)?.lastActive }
+                                fetchPeerPresence = {
+                                    withContext(Dispatchers.IO) {
+                                        api?.getUserProfile(peerId)?.let { profile ->
+                                            store.getChat(peerId)?.let { chat ->
+                                                store.updateChat(
+                                                    chat.copy(
+                                                        name = profile.displayName.ifBlank {
+                                                            profile.username.ifBlank { chat.name }
+                                                        },
+                                                        avatarFileId = profile.avatarFileId,
+                                                        statusEmoji = profile.statusEmoji,
+                                                    )
+                                                )
+                                            }
+                                            profile.lastActive to profile.statusEmoji
+                                        }
+                                    }
                                 },
                                 // Кол-во участников/подписчиков для шапки группы/канала
                                 fetchMemberCount = {
@@ -490,10 +649,8 @@ class MainActivity : FragmentActivity() {
                                 // Тап по шапке: личный чат → профиль контакта,
                                 // группа/канал → экран управления группой.
                                 onOpenProfile = {
-                                    val groupLike = peerId.startsWith("channel_", ignoreCase = true) ||
-                                        peerId.startsWith("group_", ignoreCase = true)
-                                    if (groupLike) navController.navigate("group/$peerId")
-                                    else navController.navigate("contact/$peerId")
+                                    if (peerType == 1 || peerType == 2) navController.navigateSingle("group/$peerId")
+                                    else navController.navigateSingle("contact/$peerId")
                                 },
                                 // (#A3) Плашка для легаси-каналов без E2E
                                 checkNotE2e = { repoSafe.isPeerNotE2E(peerId) },
@@ -502,7 +659,7 @@ class MainActivity : FragmentActivity() {
                                 // (#A6) Кнопка «Обсуждение» под постами канала
                                 onOpenDiscussion = discussionGroupId?.let { gid ->
                                     { _: org.groktest.securemessenger.data.MessageEntity ->
-                                        navController.navigate("chat/$gid")
+                                        navController.navigateSingle("chat/$gid")
                                     }
                                 },
                                 // (#A2) Optimistic send: запись в Room мгновенно (status=0),
@@ -516,11 +673,14 @@ class MainActivity : FragmentActivity() {
                                 onSendFiles = { uris, caption ->
                                     repoSafe.sendFiles(peerId, uris, caption)
                                 },
-                                onSendRecording = { bytes, mime, kind, durationMs ->
-                                    repoSafe.sendRecording(peerId, bytes, mime, kind, durationMs)
+                                onSendRecording = { file, mime, kind, durationMs, waveform ->
+                                    repoSafe.sendRecording(peerId, file, mime, kind, durationMs, waveform = waveform)
                                 },
                                 onDownloadMedia = { jsonText ->
                                     repoSafe.downloadMedia(jsonText)
+                                },
+                                cachedMediaFile = { jsonText ->
+                                    repoSafe.cachedMediaFile(jsonText)
                                 },
                                 onDeleteMessage = { mid, deleteEverywhere ->
                                     if (deleteEverywhere) {
@@ -587,9 +747,9 @@ class MainActivity : FragmentActivity() {
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             org.groktest.securemessenger.ui.screens.SafetyNumberScreen(
                                 myId = myId,
-                                myPublicKeyB64 = keys?.publicB64 ?: "",
+                                myPublicKeyB64 = myOlmIdentity,
                                 peerId = peerId,
-                                trustStore = trustStore,
+                                trustStore = olmTrustStore,
                                 onBack = { navController.popBackStack() }
                             )
                         }
@@ -614,7 +774,7 @@ class MainActivity : FragmentActivity() {
                                     coroutineScope.launch(Dispatchers.IO) { store.deleteChatAndMessages(peerId) }
                                     navController.navigate("main") { popUpTo("main") { inclusive = true } }
                                 },
-                                onMemberClick = { uid -> navController.navigate("contact/$uid") }
+                                onMemberClick = { uid -> navController.navigateSingle("contact/$uid") }
                             )
                         }
                     }
@@ -634,12 +794,14 @@ class MainActivity : FragmentActivity() {
                                 onMessage = { navController.popBackStack() },
                                 onAudioCall = { activeCall = Triple(peerId, false, false) },
                                 onVideoCall = { activeCall = Triple(peerId, true, false) },
-                                onOpenSafety = { navController.navigate("safety/$peerId") }
+                                onOpenSafety = { navController.navigateSingle("safety/$peerId") }
                             )
                         }
                     }
 
                 }
+                        }
+                    }
 
                 // Входящие звонки: глобальный слушатель (не затирается активным звонком)
                 androidx.compose.runtime.LaunchedEffect(Unit) {
@@ -650,6 +812,34 @@ class MainActivity : FragmentActivity() {
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 if (activeCall == null) {
                                     activeCall = Triple(callerId, isVideoCall, true)
+                                    // Приложение в фоне: Compose на паузе, оверлей звонка
+                                    // не смонтируется и рингтон не заиграет — будим
+                                    // пользователя системным уведомлением о звонке.
+                                    if (!AetherService.appInForeground) {
+                                        try {
+                                            val callerName = runCatching {
+                                                AetherService.chatLookup?.invoke(callerId)?.name
+                                            }.getOrNull()?.takeIf { it.isNotBlank() } ?: callerId
+                                            val intent = Intent(this@MainActivity, MainActivity::class.java).apply {
+                                                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+                                            }
+                                            val pending = android.app.PendingIntent.getActivity(
+                                                this@MainActivity, 2, intent,
+                                                android.app.PendingIntent.FLAG_UPDATE_CURRENT or android.app.PendingIntent.FLAG_IMMUTABLE
+                                            )
+                                            val notif = androidx.core.app.NotificationCompat.Builder(this@MainActivity, "AETHER_MESSAGES")
+                                                .setSmallIcon(R.drawable.ic_stat_aether)
+                                                .setContentTitle(callerName)
+                                                .setContentText(if (isVideoCall) "Входящий видеозвонок" else "Входящий звонок")
+                                                .setPriority(androidx.core.app.NotificationCompat.PRIORITY_HIGH)
+                                                .setCategory(androidx.core.app.NotificationCompat.CATEGORY_CALL)
+                                                .setContentIntent(pending)
+                                                .setAutoCancel(true)
+                                                .build()
+                                            (getSystemService(Context.NOTIFICATION_SERVICE) as android.app.NotificationManager)
+                                                .notify("incoming_call".hashCode(), notif)
+                                        } catch (_: Exception) {}
+                                    }
                                 }
                             }
                         }
@@ -662,6 +852,8 @@ class MainActivity : FragmentActivity() {
                         peerId = callPeer,
                         isIncoming = callIncoming,
                         isVideoCall = callVideo,
+                        minimized = callMinimized,
+                        onMinimizedChange = { callMinimized = it },
                         onClose = {
                             android.os.Handler(android.os.Looper.getMainLooper()).post {
                                 activeCall = null
@@ -679,7 +871,6 @@ class MainActivity : FragmentActivity() {
             }
         }
     }
-}
 }
 }
 }

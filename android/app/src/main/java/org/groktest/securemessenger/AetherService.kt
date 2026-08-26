@@ -8,10 +8,17 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import android.os.Handler
+import android.os.Looper
 import androidx.core.app.NotificationCompat
 import org.json.JSONObject
 
 class AetherService : Service() {
+
+    private val reconnectHandler = Handler(Looper.getMainLooper())
+    private var websocketUrl: String? = null
+    private var connectionGeneration = 0
+    private var reconnectAttempt = 0
 
     companion object {
         // Realtime-канал теперь в ядре (Rust tungstenite): авто-реконнект и ping
@@ -28,6 +35,8 @@ class AetherService : Service() {
         var chatLookup: ((String) -> org.groktest.securemessenger.data.ChatEntity?)? = null
         // Индикатор «печатает...» от собеседника
         var onTyping: ((String) -> Unit)? = null
+        // Вход с нового устройства (QR-привязка): плашка «Выполнен вход»
+        var onDeviceAdded: ((String, String) -> Unit)? = null
         // Приложение на переднем плане — тогда системные уведомления не нужны
         var appInForeground = false
 
@@ -35,8 +44,17 @@ class AetherService : Service() {
             try { wsClient?.sendTyping(recipientId) } catch (e: Exception) {}
         }
 
-        fun sendWebRtcSignal(signal: JSONObject) {
-            try { wsClient?.sendWebrtcSignal(signal.toString()) } catch (e: Exception) {}
+        fun sendWebRtcSignal(signal: JSONObject): Boolean {
+            return try {
+                val type = signal.optString("type")
+                val recipientId = signal.optString("recipient_id")
+                val client = wsClient
+                if (type.isBlank() || recipientId.isBlank() || client?.isActive() != true) return false
+                client.sendWebrtcSignal(type, recipientId, signal.toString())
+                true
+            } catch (_: Exception) {
+                false
+            }
         }
     }
 
@@ -51,63 +69,132 @@ class AetherService : Service() {
         val token = intent.getStringExtra("token") ?: return START_NOT_STICKY
 
         // Старое соединение гасим, новое поднимаем через ядро.
-        wsClient?.disconnect()
-        val ws = uniffi.sm_core.WsClient(serverUrl)
-        wsClient = ws
-        ws.connect(token, coreWsListener)
+        val wsBase = serverUrl.trimEnd('/')
+            .replaceFirst("https://", "wss://")
+            .replaceFirst("http://", "ws://")
+        val encodedToken = java.net.URLEncoder.encode(token, "UTF-8")
+        websocketUrl = "$wsBase/ws?token=$encodedToken"
+        reconnectHandler.removeCallbacksAndMessages(null)
+        reconnectAttempt = 0
+        connectWebSocket()
         return START_STICKY
     }
 
     /** Мост из realtime-событий ядра в статические слушатели приложения. */
-    private val coreWsListener = object : uniffi.sm_core.WsListener {
-        override fun onConnected() {}
-        override fun onDisconnected() {}
+    private fun connectWebSocket() {
+        val url = websocketUrl ?: return
+        val generation = connectionGeneration + 1
+        connectionGeneration = generation
+        wsClient?.disconnect()
 
-        override fun onNewMessage(senderId: String) {
-            // Мгновенно подтягиваем сообщение, не дожидаясь поллинга
-            onNewMessage?.invoke()
-            if (!appInForeground) {
-                val chat = if (senderId.isNotBlank()) try { chatLookup?.invoke(senderId) } catch (e: Exception) { null } else null
-                if (chat?.isMuted == true) return // замьюченный чат не шумит
-                // Имя — в шторке; на экране блокировки система покажет publicVersion без имени (#A4).
-                // Если чата ещё нет локально (первое сообщение) — показываем хотя бы id отправителя.
-                showNewMessageNotification(
-                    title = chat?.name?.takeIf { it.isNotBlank() }
-                        ?: senderId.takeIf { it.isNotBlank() } ?: "Aether",
-                    text = "Новое сообщение",
-                    peerId = senderId
-                )
-            }
+        val client = uniffi.sm_core.WsClient()
+        wsClient = client
+        try {
+            client.connect(url, websocketListener(generation))
+        } catch (_: Exception) {
+            scheduleReconnect(generation)
+        }
+    }
+
+    private fun websocketListener(generation: Int) = object : uniffi.sm_core.WsListener {
+        override fun onOpen() {
+            if (generation == connectionGeneration) reconnectAttempt = 0
         }
 
-        override fun onTyping(senderId: String) {
-            onTyping?.invoke(senderId)
+        override fun onClose() {
+            scheduleReconnect(generation)
         }
 
-        override fun onWebrtcSignal(json: String) {
+        override fun onEvent(json: String) {
+            if (generation != connectionGeneration) return
             try {
-                val obj = JSONObject(json)
-                val type = obj.optString("type")
-                if (type == "webrtc_offer") lastOffer = obj
-                val active = callListener
-                if (active != null) {
-                    active.invoke(obj)
-                } else if (type == "webrtc_offer") {
-                    val incoming = incomingOfferListener
-                    if (incoming != null) {
-                        incoming.invoke(obj)
-                    } else {
-                        // Приложение в фоне — уведомление о входящем звонке
-                        // (#A4) Приватность: без имени звонящего
-                        showNewMessageNotification(title = "Aether", text = "Входящий звонок", peerId = "call")
-                    }
+                val event = JSONObject(json)
+                val type = event.optString("type")
+                val senderId = event.optString("sender_id")
+                when (type) {
+                    "new_message" -> handleNewMessage(senderId)
+                    "typing" -> onTyping?.invoke(senderId)
+                    "device_added" -> handleDeviceAdded(event)
+                    "webrtc_offer", "webrtc_answer", "webrtc_ice",
+                    "webrtc_hangup", "webrtc_busy" -> handleWebRtcEvent(type, event)
                 }
             } catch (e: Exception) {
-                e.printStackTrace()
+                android.util.Log.w("AetherService", "Invalid websocket event", e)
             }
         }
     }
 
+    private fun scheduleReconnect(generation: Int) {
+        if (generation != connectionGeneration || websocketUrl == null) return
+        val delays = longArrayOf(2_000L, 4_000L, 8_000L, 15_000L, 30_000L)
+        val delay = delays[reconnectAttempt.coerceAtMost(delays.lastIndex)]
+        reconnectAttempt = (reconnectAttempt + 1).coerceAtMost(delays.lastIndex)
+        reconnectHandler.removeCallbacksAndMessages(null)
+        reconnectHandler.postDelayed({
+            if (generation == connectionGeneration && websocketUrl != null) {
+                connectWebSocket()
+            }
+        }, delay)
+    }
+    private fun handleNewMessage(senderId: String) {
+        onNewMessage?.invoke()
+        if (appInForeground) return
+
+        val chat = if (senderId.isNotBlank()) {
+            try {
+                chatLookup?.invoke(senderId)
+            } catch (_: Exception) {
+                null
+            }
+        } else {
+            null
+        }
+        if (chat?.isMuted == true) return
+        showNewMessageNotification(
+            title = chat?.name?.takeIf { it.isNotBlank() }
+                ?: senderId.takeIf { it.isNotBlank() }
+                ?: "Aether",
+            text = "Новое сообщение",
+            peerId = senderId,
+        )
+    }
+
+    /** Вход с нового устройства: плашка в приложении + системное уведомление. */
+    private fun handleDeviceAdded(event: JSONObject) {
+        val deviceId = event.optString("device_id")
+        val platform = event.optString("platform").ifBlank { "устройство" }
+        android.util.Log.i("AetherService", "device_added $deviceId ($platform)")
+        onDeviceAdded?.invoke(deviceId, platform)
+        val readable = when {
+            platform.startsWith("desktop") -> "компьютера"
+            platform.startsWith("ios") -> "iPhone"
+            platform.startsWith("android") -> "Android"
+            else -> platform
+        }
+        showNewMessageNotification(
+            title = "Выполнен вход с нового устройства",
+            text = "Вход с $readable ($deviceId). Если это не вы — откройте «Сессии и безопасность».",
+            peerId = "",
+        )
+    }
+
+    private fun handleWebRtcEvent(type: String, event: JSONObject) {
+        if (type == "webrtc_offer") lastOffer = event
+        callListener?.let {
+            it.invoke(event)
+            return
+        }
+        if (type != "webrtc_offer") return
+        incomingOfferListener?.let {
+            it.invoke(event)
+            return
+        }
+        showNewMessageNotification(
+            title = "Aether",
+            text = "Входящий звонок",
+            peerId = "call",
+        )
+    }
     private fun showNewMessageNotification(title: String, text: String, peerId: String) {
         val isCall = text.contains("звонок", ignoreCase = true)
         // Настройки уведомлений (те же prefs, что у ThemeSettings). Звонки всегда уведомляем.

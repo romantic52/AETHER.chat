@@ -1,6 +1,5 @@
 package org.groktest.securemessenger.ui.screens
 
-import androidx.compose.animation.Crossfade
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -10,19 +9,18 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.ExitToApp
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PersonAdd
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.outlined.Shield
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -32,8 +30,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.data.MessageRepository
+import org.groktest.securemessenger.ui.components.AetherActionCircle
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.Avatar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherField
+import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 /**
  * Экран информации и управления группой/каналом (телеграм-паттерн):
@@ -99,36 +103,14 @@ fun GroupInfoScreen(
     val name = group?.name ?: groupId
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Crossfade(targetState = collapsed, label = "title") { c ->
-                            if (c) Text(name, fontWeight = FontWeight.Bold, maxLines = 1)
-                            else Text("")
-                        }
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    actions = {
-                        if (isAdmin) {
-                            IconButton(onClick = { showEdit = true }) {
-                                Icon(Icons.Default.Edit, contentDescription = "Изменить", tint = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
+        Box(Modifier.fillMaxSize()) {
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize().padding(padding),
-                contentPadding = PaddingValues(bottom = 24.dp)
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    top = AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical,
+                    bottom = 24.dp + WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+                )
             ) {
                 // --- Шапка: крупный аватар, имя, статус, описание ---
                 item {
@@ -171,9 +153,9 @@ fun GroupInfoScreen(
                             modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
                             horizontalArrangement = Arrangement.Center
                         ) {
-                            CircleAction(Icons.Default.PersonAdd, "Добавить") { showAdd = true }
+                            AetherActionCircle(Icons.Default.PersonAdd, "Добавить", onClick = { showAdd = true })
                             Spacer(Modifier.width(24.dp))
-                            CircleAction(Icons.Default.Edit, "Изменить") { showEdit = true }
+                            AetherActionCircle(Icons.Default.Edit, "Изменить", onClick = { showEdit = true })
                         }
                     }
                 }
@@ -189,7 +171,7 @@ fun GroupInfoScreen(
                                 color = MaterialTheme.colorScheme.onBackground,
                                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                             )
-                            Divider(color = MaterialTheme.colorScheme.outline.copy(alpha = 0.12f), modifier = Modifier.padding(start = 16.dp))
+                            HorizontalDivider(color = MaterialTheme.colorScheme.outline.copy(alpha = AetherStyle.DividerAlpha), modifier = Modifier.padding(start = 16.dp))
                         }
                         Row(
                             modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
@@ -212,7 +194,7 @@ fun GroupInfoScreen(
                         fontSize = 12.sp,
                         fontWeight = FontWeight.SemiBold,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.padding(start = 28.dp, top = 8.dp, bottom = 4.dp)
+                        modifier = Modifier.padding(start = AetherStyle.ScreenHorizontal + 16.dp, top = 8.dp, bottom = 4.dp)
                     )
                 }
                 item {
@@ -223,7 +205,7 @@ fun GroupInfoScreen(
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Box(
-                                    modifier = Modifier.size(44.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
+                                    modifier = Modifier.size(AetherStyle.SmallControlSize).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = AetherStyle.SelectedFillAlpha)),
                                     contentAlignment = Alignment.Center
                                 ) { Icon(Icons.Default.PersonAdd, contentDescription = null, tint = MaterialTheme.colorScheme.primary) }
                                 Spacer(Modifier.width(12.dp))
@@ -231,16 +213,28 @@ fun GroupInfoScreen(
                             }
                         }
                         members.forEach { m ->
-                            val canRemove = isAdmin &&
-                                !m.userId.equals(repo.myId, ignoreCase = true) &&
-                                !m.userId.equals(group?.ownerId ?: "", ignoreCase = true)
+                            val isThisOwner = m.userId.equals(group?.ownerId ?: "", ignoreCase = true)
+                            val isSelf = m.userId.equals(repo.myId, ignoreCase = true)
+                            val canRemove = isAdmin && !isSelf && !isThisOwner
+                            // Роли назначает только владелец, и не самому себе.
+                            val canToggleAdmin = isOwner && !isThisOwner
                             MemberRow(
                                 member = m,
                                 online = isOnline(lastActiveById[m.userId]),
-                                isOwner = m.userId.equals(group?.ownerId ?: "", ignoreCase = true),
+                                isOwner = isThisOwner,
                                 canRemove = canRemove,
+                                canToggleAdmin = canToggleAdmin,
                                 onClick = { onMemberClick(m.userId) },
-                                onRemove = { confirmRemove = m }
+                                onRemove = { confirmRemove = m },
+                                onToggleAdmin = {
+                                    val newRole = if (m.role == "admin") "member" else "admin"
+                                    scope.launch {
+                                        try {
+                                            withContext(Dispatchers.IO) { api.setMemberRole(groupId, m.userId, newRole) }
+                                            refreshKey++
+                                        } catch (e: Exception) { error = e.message }
+                                    }
+                                }
                             )
                         }
                     }
@@ -258,6 +252,18 @@ fun GroupInfoScreen(
                     error?.let { Text(it, color = MaterialTheme.colorScheme.error, fontSize = 13.sp, modifier = Modifier.padding(16.dp)) }
                 }
             }
+            AetherSettingsTopBar(
+                title = if (collapsed) name else if (isChannel) "Канал" else "Группа",
+                onBack = onBack,
+                modifier = Modifier.align(Alignment.TopCenter),
+                actions = {
+                    if (isAdmin) {
+                        IconButton(onClick = { showEdit = true }) {
+                            Icon(Icons.Default.Edit, contentDescription = "Изменить", tint = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                }
+            )
         }
     }
 
@@ -267,12 +273,14 @@ fun GroupInfoScreen(
         var newDesc by remember { mutableStateOf(group?.description ?: "") }
         AlertDialog(
             onDismissRequest = { showEdit = false },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Изменить") },
             text = {
                 Column {
-                    OutlinedTextField(value = newName, onValueChange = { newName = it }, label = { Text("Название") }, singleLine = true)
+                    TextField(value = newName, onValueChange = { newName = it }, label = { Text("Название") }, singleLine = true, modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)), shape = RoundedCornerShape(AetherStyle.FieldRadius), colors = aetherTextFieldColors(containerAlpha = 0f))
                     Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(value = newDesc, onValueChange = { newDesc = it }, label = { Text("Описание") })
+                    TextField(value = newDesc, onValueChange = { newDesc = it }, label = { Text("Описание") }, modifier = Modifier.aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)), shape = RoundedCornerShape(AetherStyle.FieldRadius), colors = aetherTextFieldColors(containerAlpha = 0f))
                 }
             },
             confirmButton = {
@@ -305,6 +313,8 @@ fun GroupInfoScreen(
     confirmRemove?.let { m ->
         AlertDialog(
             onDismissRequest = { confirmRemove = null },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Удалить участника?") },
             text = { Text(m.displayName.ifBlank { m.userId }) },
             confirmButton = {
@@ -324,6 +334,8 @@ fun GroupInfoScreen(
     if (confirmLeave) {
         AlertDialog(
             onDismissRequest = { confirmLeave = false },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Выйти?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -342,6 +354,8 @@ fun GroupInfoScreen(
     if (confirmDelete) {
         AlertDialog(
             onDismissRequest = { confirmDelete = false },
+            shape = RoundedCornerShape(AetherStyle.IslandRadius),
+            containerColor = MaterialTheme.colorScheme.surface,
             title = { Text("Удалить безвозвратно?") },
             confirmButton = {
                 TextButton(onClick = {
@@ -388,15 +402,21 @@ private fun AddMemberDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
+        shape = RoundedCornerShape(AetherStyle.IslandRadius),
+        containerColor = MaterialTheme.colorScheme.surface,
         title = { Text("Добавить участника") },
         text = {
             Column {
-                OutlinedTextField(
+                TextField(
                     value = query,
                     onValueChange = { query = it },
                     label = { Text("Поиск по имени/@username") },
                     singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
+                    shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                    colors = aetherTextFieldColors(containerAlpha = 0f)
                 )
                 Spacer(Modifier.height(8.dp))
                 if (adding) {
@@ -458,32 +478,20 @@ private fun AddMemberDialog(
     )
 }
 
-/** Карточка-секция (телеграм-паттерн): скруглённый блок на полупрозрачном фоне. */
+/** Карточка-секция (телеграм-паттерн): стеклянный остров aetherIsland. */
 @Composable
 private fun SectionCard(content: @Composable ColumnScope.() -> Unit) {
-    Surface(
-        color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-        shape = RoundedCornerShape(16.dp),
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 6.dp)
-    ) {
-        Column(content = content)
-    }
-}
-
-/** Круглая кнопка-действие с подписью (как в шапке профиля Telegram). */
-@Composable
-private fun CircleAction(icon: ImageVector, label: String, onClick: () -> Unit) {
     Column(
-        horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.clip(RoundedCornerShape(12.dp)).clickable(onClick = onClick).padding(horizontal = 8.dp, vertical = 4.dp)
-    ) {
-        Box(
-            modifier = Modifier.size(52.dp).clip(CircleShape).background(MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)),
-            contentAlignment = Alignment.Center
-        ) { Icon(icon, contentDescription = label, tint = MaterialTheme.colorScheme.primary) }
-        Spacer(Modifier.height(6.dp))
-        Text(label, fontSize = 12.sp, color = MaterialTheme.colorScheme.primary)
-    }
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = AetherStyle.ScreenHorizontal, vertical = 6.dp)
+            .aetherIsland(
+                shape = RoundedCornerShape(AetherStyle.IslandRadius),
+                fillAlpha = AetherStyle.SoftIslandFillAlpha,
+                strokeAlpha = AetherStyle.SoftStrokeAlpha
+            ),
+        content = content
+    )
 }
 
 /** Строка участника: аватар с онлайн-точкой, имя + бейдж роли, @username, удаление. */
@@ -494,7 +502,9 @@ private fun MemberRow(
     isOwner: Boolean,
     canRemove: Boolean,
     onClick: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    canToggleAdmin: Boolean = false,
+    onToggleAdmin: () -> Unit = {}
 ) {
     val title = member.displayName.ifBlank { member.userId }
     Row(
@@ -502,7 +512,7 @@ private fun MemberRow(
         verticalAlignment = Alignment.CenterVertically
     ) {
         Box {
-            Avatar(name = title, avatarFileId = member.avatarFileId, size = 44.dp, type = 0)
+            Avatar(name = title, avatarFileId = member.avatarFileId, size = AetherStyle.SmallControlSize, type = 0)
             if (online) {
                 Box(
                     modifier = Modifier
@@ -512,7 +522,7 @@ private fun MemberRow(
                         .background(MaterialTheme.colorScheme.surfaceVariant)
                         .padding(2.dp)
                         .clip(CircleShape)
-                        .background(Color(0xFF4ADE80))
+                        .background(MaterialTheme.colorScheme.primary)
                 )
             }
         }
@@ -539,6 +549,16 @@ private fun MemberRow(
                     sub,
                     fontSize = 13.sp,
                     color = if (online) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+        if (canToggleAdmin) {
+            val admin = member.role == "admin"
+            IconButton(onClick = onToggleAdmin) {
+                Icon(
+                    if (admin) Icons.Filled.Shield else Icons.Outlined.Shield,
+                    contentDescription = if (admin) "Снять админа" else "Сделать админом",
+                    tint = if (admin) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
         }

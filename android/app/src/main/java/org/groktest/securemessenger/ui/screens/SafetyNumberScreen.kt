@@ -5,14 +5,12 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -23,7 +21,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.crypto.KeyTrustStore
 import org.groktest.securemessenger.data.PinnedKeyEntity
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.aetherIsland
 
 /**
  * P6: Экран «Цифры безопасности» — сверка ключей с собеседником (как в Signal).
@@ -31,7 +33,6 @@ import org.groktest.securemessenger.ui.components.GlassBackground
  * Показывает 60 цифр, одинаковых у обеих сторон при отсутствии MitM.
  * Здесь же: отметка «сверено» и принятие нового ключа после его смены.
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SafetyNumberScreen(
     myId: String,
@@ -54,28 +55,17 @@ fun SafetyNumberScreen(
     LaunchedEffect(peerId) { reload() }
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = { Text("Цифры безопасности", fontWeight = FontWeight.Bold, fontSize = 20.sp) },
-                    navigationIcon = {
-                        IconButton(onClick = onBack) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
+        Box(Modifier.fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .fillMaxSize()
-                    .padding(padding)
-                    .padding(24.dp)
-                    .verticalScroll(rememberScrollState()),
+                    .verticalScroll(rememberScrollState())
+                    .navigationBarsPadding()
+                    .padding(horizontal = AetherStyle.ScreenHorizontal)
+                    .padding(bottom = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
+                Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
                 when {
                     loading -> CircularProgressIndicator()
 
@@ -93,12 +83,12 @@ fun SafetyNumberScreen(
                             if (p.verified) Icons.Default.Verified else Icons.Default.Security,
                             contentDescription = null,
                             modifier = Modifier.size(48.dp),
-                            tint = if (p.verified) Color(0xFF10B981) else MaterialTheme.colorScheme.primary
+                            tint = if (p.verified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(Modifier.height(8.dp))
                         Text(
                             if (p.verified) "Сверено вручную" else "Не сверено",
-                            color = if (p.verified) Color(0xFF10B981) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            color = if (p.verified) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,
                             fontWeight = FontWeight.SemiBold
                         )
 
@@ -107,9 +97,9 @@ fun SafetyNumberScreen(
                             Spacer(Modifier.height(16.dp))
                             Card(
                                 colors = CardDefaults.cardColors(
-                                    containerColor = MaterialTheme.colorScheme.errorContainer
+                                    containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = AetherStyle.IslandFillAlpha)
                                 ),
-                                shape = RoundedCornerShape(16.dp)
+                                shape = RoundedCornerShape(AetherStyle.IslandRadius)
                             ) {
                                 Column(Modifier.padding(16.dp)) {
                                     Text(
@@ -152,20 +142,20 @@ fun SafetyNumberScreen(
                         val number = remember(p.publicKeyB64, myPublicKeyB64) {
                             KeyTrustStore.safetyNumber(myId, myPublicKeyB64, peerId, p.publicKeyB64)
                         }
-                        Card(shape = RoundedCornerShape(16.dp)) {
-                            Column(
-                                Modifier.padding(20.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                number.split(" ").chunked(3).forEach { row ->
-                                    Text(
-                                        row.joinToString("  "),
-                                        fontFamily = FontFamily.Monospace,
-                                        fontSize = 18.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
+                        Column(
+                            Modifier
+                                .aetherIsland()
+                                .padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            number.split(" ").chunked(3).forEach { row ->
+                                Text(
+                                    row.joinToString("  "),
+                                    fontFamily = FontFamily.Monospace,
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
                             }
                         }
 
@@ -179,18 +169,15 @@ fun SafetyNumberScreen(
                         )
 
                         Spacer(Modifier.height(24.dp))
-                        Button(
+                        AetherPrimaryButton(
+                            text = if (p.verified) "Снять отметку «сверено»" else "Отметить как сверенные",
                             onClick = {
                                 coroutineScope.launch {
                                     withContext(Dispatchers.IO) { trustStore.setVerified(peerId, !p.verified) }
                                     reload()
                                 }
-                            },
-                            modifier = Modifier.fillMaxWidth().height(50.dp),
-                            shape = RoundedCornerShape(16.dp)
-                        ) {
-                            Text(if (p.verified) "Снять отметку «сверено»" else "Отметить как сверенные")
-                        }
+                            }
+                        )
                     }
                 }
 
@@ -199,6 +186,7 @@ fun SafetyNumberScreen(
                     Text(it, color = MaterialTheme.colorScheme.primary, textAlign = TextAlign.Center)
                 }
             }
+            AetherSettingsTopBar("Цифры безопасности", onBack, Modifier.align(Alignment.TopCenter))
         }
     }
 }

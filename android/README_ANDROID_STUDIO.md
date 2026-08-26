@@ -47,6 +47,16 @@ cd secure_messenger
 
 APK: `android/app/build/outputs/apk/debug/app-debug.apk`
 
+Для TURN-реле добавьте локально в `local.properties` (файл не попадает в git):
+
+```properties
+aether.turnHost=<TURN_HOST>:3478
+aether.turnUsername=<TURN_USERNAME>
+aether.turnCredential=<TURN_CREDENTIAL>
+```
+
+Без этих значений звонки используют только публичный STUN.
+
 ## Требования
 
 - Android Studio Hedgehog (2023.1+) или новее

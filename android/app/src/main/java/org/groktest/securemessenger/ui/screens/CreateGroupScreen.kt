@@ -6,6 +6,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
@@ -14,7 +16,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
@@ -23,17 +24,26 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.data.MessageRepository
+import org.groktest.securemessenger.ui.components.AetherPrimaryButton
+import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
+import org.groktest.securemessenger.ui.components.AetherSwitchRow
 import org.groktest.securemessenger.ui.components.Avatar
 import org.groktest.securemessenger.ui.components.GlassBackground
+import org.groktest.securemessenger.ui.theme.AetherStyle
+import org.groktest.securemessenger.ui.theme.LocalThemeSettings
+import org.groktest.securemessenger.ui.theme.aetherField
+import org.groktest.securemessenger.ui.theme.aetherIsland
+import org.groktest.securemessenger.ui.theme.aetherSurface
+import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 /**
  * (#A3) Создание группы или канала с честным E2E. Телеграм-флоу в два шага:
@@ -52,6 +62,7 @@ fun CreateGroupScreen(
     onBack: () -> Unit,
     onGroupCreated: (String) -> Unit
 ) {
+    val appearance = LocalThemeSettings.current
     var step by remember { mutableStateOf(0) }
     var name by remember { mutableStateOf(initialName) }
     var description by remember { mutableStateOf("") }
@@ -142,43 +153,31 @@ fun CreateGroupScreen(
     }
 
     GlassBackground {
-        Scaffold(
-            topBar = {
-                TopAppBar(
-                    title = {
-                        Text(
-                            when {
-                                step == 1 -> "Добавить участников"
-                                isChannel -> "Новый канал"
-                                else -> "Новая группа"
-                            },
-                            fontWeight = FontWeight.Bold
-                        )
-                    },
-                    navigationIcon = {
-                        IconButton(onClick = { if (step > 0) step = 0 else onBack() }) {
-                            Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Назад")
-                        }
-                    },
-                    colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.Transparent)
-                )
-            },
-            containerColor = Color.Transparent
-        ) { padding ->
+        Box(Modifier.fillMaxSize()) {
             AnimatedContent(
                 targetState = step,
                 transitionSpec = {
+                    val move = tween<IntOffset>(appearance.motionDuration(260), easing = FastOutSlowInEasing)
+                    val fade = tween<Float>(appearance.motionDuration(170))
                     if (targetState > initialState)
-                        (slideInHorizontally { it } + fadeIn()) togetherWith (slideOutHorizontally { -it } + fadeOut())
+                        (slideInHorizontally(animationSpec = move) { it } + fadeIn(fade)) togetherWith
+                            (slideOutHorizontally(animationSpec = move) { -it } + fadeOut(fade))
                     else
-                        (slideInHorizontally { -it } + fadeIn()) togetherWith (slideOutHorizontally { it } + fadeOut())
+                        (slideInHorizontally(animationSpec = move) { -it } + fadeIn(fade)) togetherWith
+                            (slideOutHorizontally(animationSpec = move) { it } + fadeOut(fade))
                 },
                 label = "step",
-                modifier = Modifier.fillMaxSize().padding(padding)
+                modifier = Modifier.fillMaxSize()
             ) { s ->
                 if (s == 0) {
                     // ===== ШАГ 1: тип + название =====
-                    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .navigationBarsPadding()
+                            .padding(horizontal = AetherStyle.ScreenHorizontal)
+                            .padding(top = AetherStyle.EdgeBarHeight, bottom = 16.dp)
+                    ) {
                         // Превью-аватар буквой (как в Telegram до загрузки фото)
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
@@ -191,30 +190,30 @@ fun CreateGroupScreen(
                                 type = if (isChannel) 2 else 1
                             )
                             Spacer(Modifier.width(12.dp))
-                            OutlinedTextField(
+                            TextField(
                                 value = name,
                                 onValueChange = { name = it },
                                 label = { Text(if (isChannel) "Название канала" else "Название группы") },
                                 singleLine = true,
-                                modifier = Modifier.weight(1f),
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent
-                                )
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
+                                shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                                colors = aetherTextFieldColors(containerAlpha = 0f)
                             )
                         }
 
                         Spacer(Modifier.height(12.dp))
 
-                        OutlinedTextField(
+                        TextField(
                             value = description,
                             onValueChange = { description = it },
                             label = { Text("Описание (необязательно)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent
-                            )
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
+                            shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                            colors = aetherTextFieldColors(containerAlpha = 0f)
                         )
 
                         Spacer(Modifier.height(16.dp))
@@ -224,23 +223,12 @@ fun CreateGroupScreen(
 
                         if (isChannel) {
                             Spacer(Modifier.height(8.dp))
-                            Surface(
-                                color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
-                                shape = RoundedCornerShape(14.dp),
-                                modifier = Modifier.fillMaxWidth()
-                            ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.SpaceBetween
-                                ) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text("Обсуждения", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
-                                        Text("Группа для комментариев под постами", fontSize = 13.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
-                                    Switch(checked = withDiscussion, onCheckedChange = { withDiscussion = it })
-                                }
-                            }
+                            AetherSwitchRow(
+                                title = "Обсуждения",
+                                subtitle = "Группа для комментариев под постами",
+                                checked = withDiscussion,
+                                onCheckedChange = { withDiscussion = it }
+                            )
                         }
 
                         Spacer(Modifier.height(12.dp))
@@ -257,15 +245,22 @@ fun CreateGroupScreen(
 
                         Spacer(Modifier.weight(1f))
 
-                        Button(
+                        AetherPrimaryButton(
+                            text = "Далее",
                             onClick = { step = 1 },
-                            modifier = Modifier.fillMaxWidth().height(50.dp),
                             enabled = name.isNotBlank()
-                        ) { Text("Далее") }
+                        )
                     }
                 } else {
                     // ===== ШАГ 2: выбор участников =====
-                    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .navigationBarsPadding()
+                            .imePadding()
+                            .padding(horizontal = AetherStyle.ScreenHorizontal)
+                            .padding(top = AetherStyle.EdgeBarHeight, bottom = 16.dp)
+                    ) {
                         // Чипы выбранных
                         if (selectedMembers.isNotEmpty()) {
                             Text("Выбрано: ${selectedMembers.size}", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onBackground)
@@ -276,23 +271,25 @@ fun CreateGroupScreen(
                                         selected = true,
                                         onClick = { selectedMembers.remove(id) },
                                         label = { Text(label, maxLines = 1) },
-                                        trailingIcon = { Icon(Icons.Default.Close, contentDescription = "Убрать", modifier = Modifier.size(16.dp)) }
+                                        trailingIcon = { Icon(Icons.Default.Close, contentDescription = "Убрать", modifier = Modifier.size(16.dp)) },
+                                        shape = RoundedCornerShape(AetherStyle.PillRadius),
+                                        colors = InputChipDefaults.inputChipColors(selectedContainerColor = aetherSurface(AetherStyle.ControlFillAlpha))
                                     )
                                 }
                             }
                             Spacer(Modifier.height(8.dp))
                         }
 
-                        OutlinedTextField(
+                        TextField(
                             value = memberQuery,
                             onValueChange = { memberQuery = it },
                             label = { Text("Поиск по имени / @username") },
                             singleLine = true,
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = TextFieldDefaults.colors(
-                                focusedContainerColor = Color.Transparent,
-                                unfocusedContainerColor = Color.Transparent
-                            )
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
+                            shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                            colors = aetherTextFieldColors(containerAlpha = 0f)
                         )
 
                         LazyColumn(modifier = Modifier.weight(1f)) {
@@ -336,20 +333,24 @@ fun CreateGroupScreen(
                             Spacer(Modifier.height(8.dp))
                         }
 
-                        Button(
+                        AetherPrimaryButton(
+                            text = if (isChannel) "Создать канал" else "Создать группу",
                             onClick = { doCreate() },
-                            modifier = Modifier.fillMaxWidth().height(50.dp),
-                            enabled = !isLoading && name.isNotBlank()
-                        ) {
-                            if (isLoading) {
-                                CircularProgressIndicator(color = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(24.dp))
-                            } else {
-                                Text(if (isChannel) "Создать канал" else "Создать группу")
-                            }
-                        }
+                            enabled = name.isNotBlank(),
+                            loading = isLoading
+                        )
                     }
                 }
             }
+            AetherSettingsTopBar(
+                title = when {
+                    step == 1 -> "Добавить участников"
+                    isChannel -> "Новый канал"
+                    else -> "Новая группа"
+                },
+                onBack = { if (step > 0) step = 0 else onBack() },
+                modifier = Modifier.align(Alignment.TopCenter)
+            )
         }
     }
 }
@@ -375,17 +376,18 @@ private fun TypeSelector(isChannel: Boolean, onChange: (Boolean) -> Unit) {
 
 @Composable
 private fun TypeCard(title: String, subtitle: String, selected: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
-    val border = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline.copy(alpha = 0.3f)
-    Surface(
-        color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.12f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
-        shape = RoundedCornerShape(14.dp),
-        border = androidx.compose.foundation.BorderStroke(if (selected) 1.5.dp else 1.dp, border),
-        modifier = modifier.clickable(onClick = onClick)
+    Column(
+        modifier = modifier
+            .aetherIsland(
+                shape = RoundedCornerShape(AetherStyle.RowRadius),
+                fillAlpha = if (selected) AetherStyle.SelectedFillAlpha else AetherStyle.SoftIslandFillAlpha,
+                strokeAlpha = if (selected) AetherStyle.SelectedStrokeAlpha else AetherStyle.SoftStrokeAlpha
+            )
+            .clickable(onClick = onClick)
+            .padding(14.dp)
     ) {
-        Column(modifier = Modifier.padding(14.dp)) {
-            Text(title, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
-            Spacer(Modifier.height(2.dp))
-            Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
-        }
+        Text(title, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onBackground)
+        Spacer(Modifier.height(2.dp))
+        Text(subtitle, fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
     }
 }

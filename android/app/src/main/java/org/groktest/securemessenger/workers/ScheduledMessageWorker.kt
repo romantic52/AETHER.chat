@@ -30,12 +30,12 @@ class ScheduledMessageWorker(context: Context, params: WorkerParameters) :
             val api = RelayApi(serverUrl)
             api.token = token
             val envObj = org.json.JSONObject(envelopeJson)
-            val envelope = mutableMapOf<String, String>()
-            for (k in envObj.keys()) envelope[k] = envObj.getString(k)
+            val envelope = mutableMapOf<String, Any>()
+            for (k in envObj.keys()) envelope[k] = envObj.get(k)
             // (#A2) id воркера стабилен между ретраями → сервер не создаст дубликат
             val serverMsgId = api.sendMessage(myId, peerId, envelope, clientMsgId = id.toString())
 
-            val store = CoreStore.create(applicationContext)
+            val store = CoreStore.create(applicationContext, myId)
             if (store.getChat(peerId) == null) {
                 val chatType = if (peerId.startsWith("channel_")) 2 else if (peerId.startsWith("group_")) 1 else 0
                 store.insertChat(ChatEntity(peerId = peerId, name = peerId, type = chatType))
