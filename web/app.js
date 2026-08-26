@@ -129,6 +129,45 @@ async function encryptPrivateKeyB64(privateKeyB64, password) {
 // Пишется пока только v1 — блоб общий для веба, iOS и Android, и односторонний
 // переход запер бы человека вне собственной переписки на другом устройстве.
 // Порядок перехода — приложение Г в docs/TRANSPORT_LAYER_DESIGN.md.
+// --- Идентичность сообщения ---------------------------------------------------
+//
+// Идентификатор создаёт ОТПРАВИТЕЛЬ и больше не меняет никогда. Он едет внутри
+// шифрованного payload (поле mid), поэтому одинаков для всех копий — а копий
+// столько, сколько у получателя устройств, и серверный id у каждой свой.
+// Значит серверный id идентичностью сообщения быть не может в принципе.
+//
+// Формат — UUIDv7 (RFC 9562): 48 бит времени, дальше случайность. Сортируется
+// по времени и совпадает с тем, что делает ядро (core/src/message.rs).
+function newMessageId() {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    const ms = Date.now();
+    bytes[0] = (ms / 2 ** 40) & 0xff;
+    bytes[1] = (ms / 2 ** 32) & 0xff;
+    bytes[2] = (ms >>> 24) & 0xff;
+    bytes[3] = (ms >>> 16) & 0xff;
+    bytes[4] = (ms >>> 8) & 0xff;
+    bytes[5] = ms & 0xff;
+    bytes[6] = (bytes[6] & 0x0f) | 0x70;   // версия 7
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;   // вариант RFC 4122
+    const hex = Array.from(bytes, b => b.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// mid приходит из расшифрованного конверта, то есть от другой стороны.
+// Доверия ему не больше, чем данным с сервера: проверяем форму, прежде чем
+// класть в базу как ключ.
+function isValidMessageId(id) {
+    return typeof id === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id);
+}
+
+// Идентичность входящего: поле из конверта, а если его нет — серверный id.
+// Клиенты прошлых версий mid не шлют, и для них это правильное поведение.
+function logicalMessageId(payloadObj, serverId) {
+    const mid = payloadObj && payloadObj.mid;
+    return isValidMessageId(mid) ? mid : serverId;
+}
+
 const BACKUP_V2_PREFIX = 'v2:argon2id:';
 
 // Требования к паролю новых учётных записей. Держать в согласии с
@@ -2486,7 +2525,7 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
     // Приватность: отчёты о прочтении отключаемы в настройках безопасности.
     if (payloadObj && payloadObj.type === 'read_receipt' && !secOn('readReceipts')) return false;
     targetPeer = targetPeer.toLowerCase();
-    const clientId = window.crypto.randomUUID();
+    const clientId = newMessageId();
     
     const isStoreType = ['text', 'image', 'voice', 'video_msg', 'file', 'poll'].includes(payloadObj.type);
 
@@ -2495,9 +2534,15 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
         payloadObj.ttl = selfDestructTtl;
     }
 
+    // Логический идентификатор — ВНУТРЬ конверта, до шифрования: сервер его
+    // видеть не должен, иначе он смог бы связать копии одного сообщения,
+    // разосланные по разным устройствам получателя.
+    payloadObj.mid = clientId;
+
     let tempId = null;
     if (isStoreType) {
-        tempId = `temp_${clientId}`;
+        // Сразу настоящий идентификатор: подменять его потом нечем и незачем.
+        tempId = clientId;
         const tempMsg = {
             direction: 'out',
             peer: targetPeer,
@@ -3014,26 +3059,34 @@ async function pollInbox() {
                 }
 
                 // Обычные сообщения (text, image, voice, video_msg, file, poll)
-                if (messages.some(m => m.message_id === item.id)) continue;
+                //
+                // Дедупликация по идентификатору ИЗ КОНВЕРТА, а не по серверному:
+                // серверный у каждой копии свой и меняется при смене транспорта,
+                // поэтому одно и то же сообщение выглядело бы разными.
+                const logicalId = logicalMessageId(payloadObj, item.id);
+                if (messages.some(m => m.message_id === logicalId || m.message_id === item.id)) continue;
 
                 // For group messages, peer = group ID; for DMs, peer = sender
                 const isSelfMsg = !isGroupMsg && item.sender_id.toLowerCase() === myId;
                 const msgPeer = isGroupMsg ? item.recipient_id.toLowerCase() : item.sender_id.toLowerCase();
 
-                // «Избранное»: эхо собственного сообщения — сверяем с temp, не дублируем
+                // Эхо собственного сообщения. Со сквозным идентификатором оно
+                // отсекается ещё дедупликацией выше; сверка по temp_ осталась
+                // для сообщений, отправленных прошлой версией клиента и уже
+                // лежащих в локальном списке.
                 if (isSelfMsg) {
                     const mine = messages.find(m => m.direction === 'out' && m.peer === msgPeer &&
-                        (m.message_id === item.id ||
+                        (m.message_id === logicalId ||
                          (m.message_id && m.message_id.toString().startsWith('temp_') &&
                           JSON.stringify(m.payload) === JSON.stringify(payloadObj))));
                     if (mine) {
-                        if (mine.message_id !== item.id) {
+                        if (mine.message_id !== logicalId) {
                             const oldId = mine.message_id;
-                            mine.message_id = item.id;
+                            mine.message_id = logicalId;
                             mine.status = 'sent';
                             if (selectedPeer === msgPeer) {
                                 const el = findMessageElement(oldId);
-                                if (el) el.dataset.id = item.id;
+                                if (el) el.dataset.id = logicalId;
                             }
                         }
                         continue;
@@ -3043,7 +3096,7 @@ async function pollInbox() {
                 const newMsg = { 
                     direction: isSelfMsg ? 'out' : 'in', 
                     peer: msgPeer, 
-                    message_id: item.id,
+                    message_id: logicalId,
                     payload: payloadObj,
                     timestamp: (new Date(item.created_at).getTime()) || Date.now(),
                     sender_id: item.sender_id.toLowerCase()
