@@ -556,6 +556,12 @@ class MainActivity : FragmentActivity() {
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             org.groktest.securemessenger.ui.screens.NearbyScreen(
                                 onBack = { navController.popBackStack() },
+                                knownKeys = { repo?.nearbyKnownKeys().orEmpty() },
+                                shareKey = { key -> repo?.shareNearbyKey(key) ?: 0 },
+                                setDirectTransport = { on ->
+                                    if (on) repo?.enableDirectTransport(this@MainActivity)
+                                    else repo?.disableDirectTransport()
+                                },
                             )
                         }
                     }

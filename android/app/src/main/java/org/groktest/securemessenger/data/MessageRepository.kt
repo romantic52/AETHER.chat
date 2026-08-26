@@ -63,6 +63,9 @@ class MessageRepository(
      * падало и уползало в откат до 30 секунд.
      */
     private val sendingReady = kotlinx.coroutines.CompletableDeferred<Unit>()
+    private val NEARBY_KEYS_META = "nearby_peer_keys"
+    private var bleTransport: org.groktest.securemessenger.nearby.BleTextTransport? = null
+    private var bleDiscovery: org.groktest.securemessenger.nearby.NearbyDiscoveryService? = null
     private val mediaDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val transportRouter = TransportRouter(store, listOf(ServerTransport(serverId)))
     @Volatile private var appActive = true
@@ -466,11 +469,50 @@ class MessageRepository(
     // Жизненный цикл
     // ------------------------------------------------------------------
 
+    // ------------------------------------------------------------------
+    // Ключи обнаружения: кто из контактов сможет узнать нас рядом
+    // ------------------------------------------------------------------
+
+    /** Одной картой, а не ключом на контакт: перебор по префиксу не нужен. */
+    private suspend fun rememberNearbyKey(peerId: String, key: String) {
+        val map = org.json.JSONObject(store.metaGet(NEARBY_KEYS_META) ?: "{}")
+        map.put(peerId, key)
+        store.metaSet(NEARBY_KEYS_META, map.toString())
+    }
+
+    /** Кого мы вообще способны опознать по маяку. */
+    suspend fun nearbyKnownKeys(): Map<String, String> {
+        val raw = store.metaGet(NEARBY_KEYS_META) ?: return emptyMap()
+        val map = runCatching { org.json.JSONObject(raw) }.getOrNull() ?: return emptyMap()
+        return buildMap {
+            map.keys().forEach { peer -> map.optString(peer).takeIf { it.isNotBlank() }?.let { put(peer, it) } }
+        }
+    }
+
+    /**
+     * Раздать свой ключ обнаружения личным чатам.
+     *
+     * Это осознанный шаг, а не фон: получивший ключ сможет замечать нас рядом,
+     * и отменить это можно только сменой ключа. Группы пропускаем — там ключ
+     * достался бы и тем, кого мы в лицо не знаем.
+     */
+    suspend fun shareNearbyKey(key: String): Int {
+        var sent = 0
+        for (entry in store.getChatList().value) {
+            val peer = entry.chat.peerId
+            if (peer.equals(myId, ignoreCase = true) || isGroupPeer(peer)) continue
+            val wire = JSONObject().put("type", "nearby_key").put("key", key).toString()
+            if (runCatching { sendWire(peer, wire) }.isSuccess) sent++
+        }
+        return sent
+    }
+
     /**
      * Подключить доставку по Bluetooth. Отдельным вызовом, а не в конструкторе:
      * транспорту нужны разрешения, и без них он не должен мешать обычной работе.
      */
     fun enableDirectTransport(context: android.content.Context) {
+        if (bleTransport != null) return
         val discovery = org.groktest.securemessenger.nearby.NearbyDiscoveryService.get(context)
         val ble = org.groktest.securemessenger.nearby.BleTextTransport(
             context = context,
@@ -481,9 +523,23 @@ class MessageRepository(
         )
         ble.startServer()
         discovery.connectable = true
+        bleTransport = ble
+        bleDiscovery = discovery
         transportRouter.register(
             org.groktest.securemessenger.nearby.BleTransport(ble, discovery)
         )
+    }
+
+    /**
+     * Выключить приём по Bluetooth. Адаптер остаётся в роутере, но без
+     * видимых собеседников он честно отвечает «не достучаться», и роутер
+     * уходит на сервер.
+     */
+    fun disableDirectTransport() {
+        bleTransport?.stopServer()
+        bleTransport = null
+        bleDiscovery?.connectable = false
+        bleDiscovery = null
     }
 
     /** Своя связка для того, кто подключился по Bluetooth. */
@@ -859,6 +915,18 @@ class MessageRepository(
                     if (r.emoji.isBlank()) map.remove(m.senderId) else map.put(m.senderId, r.emoji)
                     store.updateReactions(r.target, map.toString())
                 }
+            }
+            return null
+        }
+        // Контрол: собеседник дал свой ключ обнаружения.
+        //
+        // Ключ едет внутри Olm-конверта, а не через сервер открытым: иначе
+        // сервер сам бы отслеживал, кто с кем встречается вживую. Принимаем
+        // только из личного чата — в группе отправителя не с чем сверить.
+        if (obj != null && ptype == "nearby_key") {
+            val key = obj.optString("key")
+            if (!groupLike && key.isNotBlank()) {
+                rememberNearbyKey(m.senderId.lowercase(), key)
             }
             return null
         }
