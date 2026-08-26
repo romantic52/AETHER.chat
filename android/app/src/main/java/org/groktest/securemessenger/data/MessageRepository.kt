@@ -345,6 +345,7 @@ class MessageRepository(
                 peerId = peerId,
                 contentKind = contentKindOf(wire),
                 sealAndSend = { sendViaServer(peerId, wire, clientMsgId) },
+                wire = wire,
             )
         )
 
@@ -464,6 +465,92 @@ class MessageRepository(
     // ------------------------------------------------------------------
     // Жизненный цикл
     // ------------------------------------------------------------------
+
+    /**
+     * Подключить доставку по Bluetooth. Отдельным вызовом, а не в конструкторе:
+     * транспорту нужны разрешения, и без них он не должен мешать обычной работе.
+     */
+    fun enableDirectTransport(context: android.content.Context) {
+        val discovery = org.groktest.securemessenger.nearby.NearbyDiscoveryService.get(context)
+        val ble = org.groktest.securemessenger.nearby.BleTextTransport(
+            context = context,
+            myId = myId,
+            ownPrekey = { ownPrekeyBundle() },
+            seal = { peerId, peer, wire -> sealForDirect(peerId, peer, wire) },
+            deliver = { senderId, envelopeJson -> acceptDirect(senderId, envelopeJson) },
+        )
+        ble.startServer()
+        discovery.connectable = true
+        transportRouter.register(
+            org.groktest.securemessenger.nearby.BleTransport(ble, discovery)
+        )
+    }
+
+    /** Своя связка для того, кто подключился по Bluetooth. */
+    private suspend fun ownPrekeyBundle(): org.groktest.securemessenger.nearby.BleTextTransport.Prekey =
+        ratchetMutex.withLock {
+            val published = uniffi.sm_core.olmAccountGenerateOtks(olmAccountLocked(), 1u)
+            store.metaSet("olm_account", published.accountPickle)
+            cachedOlmIdentity = published.identityKeyB64
+            val otk = org.json.JSONObject(published.oneTimeKeysJson)
+                .optJSONObject("curve25519")
+                ?.let { keys -> keys.keys().asSequence().firstOrNull()?.let(keys::getString) }
+                ?: throw IllegalStateException("Не удалось выделить одноразовый ключ")
+            org.groktest.securemessenger.nearby.BleTextTransport.Prekey(
+                userId = myId,
+                deviceId = myDeviceIdLocked(),
+                identityKeyB64 = published.identityKeyB64,
+                oneTimeKeyB64 = otk,
+            )
+        }
+
+    /**
+     * Запечатать текст связкой, полученной по Bluetooth.
+     *
+     * Ключ проходит то же закрепление, что и серверный: если собеседник нам
+     * знаком, а identity не совпал — бросаем, а не доверяем «потому что рядом».
+     * Именно здесь ловится подмена знакомого по радио.
+     */
+    private suspend fun sealForDirect(
+        peerId: String,
+        peer: org.groktest.securemessenger.nearby.BleTextTransport.Prekey,
+        wire: String,
+    ): String = ratchetMutex.withLock {
+        val id = peerId.lowercase()
+        val key = sessionKeyOf(id, peer.deviceId)
+        olmTrustStore.checkForSending(key, peer.identityKeyB64)
+        val session = olmSession(key) ?: uniffi.sm_core.olmCreateOutbound(
+            olmAccountLocked(),
+            peer.identityKeyB64,
+            peer.oneTimeKeyB64,
+        )
+        val encrypted = uniffi.sm_core.olmEncrypt(session, wire)
+        saveOlmSession(key, encrypted.sessionPickle)
+        org.json.JSONObject()
+            .put("ratchet", "1")
+            .put("olm_identity", myOlmIdentityLocked())
+            .put("sender_device", myDeviceIdLocked())
+            .put("type", encrypted.messageType.toInt())
+            .put("body_b64", encrypted.bodyB64)
+            .toString()
+    }
+
+    /** Входящее по Bluetooth идёт тем же путём, что и с сервера: дедупликация по mid общая. */
+    private suspend fun acceptDirect(senderId: String, envelopeJson: String) {
+        processInboxMessage(
+            RelayApi.InboxMessage(
+                id = "ble:" + java.util.UUID.randomUUID(),
+                senderId = senderId,
+                recipientId = myId,
+                envelopeJson = envelopeJson,
+                senderPubkeyB64 = "",
+                nonceB64 = "",
+                ciphertextB64 = "",
+                createdAtMs = System.currentTimeMillis(),
+                isRatchetEnvelope = true,
+            )
+        )
+    }
 
     /** Запуск фоновых циклов: поллинг инбокса (страховка WS) и outbox. */
     fun start() {

@@ -52,6 +52,8 @@ data class NearbyPeer(
     val identityId: String?,
     val rssi: Int,
     val lastSeen: Long,
+    /** MAC для подключения. Android его рандомизирует, наружу не показываем. */
+    val address: String? = null,
 ) {
     val proximity: Proximity get() = Proximity.of(rssi)
 }
@@ -82,6 +84,18 @@ class NearbyDiscoveryService(private val context: Context) {
 
     /** identityId → ключ обнаружения. Только те, кто нам его сам отдал. */
     private var knownKeys: Map<String, String> = emptyMap()
+
+    /**
+     * Подключаемое объявление нужно, чтобы к нам могли постучаться для прямой
+     * доставки. По умолчанию выключено: неподключаемый маяк дешевле по батарее
+     * и не даёт постороннему открыть с нами GATT-соединение.
+     */
+    @Volatile
+    var connectable: Boolean = false
+        set(value) {
+            field = value
+            if (rotationJob != null) refreshAdvertisement()
+        }
 
     private var rotationJob: Job? = null
     private var pruneJob: Job? = null
@@ -141,7 +155,7 @@ class NearbyDiscoveryService(private val context: Context) {
         val settings = AdvertiseSettings.Builder()
             .setAdvertiseMode(AdvertiseSettings.ADVERTISE_MODE_BALANCED)
             .setTxPowerLevel(AdvertiseSettings.ADVERTISE_TX_POWER_MEDIUM)
-            .setConnectable(false)
+            .setConnectable(connectable)
             .build()
         // Имени устройства в пакете нет — оно свело бы на нет весь смысл
         // вращающегося идентификатора.
@@ -245,11 +259,11 @@ class NearbyDiscoveryService(private val context: Context) {
                     .getOrDefault(false)
             }?.key
 
-            upsert(parcel.uuid.toString(), identityId, result.rssi)
+            upsert(parcel.uuid.toString(), identityId, result.rssi, result.device?.address)
         }
     }
 
-    private fun upsert(key: String, identityId: String?, rssi: Int) {
+    private fun upsert(key: String, identityId: String?, rssi: Int, address: String? = null) {
         val now = System.currentTimeMillis()
         val current = _peers.value.toMutableList()
         val index = current.indexOfFirst { it.id == key }
@@ -260,9 +274,10 @@ class NearbyDiscoveryService(private val context: Context) {
                 lastSeen = now,
                 identityId = identityId ?: existing.identityId,
                 known = (identityId ?: existing.identityId) != null,
+                address = address ?: existing.address,
             )
         } else {
-            current += NearbyPeer(key, identityId != null, identityId, rssi, now)
+            current += NearbyPeer(key, identityId != null, identityId, rssi, now, address)
         }
         _peers.value = current
     }
@@ -317,6 +332,14 @@ class NearbyDiscoveryService(private val context: Context) {
     fun bluetoothReady(): Boolean = adapter?.isEnabled == true
 
     companion object {
+        @Volatile
+        private var instance: NearbyDiscoveryService? = null
+
+        /** Радио одно на приложение: экран и транспорт делят находки. */
+        fun get(context: Context): NearbyDiscoveryService = instance ?: synchronized(this) {
+            instance ?: NearbyDiscoveryService(context.applicationContext).also { instance = it }
+        }
+
         private const val PEER_TTL_MS = 20_000L
 
         /** Раскладка маячка: [0xAE | 15 байт]. Значим только первый байт. */

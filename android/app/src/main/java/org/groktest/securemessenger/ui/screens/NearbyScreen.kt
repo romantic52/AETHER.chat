@@ -37,7 +37,7 @@ import org.groktest.securemessenger.ui.components.GlassBackground
 fun NearbyScreen(onBack: () -> Unit) {
     val context = LocalContext.current
     val privacy = remember { NearbyPrivacy.get(context) }
-    val service = remember { NearbyDiscoveryService(context) }
+    val service = remember { NearbyDiscoveryService.get(context) }
 
     val peers by service.peers.collectAsState()
     val advertising by service.advertising.collectAsState()

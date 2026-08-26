@@ -16,6 +16,12 @@ data class DeliveryRequest(
     val contentKind: String,
     /** Шифрование остаётся внутри выбранного транспорта: fan-out зависит от устройств. */
     val sealAndSend: suspend () -> String,
+    /**
+     * Исходная нагрузка для прямых транспортов. Серверный путь запечатывает
+     * внутри sealAndSend, а Bluetooth обязан сделать это сам: связку он берёт
+     * у собеседника напрямую, без сервера.
+     */
+    val wire: String? = null,
 )
 
 data class DeliveryProof(
@@ -63,8 +69,15 @@ class WaitingForNearbyException : IllegalStateException(
 /** Первый этап роутера: один серверный адаптер, поэтому обычное поведение не меняется. */
 class TransportRouter(
     private val store: CoreStore,
-    private val adapters: List<TransportAdapter>,
+    initialAdapters: List<TransportAdapter>,
 ) {
+    /** Прямые транспорты подключаются позже сервера: им нужны разрешения. */
+    private val adapters = java.util.concurrent.CopyOnWriteArrayList(initialAdapters)
+
+    fun register(adapter: TransportAdapter) {
+        if (adapters.none { it.id == adapter.id }) adapters += adapter
+    }
+
     fun requireAvailableRoute(peerId: String, contentKind: String = "text") {
         if (allowedAdapters(peerId, contentKind).isEmpty()) throw WaitingForNearbyException()
     }
