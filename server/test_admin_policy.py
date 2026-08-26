@@ -49,7 +49,7 @@ def check(label, ok, extra=""):
 
 
 def register(user, code=None):
-    body = {"user_id": user, "public_key_b64": PUB, "password": "pass12345"}
+    body = {"user_id": user, "public_key_b64": PUB, "password": "probnyi-parol-77"}
     if code:
         body["invite_code"] = code
     return call("POST", V1 + "/users/register", body=body)
@@ -85,7 +85,7 @@ def main():
     check("обычная регистрация проходит", status == 200, body)
     check("новичок получает USER", body.get("role") == "USER", body)
 
-    status, ulogin = call("POST", V1 + "/auth/login", body={"user_id": user, "password": "pass12345"})
+    status, ulogin = call("POST", V1 + "/auth/login", body={"user_id": user, "password": "probnyi-parol-77"})
     user_token = ulogin["token"]
     status, _ = call("GET", V1 + "/admin/overview", token=user_token)
     check("USER не пускается в админку (403)", status == 403, status)
@@ -127,7 +127,7 @@ def main():
                         body={"role": "MODERATOR"})
     check("владелец назначил модератора", status == 200, body)
 
-    status, mlogin = call("POST", V1 + "/auth/login", body={"user_id": user, "password": "pass12345"})
+    status, mlogin = call("POST", V1 + "/auth/login", body={"user_id": user, "password": "probnyi-parol-77"})
     mod_token = mlogin["token"]
     check("роль в ответе входа обновилась", mlogin.get("role") == "MODERATOR", mlogin.get("role"))
     status, _ = call("GET", V1 + "/admin/overview", token=mod_token)

@@ -43,6 +43,7 @@ try:
     from server import roles as server_roles_mod
     from server import registration_policy
     from server import routes_admin
+    from server import password_policy
 except ImportError:
     import apns
     import server_identity as ident
@@ -51,6 +52,7 @@ except ImportError:
     import roles as server_roles_mod
     import registration_policy
     import routes_admin
+    import password_policy
 
 WEB_DIR = Path(__file__).resolve().parent.parent / "web"
 
@@ -217,28 +219,14 @@ def db_conn():
 
 
 def hash_password(password: str) -> str:
-    salt = secrets.token_hex(16)
-    iterations = 100000
-    hash_bytes = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
-    )
-    return f"pbkdf2_sha256${iterations}${salt}${hash_bytes.hex()}"
+    """Argon2id. PBKDF2 больше не создаётся — см. server/password_policy.py."""
+    return password_policy.hash_password(password)
 
 
 def verify_password(password: str, hashed: str) -> bool:
-    try:
-        parts = hashed.split("$")
-        if len(parts) != 4 or parts[0] != "pbkdf2_sha256":
-            return False
-        iterations = int(parts[1])
-        salt = parts[2]
-        expected_hex = parts[3]
-        hash_bytes = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt.encode("utf-8"), iterations
-        )
-        return secrets.compare_digest(hash_bytes.hex(), expected_hex)
-    except Exception:
-        return False
+    """Принимает хеши обоих поколений: старые аккаунты продолжают входить."""
+    return password_policy.verify_password(password, hashed)
+
 
 
 # --- Session management (#3): check expiry ---
@@ -727,7 +715,7 @@ class RegisterRequest(BaseModel):
     public_key_b64: str = Field(min_length=16, max_length=128)
     encrypted_private_key_b64: Optional[str] = Field(default=None, max_length=100_000)
     encrypted_olm_account_b64: Optional[str] = Field(default=None, max_length=100_000)
-    password: str = Field(min_length=8, max_length=256)
+    password: str = Field(min_length=password_policy.MIN_LENGTH, max_length=256)
     # INVITE_ONLY, а также одноразовый код владельца на свежем сервере.
     invite_code: Optional[str] = Field(default=None, max_length=64)
 
@@ -837,6 +825,11 @@ def startup() -> None:
 @app.post("/users/register")
 @limiter.limit("15/minute;60/hour")
 def register_user(body: RegisterRequest, request: Request) -> dict:
+    # Предсказуемый пароль отсекается ДО создания аккаунта. Проверка только
+    # для новых учётных записей: выкидывать существующих нельзя.
+    ok, reason = password_policy.check_strength(body.password, body.user_id)
+    if not ok:
+        raise HTTPException(400, reason)
     hashed = hash_password(body.password)
     with db_conn() as cur:
         # Check if user already exists
@@ -898,6 +891,17 @@ def login_user(body: LoginRequest, request: Request) -> dict:
         if not _totp_valid(row["totp_secret"], body.totp_code):
             raise HTTPException(401, "totp_invalid")
     
+    # Пароль верный: если хеш старого поколения — пересчитываем на месте.
+    # Пользователь ничего не замечает и менять пароль его не просят.
+    if password_policy.needs_rehash(row["password_hash"]):
+        try:
+            with db_conn() as cur:
+                cur.execute("UPDATE users SET password_hash = %s WHERE LOWER(user_id) = LOWER(%s)",
+                            (hash_password(body.password), row["user_id"]))
+        except Exception:
+            # Не удалось — вход всё равно состоялся, попробуем в следующий раз.
+            logger.warning("не удалось пересчитать хеш пароля для %s", row["user_id"])
+
     # Generate session token with expiry
     token = secrets.token_hex(32)
     user_id = row["user_id"].lower()

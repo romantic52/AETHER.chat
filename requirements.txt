@@ -7,6 +7,9 @@ PyNaCl>=1.5
 cryptography>=42.0
 psycopg2-binary==2.9.9
 slowapi>=0.1.9
+# Argon2id для паролей. PBKDF2 остаётся только для ПРОВЕРКИ старых хешей —
+# новые не создаются (server/password_policy.py).
+argon2-cffi>=23.1
 # ОБЯЗАТЕЛЬНО: /upload и /avatars объявлены как UploadFile=File(...), а FastAPI
 # проверяет multipart на импорте — без пакета приложение не стартует вообще.
 python-multipart>=0.0.9

@@ -90,6 +90,10 @@ struct WelcomeView: View {
                         }
 
                         if mode == .register {
+                            Text("Не короче \(Self.minPasswordLength) символов. Длина важнее спецсимволов: «Password1!» подбирается словарём так же легко.")
+                                .font(.caption)
+                                .foregroundStyle(palette.textSecondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
                             Text("Пароль шифрует резервную копию вашего приватного ключа. Забудете — доступ к переписке восстановить нельзя.")
                                 .font(.caption)
                                 .foregroundStyle(palette.textSecondary)
@@ -110,8 +114,8 @@ struct WelcomeView: View {
                         .foregroundStyle(palette.onAccent)
                     }
                     .buttonStyle(.squish)
-                    .disabled(busy || userId.isEmpty || password.count < 4)
-                    .opacity(busy || userId.isEmpty || password.count < 4 ? 0.6 : 1)
+                    .disabled(busy || !canSubmit)
+                    .opacity(busy || !canSubmit ? 0.6 : 1)
                     .padding(.horizontal, 28)
 
                     modeSwitch
@@ -273,6 +277,17 @@ struct WelcomeView: View {
         .liquidGlass(Capsule(), interactive: false)
     }
 
+    /// Порог совпадает с серверным. Раньше кнопка оживала на четырёх символах,
+    /// а сервер требовал восемь — человек жал «Создать аккаунт» и получал отказ.
+    private var canSubmit: Bool {
+        guard !userId.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
+        // На входе длину не проверяем: у существующих учётных записей пароль
+        // может быть короче нынешних требований, и это не их вина.
+        return mode == .login ? !password.isEmpty : password.count >= Self.minPasswordLength
+    }
+
+    static let minPasswordLength = 10
+
     private func submit() {
         error = nil
         busy = true
@@ -299,11 +314,24 @@ struct WelcomeView: View {
         }
     }
 
+    /// Человеческий текст для отказов по паролю. Сервер отдаёт код, а не
+    /// готовую фразу: перевод — дело клиента.
+    static func passwordProblem(_ message: String) -> String? {
+        if message.contains("password_too_short") {
+            return "Пароль слишком короткий: нужно не меньше \(minPasswordLength) символов"
+        }
+        if message.contains("password_too_common") { return "Такой пароль слишком часто встречается" }
+        if message.contains("password_too_simple") { return "Пароль слишком предсказуем" }
+        if message.contains("password_contains_username") { return "Пароль не должен содержать имя пользователя" }
+        return nil
+    }
+
     private func describe(_ e: CoreError) -> String {
         switch e {
         case .Api(let status, let msg):
             if status == 401 || status == 403 { return "Неверное имя пользователя или пароль" }
             if status == 409 { return "Это имя уже занято" }
+            if let reason = Self.passwordProblem(msg) { return reason }
             return "Ошибка сервера (\(status)): \(msg)"
         case .Network(let msg): return "Нет соединения: \(msg)"
         case .BadInput(let msg): return msg

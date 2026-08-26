@@ -164,9 +164,10 @@ struct ServerAuthView: View {
     private var canSubmit: Bool {
         guard !busy, !userId.trimmingCharacters(in: .whitespaces).isEmpty else { return false }
         if mode == .login { return password.count >= 4 }
-        // На регистрации порог тот же, что у сервера: иначе кнопка активна,
-        // а сервер отвечает отказом — так было до мультисерверности.
-        guard password.count >= 8, password == passwordRepeat else { return false }
+        // Порог тот же, что у сервера: иначе кнопка активна, а сервер отвечает
+        // отказом — так было до мультисерверности.
+        guard password.count >= WelcomeView.minPasswordLength,
+              password == passwordRepeat else { return false }
         if server.registrationMode == .closed { return false }
         if server.registrationMode == .inviteOnly && inviteCode.isEmpty { return false }
         return true
@@ -241,6 +242,8 @@ struct ServerAuthView: View {
             return "Аккаунт заблокирован администратором сервера"
         case let m where m.contains("Username already taken"):
             return "Это имя уже занято"
+        case let m where WelcomeView.passwordProblem(m) != nil:
+            return WelcomeView.passwordProblem(msg) ?? "Пароль не подходит"
         default:
             if status == 401 || status == 403 { return "Неверное имя пользователя или пароль" }
             return "Сервер ответил ошибкой \(status)"
