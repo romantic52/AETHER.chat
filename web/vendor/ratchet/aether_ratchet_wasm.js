@@ -1,3 +1,5 @@
+/* @ts-self-types="./aether_ratchet_wasm.d.ts" */
+
 /**
  * @param {string} account_pickle
  * @returns {string}
@@ -174,6 +176,28 @@ export function account_otk_count(account_pickle) {
         throw takeFromExternrefTable0(ret[1]);
     }
     return ret[0] >>> 0;
+}
+
+/**
+ * @param {string} password
+ * @param {Uint8Array} salt
+ * @param {number} m
+ * @param {number} t
+ * @param {number} p
+ * @returns {Uint8Array}
+ */
+export function argon2id_key(password, salt, m, t, p) {
+    const ptr0 = passStringToWasm0(password, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passArray8ToWasm0(salt, wasm.__wbindgen_malloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ret = wasm.argon2id_key(ptr0, len0, ptr1, len1, m, t, p);
+    if (ret[3]) {
+        throw takeFromExternrefTable0(ret[2]);
+    }
+    var v3 = getArrayU8FromWasm0(ret[0], ret[1]).slice();
+    wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    return v3;
 }
 
 /**
@@ -643,6 +667,13 @@ function handleError(f, args) {
 
 function isLikeNone(x) {
     return x === undefined || x === null;
+}
+
+function passArray8ToWasm0(arg, malloc) {
+    const ptr = malloc(arg.length * 1, 1) >>> 0;
+    getUint8ArrayMemory0().set(arg, ptr / 1);
+    WASM_VECTOR_LEN = arg.length;
+    return ptr;
 }
 
 function passStringToWasm0(arg, malloc, realloc) {

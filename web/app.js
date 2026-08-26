@@ -122,7 +122,34 @@ async function encryptPrivateKeyB64(privateKeyB64, password) {
     return `${base64UrlEncode(salt)}:${base64UrlEncode(iv)}:${base64UrlEncode(new Uint8Array(ct))}`;
 }
 
+// Резервная копия бывает двух поколений, и читать нужно оба:
+//   v1  "salt:iv:ct"                      PBKDF2-SHA256 100k + AES-GCM
+//   v2  "v2:argon2id:m:t:p:salt:iv:ct"    Argon2id + AES-GCM
+//
+// Пишется пока только v1 — блоб общий для веба, iOS и Android, и односторонний
+// переход запер бы человека вне собственной переписки на другом устройстве.
+// Порядок перехода — приложение Г в docs/TRANSPORT_LAYER_DESIGN.md.
+const BACKUP_V2_PREFIX = 'v2:argon2id:';
+
+// Требования к паролю новых учётных записей. Держать в согласии с
+// server/password_policy.py: сервер — источник правды, форма лишь не даёт
+// человеку зря нажать кнопку.
+const MIN_PASSWORD_LENGTH = 10;
+
+// Отказы сервера приходят кодом, а не готовой фразой: перевод — дело клиента.
+function passwordProblemText(detail) {
+    const text = String(detail || '');
+    if (text.includes('password_too_short')) return `Пароль слишком короткий: нужно не меньше ${MIN_PASSWORD_LENGTH} символов`;
+    if (text.includes('password_too_common')) return 'Такой пароль слишком часто встречается';
+    if (text.includes('password_too_simple')) return 'Пароль слишком предсказуем';
+    if (text.includes('password_contains_username')) return 'Пароль не должен содержать имя пользователя';
+    return null;
+}
+
 async function decryptPrivateKeyB64(blob, password) {
+    if (blob.startsWith(BACKUP_V2_PREFIX)) {
+        return decryptPrivateKeyV2(blob.slice(BACKUP_V2_PREFIX.length), password);
+    }
     const parts = blob.split(':');
     if (parts.length !== 3) throw new Error('Неверный формат зашифрованного ключа');
     const salt = base64UrlDecode(parts[0]);
@@ -131,6 +158,30 @@ async function decryptPrivateKeyB64(blob, password) {
     const key = await deriveBackupKey(password, salt);
     const pt = await window.crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
     return new TextDecoder().decode(pt); // base64-строка приватного ключа
+}
+
+// Argon2id браузер не умеет, поэтому ключ выводится в WASM — тем же крейтом,
+// что в ядре. AES остаётся в WebCrypto: дублировать его в WASM незачем.
+async function decryptPrivateKeyV2(rest, password) {
+    const parts = rest.split(':');
+    if (parts.length !== 6) throw new Error('Неверный формат зашифрованного ключа (v2)');
+    const [mRaw, tRaw, pRaw, saltB64, ivB64, ctB64] = parts;
+    const m = Number(mRaw), t = Number(tRaw), p = Number(pRaw);
+    if (!Number.isInteger(m) || !Number.isInteger(t) || !Number.isInteger(p)) {
+        throw new Error('Argon2: неверные параметры');
+    }
+    // Параметры берутся ИЗ БЛОБА, а не из констант: перенастройка стоимости не
+    // должна делать ранее созданные копии нечитаемыми.
+    const api = await loadRatchetApi();
+    const salt = base64UrlDecode(saltB64);
+    const keyBytes = api.argon2id_key(password, salt, m, t, p);
+    const key = await window.crypto.subtle.importKey(
+        'raw', keyBytes, { name: 'AES-GCM' }, false, ['decrypt']
+    );
+    const pt = await window.crypto.subtle.decrypt(
+        { name: 'AES-GCM', iv: base64UrlDecode(ivB64) }, key, base64UrlDecode(ctB64)
+    );
+    return new TextDecoder().decode(pt);
 }
 
 // --- Групповое шифрование (AES-GCM, совместимо с Android E2ECrypto.encryptFile) ---
@@ -2128,7 +2179,14 @@ function getAuthInputs(forRegistration = false) {
     if (myId.length < 2 || myId.length > 64) { showStatus('Имя пользователя: от 2 до 64 символов', 'error'); return null; }
     if (forRegistration && !/^[a-z0-9_]+$/i.test(myId)) { showStatus('Имя пользователя: только латиница, цифры и _', 'error'); return null; }
     if (!password) { showStatus('Введите пароль', 'error'); return null; }
-    if (forRegistration && password.length < 8) { showStatus('Пароль должен быть не менее 8 символов', 'error'); return null; }
+    // Порог совпадает с серверным (server/password_policy.py, MIN_LENGTH).
+    // Иначе форма пропускает, а сервер отказывает — человек узнаёт об этом
+    // уже после нажатия. На ВХОДЕ длину не проверяем: у старых учётных
+    // записей пароль может быть короче нынешних требований.
+    if (forRegistration && password.length < MIN_PASSWORD_LENGTH) {
+        showStatus(`Пароль должен быть не менее ${MIN_PASSWORD_LENGTH} символов`, 'error');
+        return null;
+    }
     if (!serverUrl) { showStatus('Введите URL-адрес сервера', 'error'); return null; }
     try {
         const url = new URL(serverUrl);
@@ -2206,6 +2264,9 @@ async function performRegister() {
                 const wait = res.headers.get('Retry-After') || '60';
                 throw new Error(formatServerError(data, `Слишком много попыток. Подождите ${wait} сек. и попробуйте снова.`));
             }
+            // Отказ по паролю переводим в человеческую фразу: сервер шлёт код.
+            const problem = passwordProblemText(data && data.detail);
+            if (problem) throw new Error(problem);
             throw new Error(formatServerError(data, 'Ошибка регистрации'));
         }
         

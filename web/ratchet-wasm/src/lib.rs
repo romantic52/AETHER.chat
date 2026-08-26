@@ -206,3 +206,33 @@ pub fn decrypt(
 ) -> Result<String, JsValue> {
     json(&aether_ratchet_core::decrypt(session_pickle, message_type, body_b64).map_err(js_err)?)
 }
+
+// --- Вывод ключа резервной копии (формат v2) ----------------------------------
+//
+// Веб шифрует и расшифровывает саму копию через WebCrypto (AES-GCM) — он это
+// умеет хорошо и быстро. Чего браузер не умеет вовсе, так это Argon2id, а
+// именно он выводит ключ в формате v2.
+//
+// Поэтому в WASM ровно одна недостающая операция, а не вся криптография:
+// меньше кода в эфире и никакой второй реализации AES.
+//
+// Тот же крейт argon2, что в ядре, с теми же параметрами из блоба — байты
+// совпадут с iOS и Android без отдельной сверки.
+#[wasm_bindgen]
+pub fn argon2id_key(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Result<Vec<u8>, JsValue> {
+    use argon2::{Algorithm, Argon2, Params, Version};
+
+    // Чужой блоб может требовать гигабайты памяти. Вкладка не должна ложиться
+    // от того, что кто-то прислал странные параметры.
+    if m > 1_048_576 || t > 16 || p > 16 {
+        return Err(JsValue::from_str("Argon2: недопустимые параметры"));
+    }
+    let params = Params::new(m, t, p, Some(32))
+        .map_err(|e| JsValue::from_str(&format!("параметры Argon2: {e}")))?;
+    let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
+    let mut key = vec![0u8; 32];
+    argon
+        .hash_password_into(password.as_bytes(), salt, &mut key)
+        .map_err(|e| JsValue::from_str(&format!("Argon2: {e}")))?;
+    Ok(key)
+}

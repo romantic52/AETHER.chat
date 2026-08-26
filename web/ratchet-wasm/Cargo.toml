@@ -11,3 +11,7 @@ aether-ratchet-core = { path = "../../core/ratchet-core", features = ["wasm"] }
 serde = "1"
 serde_json = "1"
 wasm-bindgen = "0.2"
+# Argon2id для чтения резервной копии ключа формата v2. WebCrypto его не умеет,
+# а тянуть стороннюю JS-библиотеку значило бы получить вторую реализацию той же
+# крипты. Здесь тот же крейт, что в ядре, — байты совпадут гарантированно.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
