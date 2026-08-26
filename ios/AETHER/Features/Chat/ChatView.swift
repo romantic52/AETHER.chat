@@ -68,6 +68,7 @@ struct ChatView: View {
     @State private var showGroupProfile = false
     /// Сообщение, для которого открыт экран «О сообщении».
     @State private var infoMessage: ChatMessage?
+    @State private var showEphemeralPicker = false
     /// Отложенная отправка — долгое нажатие на кнопке отправки.
     @State private var showSchedule = false
     @State private var scheduleAt = Date().addingTimeInterval(3600)
@@ -318,6 +319,9 @@ struct ChatView: View {
                     pendingKeyKind = await messaging.pendingOlmAlertKind(for: peerId)
                 }
             }
+        }
+        .sheet(isPresented: $showEphemeralPicker) {
+            EphemeralPickerSheet().environmentObject(messaging)
         }
         .sheet(item: $infoMessage) { msg in
             MessageInfoView(message: msg, peerTitle: title)
@@ -624,6 +628,14 @@ struct ChatView: View {
                                 onEdit: { withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) { editing = msg; draft = msg.payload?.text ?? ""; inputFocused = true } },
                                 onDelete: { vm.delete(msg) },
                                 onRetry: { vm.retry(msg) },
+                                onOpenEphemeral: {
+                                    Task { await messaging.ephemeral?.open(messageId: msg.id,
+                                                                           payloadJson: msg.payloadJson) }
+                                },
+                                onCloseEphemeral: {
+                                    Task { await messaging.ephemeral?.closeView(messageId: msg.id,
+                                                                                payloadJson: msg.payloadJson) }
+                                },
                                 onInfo: { infoMessage = msg }
                             )
                             // Комментарии: у канала с обсуждением — лёгкая кнопка под
@@ -815,6 +827,15 @@ struct ChatView: View {
     /// кружков. Кружки не уменьшаются: к овалу их придвигает интервал, а не размер.
     private var composerControl: CGFloat { 46 }
 
+    /// Значок кнопки режима отражает выбранный режим, а не абстрактный «замок».
+    private var ephemeralIcon: String {
+        switch messaging.pendingEphemeral?.kind {
+        case "VIEW_ONCE": return "eye"
+        case "EPHEMERAL": return "timer"
+        default: return "timer"
+        }
+    }
+
     private var composerBar: some View {
         VStack(spacing: 6) {
             // Единая раскладка во всех фазах: слева скрепка/корзина, посередине
@@ -835,6 +856,21 @@ struct ChatView: View {
                     }
                     .buttonStyle(.squish)
                     .animation(.spring(response: 0.3, dampingFraction: 0.7), value: showAttachMenu)
+                    .transition(.scale.combined(with: .opacity))
+
+                    // Режим сообщения: обычное, исчезающее, «один раз».
+                    // Подсвечен, когда выбран не обычный — иначе человек не
+                    // заметит, что следующее сообщение исчезнет.
+                    Button { showEphemeralPicker = true } label: {
+                        Image(systemName: ephemeralIcon)
+                            .font(.system(size: 18, weight: .regular))
+                            .foregroundStyle(messaging.pendingEphemeral == nil
+                                             ? palette.textSecondary : palette.accent)
+                            .frame(width: composerControl, height: composerControl)
+                            .liquidGlass(Circle())
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.squish)
                     .transition(.scale.combined(with: .opacity))
                 } else {
                     // Во время записи/предпросмотра — корзина (отмена).

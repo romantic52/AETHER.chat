@@ -143,6 +143,9 @@ final class Messaging: ObservableObject {
         r.register(ServerTransport(core: core, serverId: ServerContext.serverId))
         router = r
         policyEngine = MessagePolicyEngine(core: core)
+        let manager = EphemeralManager(core: core)
+        manager.startSweeping()
+        ephemeral = manager
     }
 
     /// Политика доставки — для интерфейса чата и настроек.
@@ -155,6 +158,12 @@ final class Messaging: ObservableObject {
     private var router: TransportRouter?
     /// Каскад политик: настройки чата, запреты по категориям, разовый выбор.
     private var policyEngine: MessagePolicyEngine?
+    /// Исчезающие сообщения и «просмотр один раз».
+    private(set) var ephemeral: EphemeralManager?
+    /// Режим, выбранный в композере для СЛЕДУЮЩЕГО сообщения. Разовый: после
+    /// отправки сбрасывается, чтобы «одноразовое» случайно не осталось
+    /// включённым на всю переписку.
+    @Published var pendingEphemeral: EphemeralSpec?
 
     /// Признак группового чата (для UI).
     /// Признак группы: сначала смотрим локальный SQLite-флаг чата (синхронно доступен
@@ -628,6 +637,7 @@ final class Messaging: ObservableObject {
                                     status: 1, ts: ts, reactions: [:], edited: false, deleted: false,
                                     payload: payload)
             await save(store, incUnread: senderId != myId && activePeer != peerId, isGroup: isGroup)
+            ephemeral?.track(messageId: messageId, payloadJson: opened.plaintext, sentTs: ts)
             // Входящее медиа — в кеш устройства сразу (ГС/кружки всегда, тяжёлое по настройке).
             if payload.type == "media", let fid = payload.fileId,
                let key = payload.symKey, !key.isEmpty {
@@ -868,13 +878,16 @@ final class Messaging: ObservableObject {
         // едет внутри шифрованного payload, поэтому одинаков для всех копий и
         // всех транспортов, а сервер его не видит.
         let mid = newMessageId()
-        let body = withMessageId(payload, mid)
+        let body = withMessageId(withEphemeral(payload), mid)
         let ts = Int64(Date().timeIntervalSince1970 * 1000)
         let stored = StoredMessage(id: mid, peerId: peer.lowercased(), outgoing: true,
                                    senderId: myId.lowercased(), payloadJson: body,
                                    status: 0, ts: ts, reactionsJson: "{}", edited: false, deleted: false)
         Task {
             await core.insertMessage(stored)
+            // Своё исчезающее сообщение исчезает и у отправителя: иначе «оно
+            // удалилось» было бы правдой только наполовину.
+            ephemeral?.track(messageId: mid, payloadJson: body, sentTs: ts)
             await core.touchChat(peer: peer.lowercased(), isGroup: isGroup, title: peer,
                                  lastText: Wire.preview(body), lastTs: ts, incUnread: false)
             await refreshChats()
@@ -889,6 +902,13 @@ final class Messaging: ObservableObject {
     /// сообщение, но ронять отправку из-за этого нельзя.
     private func withMessageId(_ payload: String, _ mid: String) -> String {
         (try? payloadWithMessageId(payloadJson: payload, messageId: mid)) ?? payload
+    }
+
+    /// Наложить выбранный в композере режим и сбросить его: режим разовый.
+    private func withEphemeral(_ payload: String) -> String {
+        guard let spec = pendingEphemeral else { return payload }
+        pendingEphemeral = nil
+        return (try? payloadWithEphemeral(payloadJson: payload, spec: spec)) ?? payload
     }
 
     /// Отдать сообщение маршрутизатору. Журнал попыток и запись маршрута

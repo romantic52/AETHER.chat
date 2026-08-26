@@ -197,8 +197,14 @@ enum Wire {
 
     /// Короткое превью для списка чатов.
     static func preview(_ payloadJson: String) -> String {
+        // Исчезающее и одноразовое не показываем в списке чатов: строка
+        // предпросмотра переживает само сообщение и свела бы весь режим на нет.
+        if let spec = ephemeralFromPayload(payloadJson: payloadJson) {
+            return spec.kind == "VIEW_ONCE" ? "👁 Одноразовое сообщение" : "⏱ Исчезающее сообщение"
+        }
         guard let p = parse(payloadJson) else { return "" }
         switch p.type {
+        case "expired": return "⏱ Сообщение истекло"
         case "text": return p.text ?? ""
         case "media":
             switch p.mediaKind {

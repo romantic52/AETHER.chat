@@ -1289,6 +1289,17 @@ actor CoreClient {
     func markDeleted(_ id: String) { try? store.markDeleted(id: id) }
     func pendingOutgoing() -> [StoredMessage] { (try? store.getPendingOutgoing()) ?? [] }
 
+    // MARK: - Исчезающие сообщения
+
+    func ephemeralSet(_ state: EphemeralState) { try? store.ephemeralSet(e: state) }
+    func ephemeralGet(_ messageId: String) -> EphemeralState? {
+        (try? store.ephemeralGet(messageId: messageId)) ?? nil
+    }
+    func ephemeralDue(_ nowMs: Int64) -> [String] {
+        (try? store.ephemeralDue(nowMs: nowMs)) ?? []
+    }
+    func ephemeralPurge(_ messageId: String) { try? store.ephemeralPurge(messageId: messageId) }
+
     // MARK: - Политика доставки
 
     func chatPolicy(_ peer: String) -> ChatDeliveryPolicy {

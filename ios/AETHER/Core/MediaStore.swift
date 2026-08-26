@@ -88,6 +88,20 @@ actor MediaStore {
         materializedURLs.removeAll()
     }
 
+    /// Стереть один файл из кэша — и с диска, и из памяти.
+    ///
+    /// Нужно для исчезающих сообщений: если оставить файл, «сообщение
+    /// исчезло» будет неправдой — картинка продолжит лежать на устройстве.
+    func remove(fileId: String) {
+        memCache.removeObject(forKey: fileId as NSString)
+        try? FileManager.default.removeItem(at: diskURL(fileId))
+        // Файлы, уже выданные системным просмотрщикам, тоже подчищаем.
+        // materializedURLs — это Set, поэтому сначала выбираем, потом вычитаем.
+        let stale = materializedURLs.filter { $0.lastPathComponent.contains(fileId) }
+        for url in stale { try? FileManager.default.removeItem(at: url) }
+        materializedURLs.subtract(stale)
+    }
+
     private func persist(_ data: Data, fileId: String) {
         try? data.write(to: diskURL(fileId), options: .atomic)
         writesSinceTrim += 1

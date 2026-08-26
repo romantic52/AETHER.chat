@@ -26,11 +26,17 @@ struct MessageBubble: View {
     var onEdit: () -> Void
     var onDelete: () -> Void
     var onRetry: () -> Void
+    /// Открыть исчезающее сообщение (засчитать просмотр и запустить отсчёт).
+    var onOpenEphemeral: (() -> Void)? = nil
+    /// Просмотр закрыт: для «одного раза» и триггера CLOSE это конец.
+    var onCloseEphemeral: (() -> Void)? = nil
     /// Показать «О сообщении». Необязательный: у каналов и превью его нет.
     var onInfo: (() -> Void)? = nil
 
     @Environment(\.palette) private var palette
     @State private var dragX: CGFloat = 0
+    /// Исчезающее сообщение открыто в этом сеансе показа.
+    @State private var revealed = false
 
     private var outgoing: Bool { channelStyle ? false : message.outgoing }
     private var payload: Wire.Payload? { message.payload }
@@ -47,7 +53,7 @@ struct MessageBubble: View {
                         .foregroundStyle(palette.accent)
                         .padding(.leading, 12)
                 }
-                bubbleBody
+                gatedBody
                 if !message.reactions.isEmpty {
                     reactionChips
                         .transition(.scale(scale: 0.6).combined(with: .opacity))
@@ -69,8 +75,88 @@ struct MessageBubble: View {
         showSender ? message.senderId : nil
     }
 
+    /// Содержимое исчезающего сообщения скрыто, пока его не открыли.
+    ///
+    /// Это не криптографическая защита, а именно заслонка: содержимое уже на
+    /// устройстве. Смысл в том, чтобы оно не показывалось само — через плечо,
+    /// в списке чатов, на разблокированном экране.
+    @ViewBuilder private var gatedBody: some View {
+        if let spec = ephemeralSpec, !revealed, payload?.type != "expired" {
+            ephemeralPlaceholder(spec)
+        } else {
+            bubbleBody
+                .onDisappear { if ephemeralSpec != nil { onCloseEphemeral?() } }
+        }
+    }
+
+    private var ephemeralSpec: EphemeralSpec? {
+        ephemeralFromPayload(payloadJson: message.payloadJson)
+    }
+
+    private func ephemeralPlaceholder(_ spec: EphemeralSpec) -> some View {
+        let once = spec.kind == "VIEW_ONCE"
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: once ? "eye" : "timer")
+                    .font(.system(size: 15, weight: .semibold))
+                Text(once ? "Открыть один раз" : "Скрыто")
+                    .font(.system(size: 15, weight: .semibold))
+            }
+            Text(once
+                 ? "После просмотра сообщение будет недоступно"
+                 : (spec.ttlSeconds > 0
+                    ? "Исчезнет через \(Self.durationText(Int(spec.ttlSeconds))) после открытия"
+                    : "Исчезающее сообщение"))
+                .font(.system(size: 13))
+                .opacity(0.75)
+            Text("Нажмите для просмотра")
+                .font(.system(size: 12))
+                .opacity(0.55)
+        }
+        .foregroundStyle(outgoing ? palette.bubbleOutText : palette.textPrimary)
+        .padding(.horizontal, 14).padding(.vertical, 12)
+        .frame(maxWidth: 280, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                .fill(outgoing ? palette.bubbleOut : palette.bubbleIn)
+                .overlay(
+                    // Полосы поверх — намёк на скрытое содержимое, без показа его самого.
+                    RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                        .strokeBorder(palette.divider, lineWidth: 0.5)
+                )
+        )
+        .contentShape(RoundedRectangle(cornerRadius: Radius.control, style: .continuous))
+        .onTapGesture {
+            onOpenEphemeral?()
+            withAnimation(.easeOut(duration: 0.2)) { revealed = true }
+        }
+    }
+
+    static func durationText(_ seconds: Int) -> String {
+        switch seconds {
+        case ..<60: return "\(seconds) сек"
+        case ..<3600: return "\(seconds / 60) мин"
+        case ..<86400: return "\(seconds / 3600) ч"
+        default: return "\(seconds / 86400) дн"
+        }
+    }
+
     @ViewBuilder private var bubbleBody: some View {
-        if let p = payload, p.type == "media" {
+        if let p = payload, p.type == "expired" {
+            // Надгробие: содержимое стёрто, но след остаётся. Пустой пузырь
+            // выглядел бы поломкой, а дырка в переписке заставила бы человека
+            // гадать, было сообщение или нет.
+            HStack(spacing: 6) {
+                Image(systemName: "timer").font(.system(size: 12))
+                Text("Сообщение истекло").font(.system(size: 14))
+            }
+            .foregroundStyle(outgoing ? palette.bubbleOutText.opacity(0.7) : palette.textSecondary)
+            .padding(.horizontal, 14).padding(.vertical, 10)
+            .background(
+                RoundedRectangle(cornerRadius: Radius.control, style: .continuous)
+                    .fill(outgoing ? palette.bubbleOut.opacity(0.5) : palette.bubbleIn.opacity(0.6))
+            )
+        } else if let p = payload, p.type == "media" {
             if p.mediaKind == .videoNote {
                 // Кружок — без прямоугольного пузыря; цитата ответа — чипом сверху.
                 VStack(alignment: outgoing ? .trailing : .leading, spacing: 6) {

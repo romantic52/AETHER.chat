@@ -172,3 +172,180 @@ mod tests {
         assert_eq!(message_id_from_payload(r#"{"type":"text","mid":"../../etc"}"#.into()), None);
     }
 }
+
+// --- Исчезающие сообщения и «просмотр один раз» -------------------------------
+//
+// Поведение сообщения (исчезает / один просмотр) и тип содержимого (текст,
+// фото, голос) — НЕЗАВИСИМЫ. Бывает VIEW_ONCE+IMAGE, EPHEMERAL+TEXT,
+// EPHEMERAL+FILE. Поэтому поведение живёт отдельным полем payload, а не новым
+// типом сообщения (docs/TRANSPORT_LAYER_DESIGN.md, разделы 41 и 84).
+//
+// Спецификация едет ВНУТРИ шифрованного payload рядом с mid: серверу знать,
+// что сообщение исчезающее, незачем.
+//
+// ЧЕСТНОЕ ОГРАНИЧЕНИЕ. Клиент, выпущенный до этого слоя, поля не понимает и
+// покажет сообщение обычным — оно у него не исчезнет. Ephemeral работает,
+// только когда его поддерживают ОБЕ стороны. Интерфейс не должен обещать
+// иначе.
+
+/// Что запускает отсчёт.
+#[derive(uniffi::Enum, Clone, Copy, PartialEq, Debug)]
+pub enum EphemeralTrigger {
+    /// С момента отправки.
+    Sent,
+    /// С момента подтверждения доставки.
+    Delivered,
+    /// С первого открытия получателем.
+    FirstOpen,
+    /// С закрытия просмотра.
+    Close,
+    /// Абсолютный момент времени.
+    Absolute,
+}
+
+#[derive(uniffi::Record, Clone, PartialEq, Debug)]
+pub struct EphemeralSpec {
+    /// NORMAL | EPHEMERAL | VIEW_ONCE
+    pub kind: String,
+    /// Сколько жить после срабатывания триггера, в секундах.
+    pub ttl_seconds: i64,
+    pub trigger: EphemeralTrigger,
+    /// Абсолютный дедлайн в миллисекундах — только для Absolute.
+    pub absolute_ms: Option<i64>,
+    /// Сколько просмотров разрешено. Для VIEW_ONCE — 1.
+    pub view_limit: Option<i32>,
+}
+
+fn trigger_code(t: EphemeralTrigger) -> &'static str {
+    match t {
+        EphemeralTrigger::Sent => "SENT",
+        EphemeralTrigger::Delivered => "DELIVERED",
+        EphemeralTrigger::FirstOpen => "FIRST_OPEN",
+        EphemeralTrigger::Close => "CLOSE",
+        EphemeralTrigger::Absolute => "ABSOLUTE",
+    }
+}
+
+fn trigger_from(code: &str) -> EphemeralTrigger {
+    match code {
+        "SENT" => EphemeralTrigger::Sent,
+        "DELIVERED" => EphemeralTrigger::Delivered,
+        "CLOSE" => EphemeralTrigger::Close,
+        "ABSOLUTE" => EphemeralTrigger::Absolute,
+        // Незнакомый триггер трактуем как самый строгий из осмысленных:
+        // лучше исчезнуть раньше, чем остаться навсегда.
+        _ => EphemeralTrigger::FirstOpen,
+    }
+}
+
+/// Вписать поведение в payload перед шифрованием.
+#[uniffi::export]
+pub fn payload_with_ephemeral(payload_json: String, spec: EphemeralSpec) -> Result<String, CoreError> {
+    let mut v: serde_json::Value = serde_json::from_str(&payload_json).map_err(CoreError::bad)?;
+    let obj = v.as_object_mut().ok_or_else(|| CoreError::bad("payload не является объектом"))?;
+    if spec.kind == "NORMAL" {
+        return serde_json::to_string(&v).map_err(CoreError::bad);
+    }
+    obj.insert("mt".into(), serde_json::Value::String(spec.kind.clone()));
+    let mut eph = serde_json::Map::new();
+    eph.insert("ttl".into(), serde_json::Value::from(spec.ttl_seconds));
+    eph.insert("trg".into(), serde_json::Value::String(trigger_code(spec.trigger).into()));
+    if let Some(at) = spec.absolute_ms {
+        eph.insert("at".into(), serde_json::Value::from(at));
+    }
+    if let Some(limit) = spec.view_limit {
+        eph.insert("vl".into(), serde_json::Value::from(limit));
+    }
+    obj.insert("eph".into(), serde_json::Value::Object(eph));
+    serde_json::to_string(&v).map_err(CoreError::bad)
+}
+
+/// Прочитать поведение из расшифрованного payload.
+///
+/// None означает обычное сообщение: так шлют и старые клиенты, и мы сами,
+/// когда режим не выбран.
+#[uniffi::export]
+pub fn ephemeral_from_payload(payload_json: String) -> Option<EphemeralSpec> {
+    let v: serde_json::Value = serde_json::from_str(&payload_json).ok()?;
+    let kind = v.get("mt")?.as_str()?.to_string();
+    if kind != "EPHEMERAL" && kind != "VIEW_ONCE" {
+        return None;
+    }
+    let eph = v.get("eph");
+    // Данным из конверта доверия не больше, чем данным с сервера: срок
+    // зажимаем в разумные пределы, чтобы «ttl = 10 лет» не превращало
+    // исчезающее сообщение в обычное, а отрицательный не ломал арифметику.
+    let ttl = eph
+        .and_then(|e| e.get("ttl"))
+        .and_then(|t| t.as_i64())
+        .unwrap_or(0)
+        .clamp(0, 365 * 24 * 3600);
+    let trigger = eph
+        .and_then(|e| e.get("trg"))
+        .and_then(|t| t.as_str())
+        .map(trigger_from)
+        .unwrap_or(EphemeralTrigger::FirstOpen);
+    let absolute_ms = eph.and_then(|e| e.get("at")).and_then(|t| t.as_i64());
+    let view_limit = eph
+        .and_then(|e| e.get("vl"))
+        .and_then(|t| t.as_i64())
+        .map(|n| n.clamp(1, 1000) as i32)
+        // «Просмотр один раз» без явного лимита — это ровно один просмотр.
+        .or(if kind == "VIEW_ONCE" { Some(1) } else { None });
+
+    Some(EphemeralSpec { kind, ttl_seconds: ttl, trigger, absolute_ms, view_limit })
+}
+
+#[cfg(test)]
+mod ephemeral_tests {
+    use super::*;
+
+    fn text() -> String { r#"{"type":"text","text":"секрет"}"#.into() }
+
+    #[test]
+    fn roundtrips_and_keeps_content() {
+        let spec = EphemeralSpec {
+            kind: "EPHEMERAL".into(), ttl_seconds: 60,
+            trigger: EphemeralTrigger::FirstOpen, absolute_ms: None, view_limit: None,
+        };
+        let with = payload_with_ephemeral(text(), spec).unwrap();
+        let back = ephemeral_from_payload(with.clone()).unwrap();
+        assert_eq!(back.kind, "EPHEMERAL");
+        assert_eq!(back.ttl_seconds, 60);
+        assert_eq!(back.trigger, EphemeralTrigger::FirstOpen);
+        assert!(with.contains("секрет"), "содержимое не должно теряться");
+    }
+
+    #[test]
+    fn view_once_implies_single_view() {
+        let spec = EphemeralSpec {
+            kind: "VIEW_ONCE".into(), ttl_seconds: 0,
+            trigger: EphemeralTrigger::FirstOpen, absolute_ms: None, view_limit: None,
+        };
+        let with = payload_with_ephemeral(text(), spec).unwrap();
+        assert_eq!(ephemeral_from_payload(with).unwrap().view_limit, Some(1));
+    }
+
+    #[test]
+    fn normal_payload_stays_untouched() {
+        let spec = EphemeralSpec {
+            kind: "NORMAL".into(), ttl_seconds: 0,
+            trigger: EphemeralTrigger::Sent, absolute_ms: None, view_limit: None,
+        };
+        let with = payload_with_ephemeral(text(), spec).unwrap();
+        assert!(!with.contains("\"mt\""), "обычное сообщение не помечается");
+        assert_eq!(ephemeral_from_payload(with), None);
+        // Клиент до этого слоя полей не шлёт — и это обычное сообщение.
+        assert!(ephemeral_from_payload(text()).is_none());
+    }
+
+    #[test]
+    fn hostile_values_are_clamped() {
+        // Огромный ttl превратил бы исчезающее сообщение в обычное.
+        let payload = r#"{"type":"text","mt":"EPHEMERAL","eph":{"ttl":999999999999,"trg":"XX","vl":-5}}"#;
+        let spec = ephemeral_from_payload(payload.into()).unwrap();
+        assert_eq!(spec.ttl_seconds, 365 * 24 * 3600);
+        assert_eq!(spec.trigger, EphemeralTrigger::FirstOpen, "незнакомый триггер — самый строгий");
+        assert_eq!(spec.view_limit, Some(1), "отрицательный лимит просмотров недопустим");
+    }
+}

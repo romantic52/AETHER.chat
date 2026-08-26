@@ -38,6 +38,18 @@ pub struct Chat {
     pub archived: bool,
 }
 
+/// Состояние исчезающего сообщения.
+#[derive(uniffi::Record, Clone)]
+pub struct EphemeralState {
+    pub message_id: String,
+    /// UNOPENED | COUNTDOWN | EXPIRED | PURGED
+    pub state: String,
+    pub opened_ts: Option<i64>,
+    /// Когда содержимое должно перестать быть доступным. None — отсчёт ещё не начат.
+    pub expires_ts: Option<i64>,
+    pub views: i32,
+}
+
 /// Политика доставки одного чата.
 #[derive(uniffi::Record, Clone)]
 pub struct ChatDeliveryPolicy {
@@ -224,6 +236,17 @@ CREATE TABLE IF NOT EXISTS message_route (
     delivered_ts  INTEGER,
     read_ts       INTEGER
 );
+-- Состояние исчезающих сообщений. Отдельно от messages намеренно: меняется
+-- чаще самого сообщения, вычищается фоново, и схему messages трогать нельзя —
+-- ту же базу читают работающие клиенты.
+CREATE TABLE IF NOT EXISTS ephemeral_state (
+    message_id TEXT PRIMARY KEY,
+    state      TEXT NOT NULL,      -- UNOPENED | COUNTDOWN | EXPIRED | PURGED
+    opened_ts  INTEGER,
+    expires_ts INTEGER,
+    views      INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_ephemeral_due ON ephemeral_state(expires_ts);
 -- Политика доставки чата: как отправлять и что можно отдавать серверу.
 -- Отдельно от чата: доставка и хранение — разные вещи (раздел 7 проекта),
 -- и обе меняются независимо от того, кто собеседник.
@@ -484,6 +507,75 @@ impl CoreStore {
 
     /// Заменить локальный id на серверный (после успешной отправки), выставив статус.
     /// Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
+    // --- Исчезающие сообщения -------------------------------------------------
+
+    pub fn ephemeral_set(&self, e: EphemeralState) -> Result<(), CoreError> {
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "INSERT INTO ephemeral_state (message_id, state, opened_ts, expires_ts, views)
+             VALUES (?1,?2,?3,?4,?5)
+             ON CONFLICT(message_id) DO UPDATE SET
+                state=excluded.state,
+                opened_ts=COALESCE(ephemeral_state.opened_ts, excluded.opened_ts),
+                expires_ts=excluded.expires_ts,
+                views=excluded.views",
+            params![e.message_id, e.state, e.opened_ts, e.expires_ts, e.views],
+        )?;
+        Ok(())
+    }
+
+    pub fn ephemeral_get(&self, message_id: String) -> Result<Option<EphemeralState>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT message_id, state, opened_ts, expires_ts, views
+             FROM ephemeral_state WHERE message_id=?1")?;
+        let mut rows = st.query(params![message_id])?;
+        if let Some(row) = rows.next()? {
+            return Ok(Some(EphemeralState {
+                message_id: row.get(0)?,
+                state: row.get(1)?,
+                opened_ts: row.get(2)?,
+                expires_ts: row.get(3)?,
+                views: row.get(4)?,
+            }));
+        }
+        Ok(None)
+    }
+
+    /// Сообщения, чей срок уже вышел, но содержимое ещё не стёрто.
+    pub fn ephemeral_due(&self, now_ms: i64) -> Result<Vec<String>, CoreError> {
+        let c = self.conn.lock().unwrap();
+        let mut st = c.prepare(
+            "SELECT message_id FROM ephemeral_state
+             WHERE expires_ts IS NOT NULL AND expires_ts <= ?1 AND state <> 'PURGED'
+             ORDER BY expires_ts")?;
+        let rows = st.query_map(params![now_ms], |r| r.get::<_, String>(0))?;
+        Ok(rows.filter_map(Result::ok).collect())
+    }
+
+    /// Стереть содержимое, оставив в истории отметку.
+    ///
+    /// Строка сообщения не удаляется, а payload заменяется надгробием: в чате
+    /// должно остаться «сообщение истекло», а не дырка, из-за которой человек
+    /// решит, что ничего и не было. Само содержимое при этом стирается
+    /// физически — включая текст, ключи медиа и реакции.
+    pub fn ephemeral_purge(&self, message_id: String) -> Result<(), CoreError> {
+        let peer = self.peer_of(&message_id);
+        let c = self.conn.lock().unwrap();
+        c.execute(
+            "UPDATE messages SET payload_json = ?2, reactions_json = '{}', edited = 0
+             WHERE id = ?1",
+            params![message_id, r#"{"type":"expired"}"#],
+        )?;
+        c.execute(
+            "UPDATE ephemeral_state SET state='PURGED', expires_ts=NULL WHERE message_id=?1",
+            params![message_id],
+        )?;
+        drop(c);
+        if let Some(p) = peer { self.notify_messages(&p); }
+        Ok(())
+    }
+
     // --- Политика доставки ---------------------------------------------------
 
     /// Политика чата. Записи нет — отдаём умолчание, а не ошибку: чат мог
@@ -1467,6 +1559,34 @@ mod tests {
         assert!(s.olm_pin_get("bob_1::ios".into()).unwrap().is_none());
         assert!(s.olm_pin_get("bobx1::ios".into()).unwrap().is_some(), "чужой пир не тронут");
         assert_eq!(s.olm_session_get("bobx1::ios".into()).unwrap().as_deref(), Some(untouched.as_str()));
+    }
+
+    #[test]
+    fn ephemeral_purge_erases_content_but_keeps_the_trace() {
+        let s = store();
+        s.insert_message(msg("m-eph", "bob", 1000, true)).unwrap();
+        s.update_reactions("m-eph".into(), r#"{"❤":["bob"]}"#.into()).unwrap();
+
+        s.ephemeral_set(EphemeralState {
+            message_id: "m-eph".into(), state: "COUNTDOWN".into(),
+            opened_ts: Some(1000), expires_ts: Some(2000), views: 1,
+        }).unwrap();
+
+        // Срок ещё не вышел — ничего не подлежит вычистке.
+        assert!(s.ephemeral_due(1999).unwrap().is_empty());
+        assert_eq!(s.ephemeral_due(2000).unwrap(), vec!["m-eph".to_string()]);
+
+        s.ephemeral_purge("m-eph".into()).unwrap();
+
+        // Содержимое стёрто, но строка в истории осталась.
+        let m = s.get_message("m-eph".into()).unwrap().expect("сообщение осталось в истории");
+        assert_eq!(m.payload_json, r#"{"type":"expired"}"#);
+        assert_eq!(m.reactions_json, "{}", "реакции тоже стираются");
+
+        let state = s.ephemeral_get("m-eph".into()).unwrap().unwrap();
+        assert_eq!(state.state, "PURGED");
+        // Повторно в очередь на вычистку не попадает.
+        assert!(s.ephemeral_due(9999).unwrap().is_empty());
     }
 
     #[test]
