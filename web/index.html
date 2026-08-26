@@ -24,6 +24,27 @@
                 </div>
                 <h2>Æther</h2>
                 <p class="tg-subtitle">Защищённый мессенджер</p>
+                <!-- Выбор инфраструктуры: официальные серверы или свой.
+                     Это НЕ режим приложения, а то, куда подключаемся. -->
+                <div class="tg-auth-tabs" id="infra-tabs">
+                    <button class="tg-auth-tab active" id="tab-official">Наши серверы</button>
+                    <button class="tg-auth-tab" id="tab-custom">Пользовательские</button>
+                </div>
+
+                <div id="custom-panel" class="hidden">
+                    <div id="saved-servers"></div>
+                    <div class="tg-input-group">
+                        <input type="text" id="add-server-input" placeholder="chat.example.com или 192.168.1.25:8099" autocomplete="off">
+                    </div>
+                    <div id="lan-row" class="hidden" style="display:flex; align-items:center; gap:8px; margin:6px 0 10px 4px;">
+                        <input type="checkbox" id="lan-cleartext" style="width:18px;height:18px;cursor:pointer;">
+                        <label for="lan-cleartext" style="color:var(--text-secondary); font-size:13px; cursor:pointer;">Локальная сеть без шифрования канала</label>
+                    </div>
+                    <button id="discover-btn" class="tg-btn-primary">Найти сервер</button>
+                    <div id="server-card" class="hidden"></div>
+                    <p id="discover-status" class="tg-status"></p>
+                </div>
+
                 <div class="tg-auth-tabs">
                     <button class="tg-auth-tab active" id="tab-login">Вход</button>
                     <button class="tg-auth-tab" id="tab-register">Регистрация</button>

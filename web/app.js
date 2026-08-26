@@ -661,6 +661,17 @@ function formatServerError(data, fallback) {
     return fallback;
 }
 
+// Экраны выбора сервера живут в servers.js: app.js и так велик, а работа с
+// серверами — отдельная от переписки задача.
+if (typeof window !== 'undefined' && window.aetherServerUiInit) {
+    window.addEventListener('DOMContentLoaded', () => {
+        window.aetherServerUiInit({
+            loadRatchetApi,
+            officialUrl: localStorage.getItem('last_server_url') || ''
+        });
+    });
+}
+
 function loadRatchetApi() {
     if (!ratchetModulePromise) {
         ratchetModulePromise = import('./vendor/ratchet/aether_ratchet_wasm.js')

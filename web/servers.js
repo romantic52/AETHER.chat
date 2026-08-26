@@ -356,3 +356,177 @@ if (typeof window !== 'undefined') {
 if (typeof module !== 'undefined' && module.exports) {
     Object.assign(module.exports, { aetherServerTag, aetherStorageScope, aetherMigrateSpaceStorage });
 }
+
+// --- Экраны выбора сервера ----------------------------------------------------
+//
+// Интерфейс намеренно повторяет iOS: две вкладки сверху, карточка найденного
+// сервера с отпечатком, отдельный экран тревоги при смене идентификатора.
+// Клиенты должны ощущаться одним приложением, а не роднёй по переписке.
+
+function aetherServerUiInit(opts) {
+    const $ = id => document.getElementById(id);
+    const els = {
+        infraOfficial: $('tab-official'), infraCustom: $('tab-custom'),
+        panel: $('custom-panel'), saved: $('saved-servers'),
+        input: $('add-server-input'), lanRow: $('lan-row'), lan: $('lan-cleartext'),
+        discover: $('discover-btn'), card: $('server-card'), status: $('discover-status'),
+        serverInput: $('server-input'), changeServer: $('change-server-btn')
+    };
+    if (!els.infraCustom || !els.panel) return;
+
+    const setStatus = (text, kind) => {
+        els.status.textContent = text || '';
+        els.status.className = 'tg-status' + (kind ? ' ' + kind : '');
+    };
+
+    function selectInfra(custom) {
+        els.infraCustom.classList.toggle('active', custom);
+        els.infraOfficial.classList.toggle('active', !custom);
+        els.panel.classList.toggle('hidden', !custom);
+        if (custom) renderSaved();
+        else if (opts.officialUrl) els.serverInput.value = opts.officialUrl;
+        // Ссылка «Сменить сервер» относится к официальной вкладке; в
+        // пользовательской адрес выбирается карточкой, и она только путала бы.
+        if (els.changeServer) els.changeServer.style.display = custom ? 'none' : '';
+    }
+
+    function renderSaved() {
+        const state = aetherLoadServers();
+        const custom = state.servers.filter(s => s.kind !== 'official');
+        if (!custom.length) {
+            els.saved.innerHTML = '<p style="color:var(--text-secondary);font-size:13px;margin:0 0 10px;">' +
+                'Подключитесь к серверу Aether, который подняли вы или ваши знакомые. ' +
+                'Он независим: своя учётная запись, своя переписка, свои ключи.</p>';
+            return;
+        }
+        els.saved.innerHTML = custom.map(s => `
+            <div class="aether-server-row" data-id="${s.id}">
+                <div>
+                    <div class="aether-server-name">${escapeHtmlSafe(s.displayName)}</div>
+                    <div class="aether-server-host">${escapeHtmlSafe(s.origin.replace(/^https?:\/\//, ''))}</div>
+                </div>
+                <span class="aether-server-go">Выбрать</span>
+            </div>`).join('');
+        els.saved.querySelectorAll('.aether-server-row').forEach(row => {
+            row.addEventListener('click', () => {
+                const rec = aetherFindServer(aetherLoadServers(), row.dataset.id);
+                if (rec) useServer(rec.origin, rec.displayName);
+            });
+        });
+    }
+
+    function escapeHtmlSafe(v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g,
+            c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    }
+
+    function useServer(origin, name) {
+        els.serverInput.value = origin;
+        els.card.classList.add('hidden');
+        setStatus(`Сервер: ${name}. Теперь войдите или зарегистрируйтесь ниже.`, 'success');
+    }
+
+    // Переключатель локального режима появляется ТОЛЬКО для домашних адресов:
+    // предлагать открытый транспорт для публичного домена нельзя.
+    els.input.addEventListener('input', () => {
+        const raw = els.input.value.trim().replace(/^\w+:\/\//, '').split(/[/?#]/)[0];
+        const host = raw.includes(':') ? raw.slice(0, raw.lastIndexOf(':')) : raw;
+        els.lanRow.classList.toggle('hidden', !host || !aetherIsPrivateHost(host));
+    });
+
+    els.discover.addEventListener('click', async () => {
+        const value = els.input.value.trim();
+        if (!value) { setStatus('Введите адрес сервера', 'error'); return; }
+        setStatus('Ищем сервер…');
+        els.card.classList.add('hidden');
+        try {
+            const api = await opts.loadRatchetApi();
+            const info = await aetherDiscoverServer(value, !!els.lan.checked, api);
+            const state = aetherLoadServers();
+            const verdict = aetherCheckPin(state, info);
+            if (verdict === 'changed') renderTrustAlert(info, state);
+            else renderCard(info, state);
+            setStatus('');
+        } catch (e) {
+            setStatus(String(e.message || e), 'error');
+        }
+    });
+
+    function row(label, value, danger) {
+        return `<div class="aether-card-row"><span>${escapeHtmlSafe(label)}</span>` +
+               `<b${danger ? ' class="aether-danger"' : ''}>${escapeHtmlSafe(value)}</b></div>`;
+    }
+
+    function modeText(mode) {
+        return { open: 'Открыта', approval: 'Нужно подтверждение администратора',
+                 invite_only: 'Только по приглашению', closed: 'Закрыта' }[mode] || mode;
+    }
+
+    function renderCard(info, _stateAtRender) {
+        els.card.innerHTML = `
+            <div class="aether-card">
+                <div class="aether-card-title">${escapeHtmlSafe(info.name)}</div>
+                <div class="aether-card-sub">Сервер найден</div>
+                ${row('Адрес', info.origin.replace(/^https?:\/\//, ''))}
+                ${row('Протокол', 'Aether v' + info.protocol_version)}
+                ${row('Регистрация', modeText(info.registration_mode))}
+                ${row('Шифрование', info.supports_e2ee ? 'Поддерживается' : 'НЕ поддерживается', !info.supports_e2ee)}
+                <div class="aether-card-fp">
+                    <span>Отпечаток сервера</span>
+                    <code>${escapeHtmlSafe(aetherFormatFingerprint(info.fingerprint))}</code>
+                    <p>Сверьте его с владельцем сервера по другому каналу — это единственная защита от подмены при первом подключении.</p>
+                </div>
+                ${info.official ? '' : '<p class="aether-note">Управляется третьей стороной. Aether не контролирует его администратора, хранилище и журналы.</p>'}
+                ${info.cleartext ? '<p class="aether-note aether-danger">Соединение без TLS. Только для локальной сети.</p>' : ''}
+                ${info.endpoints_match_origin ? '' : '<p class="aether-note aether-danger">Сервер назвал адреса на другом домене — возможный признак посредника.</p>'}
+                <button class="tg-btn-primary" id="server-card-continue">Продолжить</button>
+            </div>`;
+        els.card.classList.remove('hidden');
+        document.getElementById('server-card-continue').addEventListener('click', () => {
+            // Состояние перечитывается ЗДЕСЬ, а не берётся из замыкания: между
+            // показом карточки и нажатием реестр мог измениться — например,
+            // в другой вкладке, — и запись поверх стёрла бы чужое изменение.
+            const fresh = aetherLoadServers();
+            aetherUpsertServer(fresh, info);
+            renderSaved();
+            useServer(info.origin, info.name);
+        });
+    }
+
+    /// Идентификатор сервера изменился. Отличить переустановку от подмены
+    /// клиент не может и не должен делать вид, что может: решение принимает
+    /// человек, но с обоими отпечатками перед глазами.
+    function renderTrustAlert(info, state) {
+        const known = state.servers.find(s => s.origin === info.origin) || aetherFindServer(state, info.server_id);
+        const oldFp = known && known.pin ? known.pin.fingerprint : '(неизвестен)';
+        els.card.innerHTML = `
+            <div class="aether-card aether-card-alert">
+                <div class="aether-card-title aether-danger">Внимание</div>
+                <div class="aether-card-sub">Идентификатор сервера изменился</div>
+                <p class="aether-note">Это может означать переустановку сервера, смену владельца или попытку подмены.</p>
+                <div class="aether-card-fp"><span>Старый отпечаток</span><code>${escapeHtmlSafe(aetherFormatFingerprint(oldFp))}</code></div>
+                <div class="aether-card-fp"><span>Новый отпечаток</span><code class="aether-danger">${escapeHtmlSafe(aetherFormatFingerprint(info.fingerprint))}</code></div>
+                <p class="aether-note">Продолжайте, только если сверили новый отпечаток с владельцем сервера по другому каналу.</p>
+                <button class="tg-btn-primary" id="trust-accept">Доверять новому серверу</button>
+                <button class="tg-btn-primary" id="trust-cancel" style="background:transparent;color:var(--text-secondary);">Отмена</button>
+            </div>`;
+        els.card.classList.remove('hidden');
+        document.getElementById('trust-cancel').addEventListener('click', () => els.card.classList.add('hidden'));
+        document.getElementById('trust-accept').addEventListener('click', () => {
+            // Новый ключ — возможно, другая сторона: прежняя запись заменяется,
+            // а вместе с ней и связанные с ней аккаунты.
+            const fresh = aetherLoadServers();
+            fresh.servers = fresh.servers.filter(s => s.origin !== info.origin && s.id !== info.server_id);
+            aetherSaveServers(fresh);
+            aetherUpsertServer(fresh, info);
+            renderSaved();
+            useServer(info.origin, info.name);
+        });
+    }
+
+    els.infraCustom.addEventListener('click', () => selectInfra(true));
+    els.infraOfficial.addEventListener('click', () => selectInfra(false));
+    selectInfra(false);
+}
+
+if (typeof window !== 'undefined') window.aetherServerUiInit = aetherServerUiInit;
