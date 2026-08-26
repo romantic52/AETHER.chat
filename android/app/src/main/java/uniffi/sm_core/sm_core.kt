@@ -1021,6 +1021,140 @@ internal open class UniffiVTableCallbackInterfaceWsListener(
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 // For large crates we prevent `MethodTooLargeException` (see #2340)
 // N.B. the name of the extension is very misleading, since it is 
 // rather `InterfaceTooLargeException`, caused by too many methods 
@@ -1044,17 +1178,61 @@ fun uniffi_sm_core_checksum_func_b64url_decode(
 ): Short
 fun uniffi_sm_core_checksum_func_b64url_encode(
 ): Short
+fun uniffi_sm_core_checksum_func_backup_key(
+): Short
 fun uniffi_sm_core_checksum_func_box_decrypt(
 ): Short
 fun uniffi_sm_core_checksum_func_box_encrypt(
 ): Short
 fun uniffi_sm_core_checksum_func_decrypt_private_key(
 ): Short
+fun uniffi_sm_core_checksum_func_discover_server(
+): Short
 fun uniffi_sm_core_checksum_func_encrypt_private_key(
+): Short
+fun uniffi_sm_core_checksum_func_encrypt_private_key_v2(
+): Short
+fun uniffi_sm_core_checksum_func_ephemeral_from_payload(
+): Short
+fun uniffi_sm_core_checksum_func_fetch_server_info(
+): Short
+fun uniffi_sm_core_checksum_func_format_fingerprint(
 ): Short
 fun uniffi_sm_core_checksum_func_generate_keypair(
 ): Short
+fun uniffi_sm_core_checksum_func_is_private_host(
+): Short
+fun uniffi_sm_core_checksum_func_is_valid_message_id(
+): Short
+fun uniffi_sm_core_checksum_func_message_id_from_payload(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_beacon_to_uuid(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_build_beacon(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_current_epoch(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_edi(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_is_beacon(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_match_beacon(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_new_discovery_key(
+): Short
+fun uniffi_sm_core_checksum_func_nearby_uuid_to_beacon(
+): Short
+fun uniffi_sm_core_checksum_func_new_message_id(
+): Short
+fun uniffi_sm_core_checksum_func_normalize_server_input(
+): Short
+fun uniffi_sm_core_checksum_func_olm_account_ed25519(
+): Short
+fun uniffi_sm_core_checksum_func_olm_account_generate_fallback_signed(
+): Short
 fun uniffi_sm_core_checksum_func_olm_account_generate_otks(
+): Short
+fun uniffi_sm_core_checksum_func_olm_account_generate_otks_signed(
 ): Short
 fun uniffi_sm_core_checksum_func_olm_account_identity(
 ): Short
@@ -1070,15 +1248,41 @@ fun uniffi_sm_core_checksum_func_olm_decrypt(
 ): Short
 fun uniffi_sm_core_checksum_func_olm_encrypt(
 ): Short
+fun uniffi_sm_core_checksum_func_olm_master_public(
+): Short
+fun uniffi_sm_core_checksum_func_olm_prekey_session_id(
+): Short
+fun uniffi_sm_core_checksum_func_olm_session_id(
+): Short
+fun uniffi_sm_core_checksum_func_olm_sign_device(
+): Short
+fun uniffi_sm_core_checksum_func_olm_verify_device(
+): Short
+fun uniffi_sm_core_checksum_func_olm_verify_identity(
+): Short
+fun uniffi_sm_core_checksum_func_olm_verify_prekey_bundle(
+): Short
+fun uniffi_sm_core_checksum_func_olm_verify_qr_build(
+): Short
+fun uniffi_sm_core_checksum_func_olm_verify_qr_parse(
+): Short
 fun uniffi_sm_core_checksum_func_open_envelope(
 ): Short
 fun uniffi_sm_core_checksum_func_open_envelope_multi(
+): Short
+fun uniffi_sm_core_checksum_func_payload_with_ephemeral(
+): Short
+fun uniffi_sm_core_checksum_func_payload_with_message_id(
+): Short
+fun uniffi_sm_core_checksum_func_private_key_backup_version(
 ): Short
 fun uniffi_sm_core_checksum_func_random_key_b64(
 ): Short
 fun uniffi_sm_core_checksum_func_seal_direct(
 ): Short
 fun uniffi_sm_core_checksum_func_seal_group(
+): Short
+fun uniffi_sm_core_checksum_func_server_fingerprint(
 ): Short
 fun uniffi_sm_core_checksum_func_unwrap_group_key(
 ): Short
@@ -1096,7 +1300,15 @@ fun uniffi_sm_core_checksum_method_apiclient_add_group_member(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_avatar_url(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_backup_delete(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_backup_fetch(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_backup_upload(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_bind_session_device(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_bind_session_device_proof(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_claim_keys(
 ): Short
@@ -1130,8 +1342,6 @@ fun uniffi_sm_core_checksum_method_apiclient_keys_count(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_keys_count_device(
 ): Short
-fun uniffi_sm_core_checksum_method_apiclient_keys_state(
-): Short
 fun uniffi_sm_core_checksum_method_apiclient_kick_device(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_leave_group(
@@ -1147,6 +1357,8 @@ fun uniffi_sm_core_checksum_method_apiclient_login_totp(
 fun uniffi_sm_core_checksum_method_apiclient_logout(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_register(
+): Short
+fun uniffi_sm_core_checksum_method_apiclient_register_invite(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_remove_group_member(
 ): Short
@@ -1182,11 +1394,29 @@ fun uniffi_sm_core_checksum_method_apiclient_upload_keys(
 ): Short
 fun uniffi_sm_core_checksum_method_apiclient_upload_keys_device(
 ): Short
+fun uniffi_sm_core_checksum_method_apiclient_upload_keys_device_signed(
+): Short
 fun uniffi_sm_core_checksum_method_apiclient_wipe_account(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_add_delivery_attempt(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_chat_policy(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_clear_unread(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_delete_chat(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_delivery_attempts(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_ephemeral_due(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_ephemeral_get(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_ephemeral_purge(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_ephemeral_set(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_finish_delivery_attempt(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_get_chat_list(
 ): Short
@@ -1206,7 +1436,17 @@ fun uniffi_sm_core_checksum_method_corestore_mark_deleted(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_mark_outgoing_status(
 ): Short
+fun uniffi_sm_core_checksum_method_corestore_master_pin_accept(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_master_pin_check(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_master_pin_get(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_master_pin_set_verified(
+): Short
 fun uniffi_sm_core_checksum_method_corestore_message_exists(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_messages_for_backup(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_meta_get(
 ): Short
@@ -1216,11 +1456,29 @@ fun uniffi_sm_core_checksum_method_corestore_notify_chats(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_notify_messages(
 ): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_pin_accept(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_pin_check(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_pin_delete(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_pin_get(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_pin_set_verified(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_session_delete(
+): Short
 fun uniffi_sm_core_checksum_method_corestore_olm_session_get(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_session_put(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_olm_session_set(
 ): Short
+fun uniffi_sm_core_checksum_method_corestore_olm_sessions_for(
+): Short
 fun uniffi_sm_core_checksum_method_corestore_peer_of(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_peer_trust_reset(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_pin_delete(
 ): Short
@@ -1232,7 +1490,13 @@ fun uniffi_sm_core_checksum_method_corestore_pin_upsert(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_replace_message_id(
 ): Short
+fun uniffi_sm_core_checksum_method_corestore_route_for(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_server_allows(
+): Short
 fun uniffi_sm_core_checksum_method_corestore_set_archived(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_set_chat_policy(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_set_group_key(
 ): Short
@@ -1241,6 +1505,10 @@ fun uniffi_sm_core_checksum_method_corestore_set_listener(
 fun uniffi_sm_core_checksum_method_corestore_set_muted(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_set_pinned(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_set_route(
+): Short
+fun uniffi_sm_core_checksum_method_corestore_set_server_allows(
 ): Short
 fun uniffi_sm_core_checksum_method_corestore_total_unread(
 ): Short
@@ -1351,7 +1619,15 @@ fun uniffi_sm_core_fn_method_apiclient_add_group_member(`ptr`: Pointer,`groupId`
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_avatar_url(`ptr`: Pointer,`fileId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_backup_delete(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_apiclient_backup_fetch(`ptr`: Pointer,`afterSeq`: Long,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_backup_upload(`ptr`: Pointer,`nonceB64`: RustBuffer.ByValue,`ciphertextB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Long
 fun uniffi_sm_core_fn_method_apiclient_bind_session_device(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_apiclient_bind_session_device_proof(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,`identityKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_claim_keys(`ptr`: Pointer,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1385,8 +1661,6 @@ fun uniffi_sm_core_fn_method_apiclient_keys_count(`ptr`: Pointer,uniffi_out_err:
 ): Int
 fun uniffi_sm_core_fn_method_apiclient_keys_count_device(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Int
-fun uniffi_sm_core_fn_method_apiclient_keys_state(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
-): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_kick_device(`ptr`: Pointer,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_leave_group(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1402,6 +1676,8 @@ fun uniffi_sm_core_fn_method_apiclient_login_totp(`ptr`: Pointer,`userId`: RustB
 fun uniffi_sm_core_fn_method_apiclient_logout(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_register(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,`publicKeyB64`: RustBuffer.ByValue,`encryptedPrivateKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_apiclient_register_invite(`ptr`: Pointer,`userId`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,`publicKeyB64`: RustBuffer.ByValue,`encryptedPrivateKeyB64`: RustBuffer.ByValue,`inviteCode`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_apiclient_remove_group_member(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1437,6 +1713,8 @@ fun uniffi_sm_core_fn_method_apiclient_upload_keys(`ptr`: Pointer,`identityKeyB6
 ): Unit
 fun uniffi_sm_core_fn_method_apiclient_upload_keys_device(`ptr`: Pointer,`identityKeyB64`: RustBuffer.ByValue,`oneTimeKeysJson`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_apiclient_upload_keys_device_signed(`ptr`: Pointer,`identityKeyB64`: RustBuffer.ByValue,`ed25519KeyB64`: RustBuffer.ByValue,`identitySigB64`: RustBuffer.ByValue,`oneTimeKeysJson`: RustBuffer.ByValue,`otkSignaturesJson`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`masterKeyB64`: RustBuffer.ByValue,`deviceSigB64`: RustBuffer.ByValue,`fallbackKeyId`: RustBuffer.ByValue,`fallbackKeyB64`: RustBuffer.ByValue,`fallbackSigB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_apiclient_wipe_account(`ptr`: Pointer,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_clone_corestore(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
@@ -1445,9 +1723,25 @@ fun uniffi_sm_core_fn_free_corestore(`ptr`: Pointer,uniffi_out_err: UniffiRustCa
 ): Unit
 fun uniffi_sm_core_fn_constructor_corestore_open(`path`: RustBuffer.ByValue,`encryptionKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Pointer
+fun uniffi_sm_core_fn_method_corestore_add_delivery_attempt(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,`transport`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`startedTs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Int
+fun uniffi_sm_core_fn_method_corestore_chat_policy(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_corestore_clear_unread(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_delete_chat(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_delivery_attempts(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_ephemeral_due(`ptr`: Pointer,`nowMs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_ephemeral_get(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_ephemeral_purge(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_ephemeral_set(`ptr`: Pointer,`e`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_finish_delivery_attempt(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,`attempt`: Int,`outcome`: RustBuffer.ByValue,`detail`: RustBuffer.ByValue,`finishedTs`: Long,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_get_chat_list(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1467,8 +1761,18 @@ fun uniffi_sm_core_fn_method_corestore_mark_deleted(`ptr`: Pointer,`id`: RustBuf
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_mark_outgoing_status(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`status`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_corestore_master_pin_accept(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`masterKeyB64`: RustBuffer.ByValue,`nowTs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_master_pin_check(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`masterKeyB64`: RustBuffer.ByValue,`nowTs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_master_pin_get(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_master_pin_set_verified(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`verified`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_corestore_message_exists(`ptr`: Pointer,`id`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Byte
+fun uniffi_sm_core_fn_method_corestore_messages_for_backup(`ptr`: Pointer,`afterTs`: Long,`afterId`: RustBuffer.ByValue,`limit`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_corestore_meta_get(`ptr`: Pointer,`key`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_corestore_meta_set(`ptr`: Pointer,`key`: RustBuffer.ByValue,`value`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1477,12 +1781,30 @@ fun uniffi_sm_core_fn_method_corestore_notify_chats(`ptr`: Pointer,uniffi_out_er
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_notify_messages(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_corestore_olm_pin_accept(`ptr`: Pointer,`peerKey`: RustBuffer.ByValue,`curve25519B64`: RustBuffer.ByValue,`ed25519B64`: RustBuffer.ByValue,`nowTs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_olm_pin_check(`ptr`: Pointer,`peerKey`: RustBuffer.ByValue,`curve25519B64`: RustBuffer.ByValue,`ed25519B64`: RustBuffer.ByValue,`nowTs`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_olm_pin_delete(`ptr`: Pointer,`peerKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_olm_pin_get(`ptr`: Pointer,`peerKey`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_olm_pin_set_verified(`ptr`: Pointer,`peerKey`: RustBuffer.ByValue,`verified`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_olm_session_delete(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_corestore_olm_session_get(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_olm_session_put(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`sessionId`: RustBuffer.ByValue,`sessionJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_corestore_olm_session_set(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`sessionJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_corestore_olm_sessions_for(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_method_corestore_peer_of(`ptr`: Pointer,`id`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_peer_trust_reset(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
 fun uniffi_sm_core_fn_method_corestore_pin_delete(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_pin_get(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
@@ -1493,7 +1815,13 @@ fun uniffi_sm_core_fn_method_corestore_pin_upsert(`ptr`: Pointer,`peerId`: RustB
 ): Byte
 fun uniffi_sm_core_fn_method_corestore_replace_message_id(`ptr`: Pointer,`oldId`: RustBuffer.ByValue,`newId`: RustBuffer.ByValue,`status`: Int,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
+fun uniffi_sm_core_fn_method_corestore_route_for(`ptr`: Pointer,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_method_corestore_server_allows(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`contentKind`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
 fun uniffi_sm_core_fn_method_corestore_set_archived(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`v`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_set_chat_policy(`ptr`: Pointer,`p`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_set_group_key(`ptr`: Pointer,`groupId`: RustBuffer.ByValue,`keyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
@@ -1502,6 +1830,10 @@ fun uniffi_sm_core_fn_method_corestore_set_listener(`ptr`: Pointer,`listener`: L
 fun uniffi_sm_core_fn_method_corestore_set_muted(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`v`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_set_pinned(`ptr`: Pointer,`peerId`: RustBuffer.ByValue,`v`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_set_route(`ptr`: Pointer,`r`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_method_corestore_set_server_allows(`ptr`: Pointer,`serverId`: RustBuffer.ByValue,`contentKind`: RustBuffer.ByValue,`allowed`: Byte,uniffi_out_err: UniffiRustCallStatus, 
 ): Unit
 fun uniffi_sm_core_fn_method_corestore_total_unread(`ptr`: Pointer,uniffi_out_err: UniffiRustCallStatus, 
 ): Long
@@ -1549,17 +1881,61 @@ fun uniffi_sm_core_fn_func_b64url_decode(`s`: RustBuffer.ByValue,uniffi_out_err:
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_b64url_encode(`data`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_backup_key(`accountSecretB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_box_decrypt(`nonceB64`: RustBuffer.ByValue,`ciphertext`: RustBuffer.ByValue,`senderPubB64`: RustBuffer.ByValue,`recipientPrivB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_box_encrypt(`plaintext`: RustBuffer.ByValue,`recipientPubB64`: RustBuffer.ByValue,`senderPrivB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_decrypt_private_key(`blob`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_discover_server(`input`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,`allowCleartext`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_encrypt_private_key(`privateKeyB64`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_encrypt_private_key_v2(`privateKeyB64`: RustBuffer.ByValue,`password`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_ephemeral_from_payload(`payloadJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_fetch_server_info(`origin`: RustBuffer.ByValue,`nonce`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_format_fingerprint(`fingerprintB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_generate_keypair(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_is_private_host(`host`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_sm_core_fn_func_is_valid_message_id(`id`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_sm_core_fn_func_message_id_from_payload(`payloadJson`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_nearby_beacon_to_uuid(`beacon`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_nearby_build_beacon(`discoveryKeyB64`: RustBuffer.ByValue,`epoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_nearby_current_epoch(uniffi_out_err: UniffiRustCallStatus, 
+): Long
+fun uniffi_sm_core_fn_func_nearby_edi(`discoveryKeyB64`: RustBuffer.ByValue,`epoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_nearby_is_beacon(`beacon`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_sm_core_fn_func_nearby_match_beacon(`beacon`: RustBuffer.ByValue,`discoveryKeyB64`: RustBuffer.ByValue,`epoch`: Long,uniffi_out_err: UniffiRustCallStatus, 
+): Byte
+fun uniffi_sm_core_fn_func_nearby_new_discovery_key(uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_nearby_uuid_to_beacon(`uuid`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_new_message_id(uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_normalize_server_input(`input`: RustBuffer.ByValue,`allowCleartext`: Byte,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_account_ed25519(`accountPickle`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_account_generate_fallback_signed(`accountPickle`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_olm_account_generate_otks(`accountPickle`: RustBuffer.ByValue,`count`: Int,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_account_generate_otks_signed(`accountPickle`: RustBuffer.ByValue,`count`: Int,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_olm_account_identity(`accountPickle`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1575,15 +1951,41 @@ fun uniffi_sm_core_fn_func_olm_decrypt(`sessionPickle`: RustBuffer.ByValue,`mess
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_olm_encrypt(`sessionPickle`: RustBuffer.ByValue,`plaintext`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_master_public(`accountSecretB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_prekey_session_id(`bodyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_session_id(`sessionPickle`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_sign_device(`accountSecretB64`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`identityKeyB64`: RustBuffer.ByValue,`ed25519KeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_verify_device(`masterKeyB64`: RustBuffer.ByValue,`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`identityKeyB64`: RustBuffer.ByValue,`ed25519KeyB64`: RustBuffer.ByValue,`deviceSigB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_func_olm_verify_identity(`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`identityKeyB64`: RustBuffer.ByValue,`ed25519KeyB64`: RustBuffer.ByValue,`identitySigB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_func_olm_verify_prekey_bundle(`userId`: RustBuffer.ByValue,`deviceId`: RustBuffer.ByValue,`identityKeyB64`: RustBuffer.ByValue,`ed25519KeyB64`: RustBuffer.ByValue,`identitySigB64`: RustBuffer.ByValue,`otkId`: RustBuffer.ByValue,`otkB64`: RustBuffer.ByValue,`otkSigB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Unit
+fun uniffi_sm_core_fn_func_olm_verify_qr_build(`userId`: RustBuffer.ByValue,`masterKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_olm_verify_qr_parse(`text`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_open_envelope(`envelopeJson`: RustBuffer.ByValue,`myPrivB64`: RustBuffer.ByValue,`groupKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_open_envelope_multi(`envelopeJson`: RustBuffer.ByValue,`myPrivB64`: RustBuffer.ByValue,`groupKeys`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_payload_with_ephemeral(`payloadJson`: RustBuffer.ByValue,`spec`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_payload_with_message_id(`payloadJson`: RustBuffer.ByValue,`messageId`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_private_key_backup_version(`blob`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): Int
 fun uniffi_sm_core_fn_func_random_key_b64(uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_seal_direct(`plaintextJson`: RustBuffer.ByValue,`recipientPubB64`: RustBuffer.ByValue,`senderPubB64`: RustBuffer.ByValue,`senderPrivB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_seal_group(`plaintextJson`: RustBuffer.ByValue,`groupKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
+): RustBuffer.ByValue
+fun uniffi_sm_core_fn_func_server_fingerprint(`publicKeyB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
 fun uniffi_sm_core_fn_func_unwrap_group_key(`encryptedKeyB64`: RustBuffer.ByValue,`myPrivB64`: RustBuffer.ByValue,uniffi_out_err: UniffiRustCallStatus, 
 ): RustBuffer.ByValue
@@ -1731,6 +2133,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_func_b64url_encode() != 10938.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_func_backup_key() != 57227.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_func_box_decrypt() != 64394.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1740,40 +2145,139 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_func_decrypt_private_key() != 27134.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_encrypt_private_key() != 6933.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_discover_server() != 19591.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_encrypt_private_key() != 56873.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_encrypt_private_key_v2() != 2128.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_ephemeral_from_payload() != 18291.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_fetch_server_info() != 43893.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_format_fingerprint() != 1513.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_func_generate_keypair() != 62166.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_account_generate_otks() != 55797.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_is_private_host() != 53698.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_account_identity() != 12614.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_is_valid_message_id() != 39756.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_account_new() != 57278.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_message_id_from_payload() != 10898.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_account_otk_count() != 13141.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_nearby_beacon_to_uuid() != 62460.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_create_inbound() != 10346.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_nearby_build_beacon() != 12057.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_create_outbound() != 42677.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_nearby_current_epoch() != 50708.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_decrypt() != 29680.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_nearby_edi() != 39748.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_func_olm_encrypt() != 50812.toShort()) {
+    if (lib.uniffi_sm_core_checksum_func_nearby_is_beacon() != 15624.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_nearby_match_beacon() != 12173.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_nearby_new_discovery_key() != 29250.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_nearby_uuid_to_beacon() != 37404.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_new_message_id() != 50239.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_normalize_server_input() != 40150.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_ed25519() != 34857.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_generate_fallback_signed() != 34754.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_generate_otks() != 57020.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_generate_otks_signed() != 52142.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_identity() != 11500.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_new() != 23331.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_account_otk_count() != 35925.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_create_inbound() != 52493.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_create_outbound() != 16339.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_decrypt() != 22227.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_encrypt() != 1070.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_master_public() != 57746.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_prekey_session_id() != 4671.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_session_id() != 24287.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_sign_device() != 26665.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_verify_device() != 53940.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_verify_identity() != 35760.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_verify_prekey_bundle() != 26544.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_verify_qr_build() != 54190.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_olm_verify_qr_parse() != 15166.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_func_open_envelope() != 10136.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_func_open_envelope_multi() != 18394.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_payload_with_ephemeral() != 24459.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_payload_with_message_id() != 4262.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_private_key_backup_version() != 36568.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_func_random_key_b64() != 9605.toShort()) {
@@ -1783,6 +2287,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_func_seal_group() != 63034.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_func_server_fingerprint() != 28048.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_func_unwrap_group_key() != 8062.toShort()) {
@@ -1809,7 +2316,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_avatar_url() != 58647.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_method_apiclient_bind_session_device() != 42000.toShort()) {
+    if (lib.uniffi_sm_core_checksum_method_apiclient_backup_delete() != 64056.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_backup_fetch() != 36533.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_backup_upload() != 41660.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_bind_session_device() != 18734.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_bind_session_device_proof() != 43111.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_claim_keys() != 26061.toShort()) {
@@ -1860,9 +2379,6 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_keys_count_device() != 6249.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_method_apiclient_keys_state() != 3011.toShort()) {
-        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
-    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_kick_device() != 2680.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
@@ -1885,6 +2401,9 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_register() != 33805.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_register_invite() != 31624.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_apiclient_remove_group_member() != 51955.toShort()) {
@@ -1938,13 +2457,40 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_apiclient_upload_keys_device() != 51388.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_apiclient_upload_keys_device_signed() != 43164.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_apiclient_wipe_account() != 42919.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_add_delivery_attempt() != 44857.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_chat_policy() != 44497.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_clear_unread() != 41306.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_delete_chat() != 54805.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_delivery_attempts() != 5401.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_ephemeral_due() != 63306.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_ephemeral_get() != 27285.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_ephemeral_purge() != 30812.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_ephemeral_set() != 56424.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_finish_delivery_attempt() != 11639.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_get_chat_list() != 13860.toShort()) {
@@ -1974,7 +2520,22 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_corestore_mark_outgoing_status() != 41820.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
+    if (lib.uniffi_sm_core_checksum_method_corestore_master_pin_accept() != 18023.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_master_pin_check() != 47628.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_master_pin_get() != 11691.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_master_pin_set_verified() != 27896.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
     if (lib.uniffi_sm_core_checksum_method_corestore_message_exists() != 14575.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_messages_for_backup() != 11746.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_meta_get() != 20778.toShort()) {
@@ -1989,13 +2550,40 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_corestore_notify_messages() != 9711.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_method_corestore_olm_session_get() != 9738.toShort()) {
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_pin_accept() != 54192.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_method_corestore_olm_session_set() != 3733.toShort()) {
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_pin_check() != 42137.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_pin_delete() != 23986.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_pin_get() != 33281.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_pin_set_verified() != 43879.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_session_delete() != 22033.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_session_get() != 37606.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_session_put() != 46393.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_session_set() != 8689.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_olm_sessions_for() != 5303.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_peer_of() != 21375.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_peer_trust_reset() != 35900.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_pin_delete() != 57365.toShort()) {
@@ -2010,10 +2598,19 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
     if (lib.uniffi_sm_core_checksum_method_corestore_pin_upsert() != 33379.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
-    if (lib.uniffi_sm_core_checksum_method_corestore_replace_message_id() != 30284.toShort()) {
+    if (lib.uniffi_sm_core_checksum_method_corestore_replace_message_id() != 46912.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_route_for() != 23330.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_server_allows() != 41517.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_set_archived() != 61572.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_set_chat_policy() != 36766.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_set_group_key() != 59493.toShort()) {
@@ -2026,6 +2623,12 @@ private fun uniffiCheckApiChecksums(lib: IntegrityCheckingUniffiLib) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_set_pinned() != 56712.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_set_route() != 34187.toShort()) {
+        throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
+    }
+    if (lib.uniffi_sm_core_checksum_method_corestore_set_server_allows() != 30149.toShort()) {
         throw RuntimeException("UniFFI API checksum mismatch: try cleaning and rebuilding your project")
     }
     if (lib.uniffi_sm_core_checksum_method_corestore_total_unread() != 64222.toShort()) {
@@ -2243,13 +2846,18 @@ private class UniffiJnaCleanable(
 // There are further runtime checks to chose the correct implementation
 // of the cleaner.
 private fun UniffiCleaner.Companion.create(): UniffiCleaner =
-    if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.TIRAMISU) {
+    try {
+        // For safety's sake: if the library hasn't been run in android_cleaner = true
+        // mode, but is being run on Android, then we still need to think about
+        // Android API versions.
+        // So we check if java.lang.ref.Cleaner is there, and use that…
+        java.lang.Class.forName("java.lang.ref.Cleaner")
         JavaLangRefCleaner()
-    } else {
+    } catch (e: ClassNotFoundException) {
+        // … otherwise, fallback to the JNA cleaner.
         UniffiJnaCleaner()
     }
 
-@androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.TIRAMISU)
 private class JavaLangRefCleaner : UniffiCleaner {
     val cleaner = java.lang.ref.Cleaner.create()
 
@@ -2257,7 +2865,6 @@ private class JavaLangRefCleaner : UniffiCleaner {
         JavaLangRefCleanable(cleaner.register(value, cleanUpTask))
 }
 
-@androidx.annotation.RequiresApi(android.os.Build.VERSION_CODES.TIRAMISU)
 private class JavaLangRefCleanable(
     val cleanable: java.lang.ref.Cleaner.Cleanable
 ) : UniffiCleaner.Cleanable {
@@ -2588,9 +3195,29 @@ public interface ApiClientInterface {
     fun `avatarUrl`(`fileId`: kotlin.String): kotlin.String
     
     /**
-     * Привязать текущую сессию к своему крипто-устройству (адресный выход).
+     * Удалить резервную копию целиком (выключение тумблера).
      */
+    fun `backupDelete`()
+    
+    /**
+     * Чанки, загруженные после указанного seq (для восстановления на новом устройстве).
+     */
+    fun `backupFetch`(`afterSeq`: kotlin.Long, `limit`: kotlin.UInt): List<BackupChunk>
+    
+    /**
+     * Выгрузить чанк истории. Возвращает присвоенный сервером seq.
+     */
+    fun `backupUpload`(`nonceB64`: kotlin.String, `ciphertextB64`: kotlin.String): kotlin.Long
+    
     fun `bindSessionDevice`(`deviceId`: kotlin.String)
+    
+    /**
+     * Привязать текущую сессию к своему крипто-устройству (адресный выход).
+     * identity_key_b64 — доказательство владения устройством (сервер сверяет его
+     * с записью crypto_devices): вор одного лишь токена не сможет объявить свою
+     * сессию чужим устройством и выкинуть настоящее.
+     */
+    fun `bindSessionDeviceProof`(`deviceId`: kotlin.String, `identityKeyB64`: kotlin.String)
     
     /**
      * Забрать prekey-bundle пира (identity + один OTK, сервер его удаляет).
@@ -2634,12 +3261,6 @@ public interface ApiClientInterface {
     fun `keysCountDevice`(`deviceId`: kotlin.String): kotlin.UInt
     
     /**
-     * Server-side prekey state. The identity is needed when restoring an old
-     * account: a stale server bundle must not be mixed with a new local Olm account.
-     */
-    fun `keysState`(): PrekeyState
-    
-    /**
      * Выкинуть устройство (сервер применяет правило 12 часов).
      */
     fun `kickDevice`(`deviceId`: kotlin.String)
@@ -2667,6 +3288,15 @@ public interface ApiClientInterface {
     fun `logout`()
     
     fun `register`(`userId`: kotlin.String, `password`: kotlin.String, `publicKeyB64`: kotlin.String, `encryptedPrivateKeyB64`: kotlin.String): AuthSession
+    
+    /**
+     * Регистрация с кодом приглашения — для серверов в режиме INVITE_ONLY, а
+     * также одноразовым кодом владельца на свежем самохосте.
+     *
+     * Отдельный метод, а не параметр у register: менять сигнатуру нельзя,
+     * её зовут Android и веб через те же UniFFI-привязки.
+     */
+    fun `registerInvite`(`userId`: kotlin.String, `password`: kotlin.String, `publicKeyB64`: kotlin.String, `encryptedPrivateKeyB64`: kotlin.String, `inviteCode`: kotlin.String?): AuthSession
     
     fun `removeGroupMember`(`groupId`: kotlin.String, `userId`: kotlin.String)
     
@@ -2723,6 +3353,14 @@ public interface ApiClientInterface {
     fun `uploadKeys`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String)
     
     fun `uploadKeysDevice`(`identityKeyB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String, `deviceId`: kotlin.String)
+    
+    /**
+     * Публикация подписанного бандла (SEC HIGH-2): ed25519 + подпись identity +
+     * per-OTK подписи (JSON {key_id: sig_b64}, ключи совпадают с one_time_keys_json).
+     * `fallback_*` (P10) — необязательный «последний рубеж» на случай исчерпания
+     * одноразовых; подписан тем же каноном, что и OTK.
+     */
+    fun `uploadKeysDeviceSigned`(`identityKeyB64`: kotlin.String, `ed25519KeyB64`: kotlin.String, `identitySigB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String, `otkSignaturesJson`: kotlin.String, `deviceId`: kotlin.String, `masterKeyB64`: kotlin.String, `deviceSigB64`: kotlin.String, `fallbackKeyId`: kotlin.String?, `fallbackKeyB64`: kotlin.String?, `fallbackSigB64`: kotlin.String?)
     
     /**
      * «Удалить всё» по паролю: чистка сообщений, выход из групп, отзыв сессий.
@@ -2871,14 +3509,76 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
 
     
     /**
-     * Привязать текущую сессию к своему крипто-устройству (адресный выход).
+     * Удалить резервную копию целиком (выключение тумблера).
      */
+    @Throws(CoreException::class)override fun `backupDelete`()
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_backup_delete(
+        it, _status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Чанки, загруженные после указанного seq (для восстановления на новом устройстве).
+     */
+    @Throws(CoreException::class)override fun `backupFetch`(`afterSeq`: kotlin.Long, `limit`: kotlin.UInt): List<BackupChunk> {
+            return FfiConverterSequenceTypeBackupChunk.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_backup_fetch(
+        it, FfiConverterLong.lower(`afterSeq`),FfiConverterUInt.lower(`limit`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Выгрузить чанк истории. Возвращает присвоенный сервером seq.
+     */
+    @Throws(CoreException::class)override fun `backupUpload`(`nonceB64`: kotlin.String, `ciphertextB64`: kotlin.String): kotlin.Long {
+            return FfiConverterLong.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_backup_upload(
+        it, FfiConverterString.lower(`nonceB64`),FfiConverterString.lower(`ciphertextB64`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CoreException::class)override fun `bindSessionDevice`(`deviceId`: kotlin.String)
         = 
     callWithPointer {
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_bind_session_device(
         it, FfiConverterString.lower(`deviceId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Привязать текущую сессию к своему крипто-устройству (адресный выход).
+     * identity_key_b64 — доказательство владения устройством (сервер сверяет его
+     * с записью crypto_devices): вор одного лишь токена не сможет объявить свою
+     * сессию чужим устройством и выкинуть настоящее.
+     */
+    @Throws(CoreException::class)override fun `bindSessionDeviceProof`(`deviceId`: kotlin.String, `identityKeyB64`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_bind_session_device_proof(
+        it, FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`identityKeyB64`),_status)
 }
     }
     
@@ -3099,23 +3799,6 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
 
     
     /**
-     * Server-side prekey state. The identity is needed when restoring an old
-     * account: a stale server bundle must not be mixed with a new local Olm account.
-     */
-    @Throws(CoreException::class)override fun `keysState`(): PrekeyState {
-            return FfiConverterTypePrekeyState.lift(
-    callWithPointer {
-    uniffiRustCallWithError(CoreException) { _status ->
-    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_keys_state(
-        it, _status)
-}
-    }
-    )
-    }
-    
-
-    
-    /**
      * Выкинуть устройство (сервер применяет правило 12 часов).
      */
     @Throws(CoreException::class)override fun `kickDevice`(`deviceId`: kotlin.String)
@@ -3222,6 +3905,26 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_register(
         it, FfiConverterString.lower(`userId`),FfiConverterString.lower(`password`),FfiConverterString.lower(`publicKeyB64`),FfiConverterString.lower(`encryptedPrivateKeyB64`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Регистрация с кодом приглашения — для серверов в режиме INVITE_ONLY, а
+     * также одноразовым кодом владельца на свежем самохосте.
+     *
+     * Отдельный метод, а не параметр у register: менять сигнатуру нельзя,
+     * её зовут Android и веб через те же UniFFI-привязки.
+     */
+    @Throws(CoreException::class)override fun `registerInvite`(`userId`: kotlin.String, `password`: kotlin.String, `publicKeyB64`: kotlin.String, `encryptedPrivateKeyB64`: kotlin.String, `inviteCode`: kotlin.String?): AuthSession {
+            return FfiConverterTypeAuthSession.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_register_invite(
+        it, FfiConverterString.lower(`userId`),FfiConverterString.lower(`password`),FfiConverterString.lower(`publicKeyB64`),FfiConverterString.lower(`encryptedPrivateKeyB64`),FfiConverterOptionalString.lower(`inviteCode`),_status)
 }
     }
     )
@@ -3461,6 +4164,24 @@ open class ApiClient: Disposable, AutoCloseable, ApiClientInterface
 
     
     /**
+     * Публикация подписанного бандла (SEC HIGH-2): ed25519 + подпись identity +
+     * per-OTK подписи (JSON {key_id: sig_b64}, ключи совпадают с one_time_keys_json).
+     * `fallback_*` (P10) — необязательный «последний рубеж» на случай исчерпания
+     * одноразовых; подписан тем же каноном, что и OTK.
+     */
+    @Throws(CoreException::class)override fun `uploadKeysDeviceSigned`(`identityKeyB64`: kotlin.String, `ed25519KeyB64`: kotlin.String, `identitySigB64`: kotlin.String, `oneTimeKeysJson`: kotlin.String, `otkSignaturesJson`: kotlin.String, `deviceId`: kotlin.String, `masterKeyB64`: kotlin.String, `deviceSigB64`: kotlin.String, `fallbackKeyId`: kotlin.String?, `fallbackKeyB64`: kotlin.String?, `fallbackSigB64`: kotlin.String?)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_apiclient_upload_keys_device_signed(
+        it, FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`ed25519KeyB64`),FfiConverterString.lower(`identitySigB64`),FfiConverterString.lower(`oneTimeKeysJson`),FfiConverterString.lower(`otkSignaturesJson`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`masterKeyB64`),FfiConverterString.lower(`deviceSigB64`),FfiConverterOptionalString.lower(`fallbackKeyId`),FfiConverterOptionalString.lower(`fallbackKeyB64`),FfiConverterOptionalString.lower(`fallbackSigB64`),_status)
+}
+    }
+    
+    
+
+    
+    /**
      * «Удалить всё» по паролю: чистка сообщений, выход из групп, отзыв сессий.
      */
     @Throws(CoreException::class)override fun `wipeAccount`(`password`: kotlin.String)
@@ -3611,9 +4332,48 @@ public object FfiConverterTypeApiClient: FfiConverter<ApiClient, Pointer> {
 
 public interface CoreStoreInterface {
     
+    /**
+     * Добавить попытку. Номер назначается сам — вызывающему не нужно
+     * помнить, сколько их уже было.
+     */
+    fun `addDeliveryAttempt`(`messageId`: kotlin.String, `transport`: kotlin.String, `deviceId`: kotlin.String?, `startedTs`: kotlin.Long): kotlin.Int
+    
+    /**
+     * Политика чата. Записи нет — отдаём умолчание, а не ошибку: чат мог
+     * существовать задолго до появления политик.
+     */
+    fun `chatPolicy`(`peerId`: kotlin.String): ChatDeliveryPolicy
+    
     fun `clearUnread`(`peerId`: kotlin.String)
     
     fun `deleteChat`(`peerId`: kotlin.String)
+    
+    fun `deliveryAttempts`(`messageId`: kotlin.String): List<DeliveryAttempt>
+    
+    /**
+     * Сообщения, чей срок уже вышел, но содержимое ещё не стёрто.
+     */
+    fun `ephemeralDue`(`nowMs`: kotlin.Long): List<kotlin.String>
+    
+    fun `ephemeralGet`(`messageId`: kotlin.String): EphemeralState?
+    
+    /**
+     * Стереть содержимое, оставив в истории отметку.
+     *
+     * Строка сообщения не удаляется, а payload заменяется надгробием: в чате
+     * должно остаться «сообщение истекло», а не дырка, из-за которой человек
+     * решит, что ничего и не было. Само содержимое при этом стирается
+     * физически — включая текст, ключи медиа и реакции.
+     */
+    fun `ephemeralPurge`(`messageId`: kotlin.String)
+    
+    /**
+     * Заменить локальный id на серверный (после успешной отправки), выставив статус.
+     * Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
+     */
+    fun `ephemeralSet`(`e`: EphemeralState)
+    
+    fun `finishDeliveryAttempt`(`messageId`: kotlin.String, `attempt`: kotlin.Int, `outcome`: kotlin.String, `detail`: kotlin.String?, `finishedTs`: kotlin.Long)
     
     fun `getChatList`(): List<Chat>
     
@@ -3646,7 +4406,27 @@ public interface CoreStoreInterface {
      */
     fun `markOutgoingStatus`(`peerId`: kotlin.String, `status`: kotlin.Int)
     
+    fun `masterPinAccept`(`peerId`: kotlin.String, `masterKeyB64`: kotlin.String, `nowTs`: kotlin.Long)
+    
+    /**
+     * TOFU-гейт мастер-ключа. Mismatch пин НЕ трогает — принять новый мастер
+     * можно только явным master_pin_accept (смена пароля/восстановление аккаунта
+     * пира тоже приводит сюда: событие, которое пользователь должен подтвердить).
+     */
+    fun `masterPinCheck`(`peerId`: kotlin.String, `masterKeyB64`: kotlin.String, `nowTs`: kotlin.Long): OlmPinStatus
+    
+    fun `masterPinGet`(`peerId`: kotlin.String): MasterPin?
+    
+    fun `masterPinSetVerified`(`peerId`: kotlin.String, `verified`: kotlin.Boolean)
+    
     fun `messageExists`(`id`: kotlin.String): kotlin.Boolean
+    
+    /**
+     * Сообщения для резервной копии: по возрастанию ts, начиная СТРОГО после
+     * (after_ts, after_id) — пара нужна, чтобы сообщения с одинаковой меткой
+     * времени не выпадали из бэкапа и не дублировались.
+     */
+    fun `messagesForBackup`(`afterTs`: kotlin.Long, `afterId`: kotlin.String, `limit`: kotlin.UInt): List<StoredMessage>
     
     fun `metaGet`(`key`: kotlin.String): kotlin.String?
     
@@ -3656,11 +4436,74 @@ public interface CoreStoreInterface {
     
     fun `notifyMessages`(`peerId`: kotlin.String)
     
+    /**
+     * Явное принятие нового ключа пользователем (после Mismatch). Старый пин уходит
+     * в prev_*, verified сбрасывается. Тихих перепинов в ядре нет — только этот путь.
+     */
+    fun `olmPinAccept`(`peerKey`: kotlin.String, `curve25519B64`: kotlin.String, `ed25519B64`: kotlin.String?, `nowTs`: kotlin.Long)
+    
+    /**
+     * TOFU-гейт: сверить olm-identity устройства с пином (и запинить при первом контакте).
+     * ed25519_b64 = None на входящих (в конверте только curve25519) — тогда сверяется
+     * лишь curve-ключ; при Mismatch пин НЕ трогается. Анти-даунгрейд «бандл без подписи,
+     * хотя ed25519 уже запинен» — ответственность вызывающего (см. olm_pin_get).
+     */
+    fun `olmPinCheck`(`peerKey`: kotlin.String, `curve25519B64`: kotlin.String, `ed25519B64`: kotlin.String?, `nowTs`: kotlin.Long): OlmPinStatus
+    
+    fun `olmPinDelete`(`peerKey`: kotlin.String)
+    
+    fun `olmPinGet`(`peerKey`: kotlin.String): OlmPin?
+    
+    fun `olmPinSetVerified`(`peerKey`: kotlin.String, `verified`: kotlin.Boolean)
+    
+    /**
+     * Забыть ВСЕ сессии с устройством (принятие нового ключа пира: старые
+     * сессии мертвы, новая установится свежим prekey-обменом).
+     */
+    fun `olmSessionDelete`(`peerId`: kotlin.String)
+    
+    /**
+     * Самая свежая сессия. Совместимость с однососессионными вызывающими
+     * (ветка android до порта мультисессий) — новый код ходит через
+     * `olm_sessions_for`, чтобы перебрать все.
+     */
     fun `olmSessionGet`(`peerId`: kotlin.String): kotlin.String?
     
+    /**
+     * Сохранить/обновить сессию. Помимо записи подрезает историю до
+     * `MAX_SESSIONS_PER_PEER`: без лимита пир (или сервер от его имени) мог бы
+     * потоком prekey-конвертов раздувать базу без ограничений.
+     */
+    fun `olmSessionPut`(`peerId`: kotlin.String, `sessionId`: kotlin.String, `sessionJson`: kotlin.String)
+    
+    /**
+     * Совместимая запись: session_id вычисляется из самого pickle, поэтому
+     * старый вызывающий не затирает чужую сессию, а обновляет свою.
+     */
     fun `olmSessionSet`(`peerId`: kotlin.String, `sessionJson`: kotlin.String)
     
+    /**
+     * Все Olm-сессии с устройством пира, свежая первой (SEC MED-4).
+     *
+     * Сессий несколько намеренно. Когда обе стороны начинают переписку
+     * одновременно, каждая заводит свою исходящую — раньше входящий prekey
+     * затирал единственную строку, и всё, что собеседник уже зашифровал в
+     * затёртой сессии, становилось невскрываемым навсегда. Теперь живут обе:
+     * приём перебирает их, отправка берёт самую свежую.
+     *
+     * Порядок: свежая первой, при равном ts — по session_id, чтобы выбор
+     * отправляющей сессии был детерминирован и не «дрожал» между запусками.
+     */
+    fun `olmSessionsFor`(`peerId`: kotlin.String): List<OlmSession>
+    
     fun `peerOf`(`id`: kotlin.String): kotlin.String?
+    
+    /**
+     * Снять ВСЁ производное доверие к пиру: device-пины и Olm-сессии всех его
+     * устройств (принятие нового мастер-ключа). Не требует сети и списка
+     * устройств — чистит по префиксу ключа "peer" / "peer::device".
+     */
+    fun `peerTrustReset`(`peerId`: kotlin.String)
     
     fun `pinDelete`(`peerId`: kotlin.String)
     
@@ -3673,13 +4516,19 @@ public interface CoreStoreInterface {
      */
     fun `pinUpsert`(`peerId`: kotlin.String, `publicKeyB64`: kotlin.String, `firstSeen`: kotlin.Long): kotlin.Boolean
     
-    /**
-     * Заменить локальный id на серверный (после успешной отправки), выставив статус.
-     * Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
-     */
     fun `replaceMessageId`(`oldId`: kotlin.String, `newId`: kotlin.String, `status`: kotlin.Int)
     
+    fun `routeFor`(`messageId`: kotlin.String): MessageRoute?
+    
+    /**
+     * Разрешено ли отдавать серверу контент такой категории.
+     * Отсутствие записи = разрешено: иначе включение функции молча запретило бы всё.
+     */
+    fun `serverAllows`(`serverId`: kotlin.String, `contentKind`: kotlin.String): kotlin.Boolean
+    
     fun `setArchived`(`peerId`: kotlin.String, `v`: kotlin.Boolean)
+    
+    fun `setChatPolicy`(`p`: ChatDeliveryPolicy)
     
     /**
      * Сохранить ключ группы. Если он совпадает с текущим — no-op; если новый —
@@ -3695,6 +4544,14 @@ public interface CoreStoreInterface {
     fun `setMuted`(`peerId`: kotlin.String, `v`: kotlin.Boolean)
     
     fun `setPinned`(`peerId`: kotlin.String, `v`: kotlin.Boolean)
+    
+    /**
+     * Записать, чем сообщение реально ушло. Вызывается ПОСЛЕ подтверждения:
+     * до него маршрут ещё не известен, а попытки лежат в отдельной таблице.
+     */
+    fun `setRoute`(`r`: MessageRoute)
+    
+    fun `setServerAllows`(`serverId`: kotlin.String, `contentKind`: kotlin.String, `allowed`: kotlin.Boolean)
     
     fun `totalUnread`(): kotlin.Long
     
@@ -3802,6 +4659,40 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     }
 
     
+    /**
+     * Добавить попытку. Номер назначается сам — вызывающему не нужно
+     * помнить, сколько их уже было.
+     */
+    @Throws(CoreException::class)override fun `addDeliveryAttempt`(`messageId`: kotlin.String, `transport`: kotlin.String, `deviceId`: kotlin.String?, `startedTs`: kotlin.Long): kotlin.Int {
+            return FfiConverterInt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_add_delivery_attempt(
+        it, FfiConverterString.lower(`messageId`),FfiConverterString.lower(`transport`),FfiConverterOptionalString.lower(`deviceId`),FfiConverterLong.lower(`startedTs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Политика чата. Записи нет — отдаём умолчание, а не ошибку: чат мог
+     * существовать задолго до появления политик.
+     */
+    @Throws(CoreException::class)override fun `chatPolicy`(`peerId`: kotlin.String): ChatDeliveryPolicy {
+            return FfiConverterTypeChatDeliveryPolicy.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_chat_policy(
+        it, FfiConverterString.lower(`peerId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CoreException::class)override fun `clearUnread`(`peerId`: kotlin.String)
         = 
     callWithPointer {
@@ -3820,6 +4711,96 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_delete_chat(
         it, FfiConverterString.lower(`peerId`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `deliveryAttempts`(`messageId`: kotlin.String): List<DeliveryAttempt> {
+            return FfiConverterSequenceTypeDeliveryAttempt.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_delivery_attempts(
+        it, FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Сообщения, чей срок уже вышел, но содержимое ещё не стёрто.
+     */
+    @Throws(CoreException::class)override fun `ephemeralDue`(`nowMs`: kotlin.Long): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_ephemeral_due(
+        it, FfiConverterLong.lower(`nowMs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `ephemeralGet`(`messageId`: kotlin.String): EphemeralState? {
+            return FfiConverterOptionalTypeEphemeralState.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_ephemeral_get(
+        it, FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Стереть содержимое, оставив в истории отметку.
+     *
+     * Строка сообщения не удаляется, а payload заменяется надгробием: в чате
+     * должно остаться «сообщение истекло», а не дырка, из-за которой человек
+     * решит, что ничего и не было. Само содержимое при этом стирается
+     * физически — включая текст, ключи медиа и реакции.
+     */
+    @Throws(CoreException::class)override fun `ephemeralPurge`(`messageId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_ephemeral_purge(
+        it, FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Заменить локальный id на серверный (после успешной отправки), выставив статус.
+     * Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
+     */
+    @Throws(CoreException::class)override fun `ephemeralSet`(`e`: EphemeralState)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_ephemeral_set(
+        it, FfiConverterTypeEphemeralState.lower(`e`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `finishDeliveryAttempt`(`messageId`: kotlin.String, `attempt`: kotlin.Int, `outcome`: kotlin.String, `detail`: kotlin.String?, `finishedTs`: kotlin.Long)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_finish_delivery_attempt(
+        it, FfiConverterString.lower(`messageId`),FfiConverterInt.lower(`attempt`),FfiConverterString.lower(`outcome`),FfiConverterOptionalString.lower(`detail`),FfiConverterLong.lower(`finishedTs`),_status)
 }
     }
     
@@ -3953,12 +4934,85 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     
 
     
+    @Throws(CoreException::class)override fun `masterPinAccept`(`peerId`: kotlin.String, `masterKeyB64`: kotlin.String, `nowTs`: kotlin.Long)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_master_pin_accept(
+        it, FfiConverterString.lower(`peerId`),FfiConverterString.lower(`masterKeyB64`),FfiConverterLong.lower(`nowTs`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * TOFU-гейт мастер-ключа. Mismatch пин НЕ трогает — принять новый мастер
+     * можно только явным master_pin_accept (смена пароля/восстановление аккаунта
+     * пира тоже приводит сюда: событие, которое пользователь должен подтвердить).
+     */
+    @Throws(CoreException::class)override fun `masterPinCheck`(`peerId`: kotlin.String, `masterKeyB64`: kotlin.String, `nowTs`: kotlin.Long): OlmPinStatus {
+            return FfiConverterTypeOlmPinStatus.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_master_pin_check(
+        it, FfiConverterString.lower(`peerId`),FfiConverterString.lower(`masterKeyB64`),FfiConverterLong.lower(`nowTs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `masterPinGet`(`peerId`: kotlin.String): MasterPin? {
+            return FfiConverterOptionalTypeMasterPin.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_master_pin_get(
+        it, FfiConverterString.lower(`peerId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `masterPinSetVerified`(`peerId`: kotlin.String, `verified`: kotlin.Boolean)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_master_pin_set_verified(
+        it, FfiConverterString.lower(`peerId`),FfiConverterBoolean.lower(`verified`),_status)
+}
+    }
+    
+    
+
+    
     @Throws(CoreException::class)override fun `messageExists`(`id`: kotlin.String): kotlin.Boolean {
             return FfiConverterBoolean.lift(
     callWithPointer {
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_message_exists(
         it, FfiConverterString.lower(`id`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Сообщения для резервной копии: по возрастанию ts, начиная СТРОГО после
+     * (after_ts, after_id) — пара нужна, чтобы сообщения с одинаковой меткой
+     * времени не выпадали из бэкапа и не дублировались.
+     */
+    @Throws(CoreException::class)override fun `messagesForBackup`(`afterTs`: kotlin.Long, `afterId`: kotlin.String, `limit`: kotlin.UInt): List<StoredMessage> {
+            return FfiConverterSequenceTypeStoredMessage.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_messages_for_backup(
+        it, FfiConverterLong.lower(`afterTs`),FfiConverterString.lower(`afterId`),FfiConverterUInt.lower(`limit`),_status)
 }
     }
     )
@@ -4013,6 +5067,99 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     
 
     
+    /**
+     * Явное принятие нового ключа пользователем (после Mismatch). Старый пин уходит
+     * в prev_*, verified сбрасывается. Тихих перепинов в ядре нет — только этот путь.
+     */
+    @Throws(CoreException::class)override fun `olmPinAccept`(`peerKey`: kotlin.String, `curve25519B64`: kotlin.String, `ed25519B64`: kotlin.String?, `nowTs`: kotlin.Long)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_pin_accept(
+        it, FfiConverterString.lower(`peerKey`),FfiConverterString.lower(`curve25519B64`),FfiConverterOptionalString.lower(`ed25519B64`),FfiConverterLong.lower(`nowTs`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * TOFU-гейт: сверить olm-identity устройства с пином (и запинить при первом контакте).
+     * ed25519_b64 = None на входящих (в конверте только curve25519) — тогда сверяется
+     * лишь curve-ключ; при Mismatch пин НЕ трогается. Анти-даунгрейд «бандл без подписи,
+     * хотя ed25519 уже запинен» — ответственность вызывающего (см. olm_pin_get).
+     */
+    @Throws(CoreException::class)override fun `olmPinCheck`(`peerKey`: kotlin.String, `curve25519B64`: kotlin.String, `ed25519B64`: kotlin.String?, `nowTs`: kotlin.Long): OlmPinStatus {
+            return FfiConverterTypeOlmPinStatus.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_pin_check(
+        it, FfiConverterString.lower(`peerKey`),FfiConverterString.lower(`curve25519B64`),FfiConverterOptionalString.lower(`ed25519B64`),FfiConverterLong.lower(`nowTs`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `olmPinDelete`(`peerKey`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_pin_delete(
+        it, FfiConverterString.lower(`peerKey`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `olmPinGet`(`peerKey`: kotlin.String): OlmPin? {
+            return FfiConverterOptionalTypeOlmPin.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_pin_get(
+        it, FfiConverterString.lower(`peerKey`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    @Throws(CoreException::class)override fun `olmPinSetVerified`(`peerKey`: kotlin.String, `verified`: kotlin.Boolean)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_pin_set_verified(
+        it, FfiConverterString.lower(`peerKey`),FfiConverterBoolean.lower(`verified`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Забыть ВСЕ сессии с устройством (принятие нового ключа пира: старые
+     * сессии мертвы, новая установится свежим prekey-обменом).
+     */
+    @Throws(CoreException::class)override fun `olmSessionDelete`(`peerId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_session_delete(
+        it, FfiConverterString.lower(`peerId`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Самая свежая сессия. Совместимость с однососессионными вызывающими
+     * (ветка android до порта мультисессий) — новый код ходит через
+     * `olm_sessions_for`, чтобы перебрать все.
+     */
     @Throws(CoreException::class)override fun `olmSessionGet`(`peerId`: kotlin.String): kotlin.String? {
             return FfiConverterOptionalString.lift(
     callWithPointer {
@@ -4026,6 +5173,27 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     
 
     
+    /**
+     * Сохранить/обновить сессию. Помимо записи подрезает историю до
+     * `MAX_SESSIONS_PER_PEER`: без лимита пир (или сервер от его имени) мог бы
+     * потоком prekey-конвертов раздувать базу без ограничений.
+     */
+    @Throws(CoreException::class)override fun `olmSessionPut`(`peerId`: kotlin.String, `sessionId`: kotlin.String, `sessionJson`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_session_put(
+        it, FfiConverterString.lower(`peerId`),FfiConverterString.lower(`sessionId`),FfiConverterString.lower(`sessionJson`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Совместимая запись: session_id вычисляется из самого pickle, поэтому
+     * старый вызывающий не затирает чужую сессию, а обновляет свою.
+     */
     @Throws(CoreException::class)override fun `olmSessionSet`(`peerId`: kotlin.String, `sessionJson`: kotlin.String)
         = 
     callWithPointer {
@@ -4035,6 +5203,31 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
 }
     }
     
+    
+
+    
+    /**
+     * Все Olm-сессии с устройством пира, свежая первой (SEC MED-4).
+     *
+     * Сессий несколько намеренно. Когда обе стороны начинают переписку
+     * одновременно, каждая заводит свою исходящую — раньше входящий prekey
+     * затирал единственную строку, и всё, что собеседник уже зашифровал в
+     * затёртой сессии, становилось невскрываемым навсегда. Теперь живут обе:
+     * приём перебирает их, отправка берёт самую свежую.
+     *
+     * Порядок: свежая первой, при равном ts — по session_id, чтобы выбор
+     * отправляющей сессии был детерминирован и не «дрожал» между запусками.
+     */
+    @Throws(CoreException::class)override fun `olmSessionsFor`(`peerId`: kotlin.String): List<OlmSession> {
+            return FfiConverterSequenceTypeOlmSession.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_olm_sessions_for(
+        it, FfiConverterString.lower(`peerId`),_status)
+}
+    }
+    )
+    }
     
 
     override fun `peerOf`(`id`: kotlin.String): kotlin.String? {
@@ -4047,6 +5240,23 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     }
     )
     }
+    
+
+    
+    /**
+     * Снять ВСЁ производное доверие к пиру: device-пины и Olm-сессии всех его
+     * устройств (принятие нового мастер-ключа). Не требует сети и списка
+     * устройств — чистит по префиксу ключа "peer" / "peer::device".
+     */
+    @Throws(CoreException::class)override fun `peerTrustReset`(`peerId`: kotlin.String)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_peer_trust_reset(
+        it, FfiConverterString.lower(`peerId`),_status)
+}
+    }
+    
     
 
     
@@ -4103,10 +5313,6 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     
 
     
-    /**
-     * Заменить локальный id на серверный (после успешной отправки), выставив статус.
-     * Если серверный id уже есть (эхо из inbox) — просто удалить локальную запись.
-     */
     @Throws(CoreException::class)override fun `replaceMessageId`(`oldId`: kotlin.String, `newId`: kotlin.String, `status`: kotlin.Int)
         = 
     callWithPointer {
@@ -4119,12 +5325,54 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     
 
     
+    @Throws(CoreException::class)override fun `routeFor`(`messageId`: kotlin.String): MessageRoute? {
+            return FfiConverterOptionalTypeMessageRoute.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_route_for(
+        it, FfiConverterString.lower(`messageId`),_status)
+}
+    }
+    )
+    }
+    
+
+    
+    /**
+     * Разрешено ли отдавать серверу контент такой категории.
+     * Отсутствие записи = разрешено: иначе включение функции молча запретило бы всё.
+     */
+    @Throws(CoreException::class)override fun `serverAllows`(`serverId`: kotlin.String, `contentKind`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_server_allows(
+        it, FfiConverterString.lower(`serverId`),FfiConverterString.lower(`contentKind`),_status)
+}
+    }
+    )
+    }
+    
+
+    
     @Throws(CoreException::class)override fun `setArchived`(`peerId`: kotlin.String, `v`: kotlin.Boolean)
         = 
     callWithPointer {
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_set_archived(
         it, FfiConverterString.lower(`peerId`),FfiConverterBoolean.lower(`v`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `setChatPolicy`(`p`: ChatDeliveryPolicy)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_set_chat_policy(
+        it, FfiConverterTypeChatDeliveryPolicy.lower(`p`),_status)
 }
     }
     
@@ -4179,6 +5427,34 @@ open class CoreStore: Disposable, AutoCloseable, CoreStoreInterface
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_set_pinned(
         it, FfiConverterString.lower(`peerId`),FfiConverterBoolean.lower(`v`),_status)
+}
+    }
+    
+    
+
+    
+    /**
+     * Записать, чем сообщение реально ушло. Вызывается ПОСЛЕ подтверждения:
+     * до него маршрут ещё не известен, а попытки лежат в отдельной таблице.
+     */
+    @Throws(CoreException::class)override fun `setRoute`(`r`: MessageRoute)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_set_route(
+        it, FfiConverterTypeMessageRoute.lower(`r`),_status)
+}
+    }
+    
+    
+
+    
+    @Throws(CoreException::class)override fun `setServerAllows`(`serverId`: kotlin.String, `contentKind`: kotlin.String, `allowed`: kotlin.Boolean)
+        = 
+    callWithPointer {
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_method_corestore_set_server_allows(
+        it, FfiConverterString.lower(`serverId`),FfiConverterString.lower(`contentKind`),FfiConverterBoolean.lower(`allowed`),_status)
 }
     }
     
@@ -4717,6 +5993,45 @@ public object FfiConverterTypeAuthSession: FfiConverterRustBuffer<AuthSession> {
 
 
 
+/**
+ * Чанк резервной копии истории (шифротекст AES-256-GCM; сервер его не читает).
+ */
+data class BackupChunk (
+    var `seq`: kotlin.Long, 
+    var `nonceB64`: kotlin.String, 
+    var `ciphertextB64`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeBackupChunk: FfiConverterRustBuffer<BackupChunk> {
+    override fun read(buf: ByteBuffer): BackupChunk {
+        return BackupChunk(
+            FfiConverterLong.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: BackupChunk) = (
+            FfiConverterLong.allocationSize(value.`seq`) +
+            FfiConverterString.allocationSize(value.`nonceB64`) +
+            FfiConverterString.allocationSize(value.`ciphertextB64`)
+    )
+
+    override fun write(value: BackupChunk, buf: ByteBuffer) {
+            FfiConverterLong.write(value.`seq`, buf)
+            FfiConverterString.write(value.`nonceB64`, buf)
+            FfiConverterString.write(value.`ciphertextB64`, buf)
+    }
+}
+
+
+
 data class Chat (
     var `peerId`: kotlin.String, 
     var `isGroup`: kotlin.Boolean, 
@@ -4778,11 +6093,133 @@ public object FfiConverterTypeChat: FfiConverterRustBuffer<Chat> {
 
 
 /**
+ * Политика доставки одного чата.
+ */
+data class ChatDeliveryPolicy (
+    var `peerId`: kotlin.String, 
+    /**
+     * AUTO | DIRECT_ONLY | DIRECT_PLUS_BACKUP | SERVER
+     */
+    var `deliveryMode`: kotlin.String, 
+    /**
+     * Порядок транспортов, заданный пользователем. JSON-массив идентификаторов.
+     */
+    var `transportOrder`: kotlin.String?, 
+    /**
+     * NEVER | RELAY_ONLY | ENCRYPTED_BACKUP | ASK
+     */
+    var `serverStorage`: kotlin.String, 
+    var `updatedTs`: kotlin.Long
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeChatDeliveryPolicy: FfiConverterRustBuffer<ChatDeliveryPolicy> {
+    override fun read(buf: ByteBuffer): ChatDeliveryPolicy {
+        return ChatDeliveryPolicy(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ChatDeliveryPolicy) = (
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterString.allocationSize(value.`deliveryMode`) +
+            FfiConverterOptionalString.allocationSize(value.`transportOrder`) +
+            FfiConverterString.allocationSize(value.`serverStorage`) +
+            FfiConverterLong.allocationSize(value.`updatedTs`)
+    )
+
+    override fun write(value: ChatDeliveryPolicy, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterString.write(value.`deliveryMode`, buf)
+            FfiConverterOptionalString.write(value.`transportOrder`, buf)
+            FfiConverterString.write(value.`serverStorage`, buf)
+            FfiConverterLong.write(value.`updatedTs`, buf)
+    }
+}
+
+
+
+/**
+ * Одна попытка доставки — строка журнала для Message Info и повторов.
+ */
+data class DeliveryAttempt (
+    var `messageId`: kotlin.String, 
+    var `attempt`: kotlin.Int, 
+    var `transport`: kotlin.String, 
+    var `deviceId`: kotlin.String?, 
+    var `startedTs`: kotlin.Long, 
+    var `finishedTs`: kotlin.Long?, 
+    /**
+     * ok | unreachable | rejected | timeout | error
+     */
+    var `outcome`: kotlin.String?, 
+    var `detail`: kotlin.String?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeDeliveryAttempt: FfiConverterRustBuffer<DeliveryAttempt> {
+    override fun read(buf: ByteBuffer): DeliveryAttempt {
+        return DeliveryAttempt(
+            FfiConverterString.read(buf),
+            FfiConverterInt.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: DeliveryAttempt) = (
+            FfiConverterString.allocationSize(value.`messageId`) +
+            FfiConverterInt.allocationSize(value.`attempt`) +
+            FfiConverterString.allocationSize(value.`transport`) +
+            FfiConverterOptionalString.allocationSize(value.`deviceId`) +
+            FfiConverterLong.allocationSize(value.`startedTs`) +
+            FfiConverterOptionalLong.allocationSize(value.`finishedTs`) +
+            FfiConverterOptionalString.allocationSize(value.`outcome`) +
+            FfiConverterOptionalString.allocationSize(value.`detail`)
+    )
+
+    override fun write(value: DeliveryAttempt, buf: ByteBuffer) {
+            FfiConverterString.write(value.`messageId`, buf)
+            FfiConverterInt.write(value.`attempt`, buf)
+            FfiConverterString.write(value.`transport`, buf)
+            FfiConverterOptionalString.write(value.`deviceId`, buf)
+            FfiConverterLong.write(value.`startedTs`, buf)
+            FfiConverterOptionalLong.write(value.`finishedTs`, buf)
+            FfiConverterOptionalString.write(value.`outcome`, buf)
+            FfiConverterOptionalString.write(value.`detail`, buf)
+    }
+}
+
+
+
+/**
  * Крипто-устройство аккаунта (multi-device): свой Olm-аккаунт на устройство.
  */
 data class DeviceInfo (
     var `deviceId`: kotlin.String, 
-    var `identityKeyB64`: kotlin.String
+    var `identityKeyB64`: kotlin.String, 
+    var `ed25519KeyB64`: kotlin.String?, 
+    var `identitySigB64`: kotlin.String?, 
+    var `masterKeyB64`: kotlin.String?, 
+    var `deviceSigB64`: kotlin.String?
 ) {
     
     companion object
@@ -4796,17 +6233,138 @@ public object FfiConverterTypeDeviceInfo: FfiConverterRustBuffer<DeviceInfo> {
         return DeviceInfo(
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
     override fun allocationSize(value: DeviceInfo) = (
             FfiConverterString.allocationSize(value.`deviceId`) +
-            FfiConverterString.allocationSize(value.`identityKeyB64`)
+            FfiConverterString.allocationSize(value.`identityKeyB64`) +
+            FfiConverterOptionalString.allocationSize(value.`ed25519KeyB64`) +
+            FfiConverterOptionalString.allocationSize(value.`identitySigB64`) +
+            FfiConverterOptionalString.allocationSize(value.`masterKeyB64`) +
+            FfiConverterOptionalString.allocationSize(value.`deviceSigB64`)
     )
 
     override fun write(value: DeviceInfo, buf: ByteBuffer) {
             FfiConverterString.write(value.`deviceId`, buf)
             FfiConverterString.write(value.`identityKeyB64`, buf)
+            FfiConverterOptionalString.write(value.`ed25519KeyB64`, buf)
+            FfiConverterOptionalString.write(value.`identitySigB64`, buf)
+            FfiConverterOptionalString.write(value.`masterKeyB64`, buf)
+            FfiConverterOptionalString.write(value.`deviceSigB64`, buf)
+    }
+}
+
+
+
+data class EphemeralSpec (
+    /**
+     * NORMAL | EPHEMERAL | VIEW_ONCE
+     */
+    var `kind`: kotlin.String, 
+    /**
+     * Сколько жить после срабатывания триггера, в секундах.
+     */
+    var `ttlSeconds`: kotlin.Long, 
+    var `trigger`: EphemeralTrigger, 
+    /**
+     * Абсолютный дедлайн в миллисекундах — только для Absolute.
+     */
+    var `absoluteMs`: kotlin.Long?, 
+    /**
+     * Сколько просмотров разрешено. Для VIEW_ONCE — 1.
+     */
+    var `viewLimit`: kotlin.Int?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeEphemeralSpec: FfiConverterRustBuffer<EphemeralSpec> {
+    override fun read(buf: ByteBuffer): EphemeralSpec {
+        return EphemeralSpec(
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterTypeEphemeralTrigger.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: EphemeralSpec) = (
+            FfiConverterString.allocationSize(value.`kind`) +
+            FfiConverterLong.allocationSize(value.`ttlSeconds`) +
+            FfiConverterTypeEphemeralTrigger.allocationSize(value.`trigger`) +
+            FfiConverterOptionalLong.allocationSize(value.`absoluteMs`) +
+            FfiConverterOptionalInt.allocationSize(value.`viewLimit`)
+    )
+
+    override fun write(value: EphemeralSpec, buf: ByteBuffer) {
+            FfiConverterString.write(value.`kind`, buf)
+            FfiConverterLong.write(value.`ttlSeconds`, buf)
+            FfiConverterTypeEphemeralTrigger.write(value.`trigger`, buf)
+            FfiConverterOptionalLong.write(value.`absoluteMs`, buf)
+            FfiConverterOptionalInt.write(value.`viewLimit`, buf)
+    }
+}
+
+
+
+/**
+ * Состояние исчезающего сообщения.
+ */
+data class EphemeralState (
+    var `messageId`: kotlin.String, 
+    /**
+     * UNOPENED | COUNTDOWN | EXPIRED | PURGED
+     */
+    var `state`: kotlin.String, 
+    var `openedTs`: kotlin.Long?, 
+    /**
+     * Когда содержимое должно перестать быть доступным. None — отсчёт ещё не начат.
+     */
+    var `expiresTs`: kotlin.Long?, 
+    var `views`: kotlin.Int
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeEphemeralState: FfiConverterRustBuffer<EphemeralState> {
+    override fun read(buf: ByteBuffer): EphemeralState {
+        return EphemeralState(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterInt.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: EphemeralState) = (
+            FfiConverterString.allocationSize(value.`messageId`) +
+            FfiConverterString.allocationSize(value.`state`) +
+            FfiConverterOptionalLong.allocationSize(value.`openedTs`) +
+            FfiConverterOptionalLong.allocationSize(value.`expiresTs`) +
+            FfiConverterInt.allocationSize(value.`views`)
+    )
+
+    override fun write(value: EphemeralState, buf: ByteBuffer) {
+            FfiConverterString.write(value.`messageId`, buf)
+            FfiConverterString.write(value.`state`, buf)
+            FfiConverterOptionalLong.write(value.`openedTs`, buf)
+            FfiConverterOptionalLong.write(value.`expiresTs`, buf)
+            FfiConverterInt.write(value.`views`, buf)
     }
 }
 
@@ -4935,8 +6493,125 @@ public object FfiConverterTypeKeypair: FfiConverterRustBuffer<Keypair> {
 
 
 /**
- * Результат расшифровки обычным потоком.
+ * TOFU-пин мастер-ключа аккаунта пира (cross-signing, P8). Один на пользователя:
+ * все его устройства проверяются этим ключом, поэтому добавление устройства
+ * владельцем не требует нового доверия, а подсадка сервером — не проходит.
  */
+data class MasterPin (
+    var `peerId`: kotlin.String, 
+    var `masterKeyB64`: kotlin.String, 
+    var `verified`: kotlin.Boolean, 
+    var `firstSeen`: kotlin.Long, 
+    var `prevMasterKeyB64`: kotlin.String?, 
+    var `changedTs`: kotlin.Long?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMasterPin: FfiConverterRustBuffer<MasterPin> {
+    override fun read(buf: ByteBuffer): MasterPin {
+        return MasterPin(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MasterPin) = (
+            FfiConverterString.allocationSize(value.`peerId`) +
+            FfiConverterString.allocationSize(value.`masterKeyB64`) +
+            FfiConverterBoolean.allocationSize(value.`verified`) +
+            FfiConverterLong.allocationSize(value.`firstSeen`) +
+            FfiConverterOptionalString.allocationSize(value.`prevMasterKeyB64`) +
+            FfiConverterOptionalLong.allocationSize(value.`changedTs`)
+    )
+
+    override fun write(value: MasterPin, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerId`, buf)
+            FfiConverterString.write(value.`masterKeyB64`, buf)
+            FfiConverterBoolean.write(value.`verified`, buf)
+            FfiConverterLong.write(value.`firstSeen`, buf)
+            FfiConverterOptionalString.write(value.`prevMasterKeyB64`, buf)
+            FfiConverterOptionalLong.write(value.`changedTs`, buf)
+    }
+}
+
+
+
+/**
+ * Итоговый маршрут доставки сообщения.
+ */
+data class MessageRoute (
+    var `messageId`: kotlin.String, 
+    /**
+     * Идентификатор транспорта: "server.<server_id>", "nearby.ble", ...
+     */
+    var `transport`: kotlin.String, 
+    /**
+     * Физический канал, если он отличается от транспорта: bluetooth, wifi_aware, lan.
+     */
+    var `physical`: kotlin.String?, 
+    /**
+     * Какой сервер участвовал. None — сервер не использовался вообще.
+     */
+    var `serverId`: kotlin.String?, 
+    /**
+     * Оставил ли сервер копию у себя (а не только передал и забыл).
+     */
+    var `serverStored`: kotlin.Boolean, 
+    var `deliveredTs`: kotlin.Long?, 
+    var `readTs`: kotlin.Long?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeMessageRoute: FfiConverterRustBuffer<MessageRoute> {
+    override fun read(buf: ByteBuffer): MessageRoute {
+        return MessageRoute(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalLong.read(buf),
+            FfiConverterOptionalLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: MessageRoute) = (
+            FfiConverterString.allocationSize(value.`messageId`) +
+            FfiConverterString.allocationSize(value.`transport`) +
+            FfiConverterOptionalString.allocationSize(value.`physical`) +
+            FfiConverterOptionalString.allocationSize(value.`serverId`) +
+            FfiConverterBoolean.allocationSize(value.`serverStored`) +
+            FfiConverterOptionalLong.allocationSize(value.`deliveredTs`) +
+            FfiConverterOptionalLong.allocationSize(value.`readTs`)
+    )
+
+    override fun write(value: MessageRoute, buf: ByteBuffer) {
+            FfiConverterString.write(value.`messageId`, buf)
+            FfiConverterString.write(value.`transport`, buf)
+            FfiConverterOptionalString.write(value.`physical`, buf)
+            FfiConverterOptionalString.write(value.`serverId`, buf)
+            FfiConverterBoolean.write(value.`serverStored`, buf)
+            FfiConverterOptionalLong.write(value.`deliveredTs`, buf)
+            FfiConverterOptionalLong.write(value.`readTs`, buf)
+    }
+}
+
+
+
 data class OlmDecrypted (
     var `sessionPickle`: kotlin.String, 
     var `plaintext`: kotlin.String
@@ -4969,14 +6644,8 @@ public object FfiConverterTypeOlmDecrypted: FfiConverterRustBuffer<OlmDecrypted>
 
 
 
-/**
- * Результат шифрования: продвинутая сессия + сам конверт.
- */
 data class OlmEncrypted (
     var `sessionPickle`: kotlin.String, 
-    /**
-     * 0 = prekey (устанавливает сессию), 1 = обычное.
-     */
     var `messageType`: kotlin.UInt, 
     var `bodyB64`: kotlin.String
 ) {
@@ -5012,12 +6681,55 @@ public object FfiConverterTypeOlmEncrypted: FfiConverterRustBuffer<OlmEncrypted>
 
 
 /**
- * Результат установки входящей сессии из prekey-сообщения.
+ * Fallback-ключ устройства (P10 / SEC MED-3): выдаётся вместо одноразового,
+ * когда те кончились. Переиспользуемый, поэтому forward secrecy слабее — зато
+ * исчерпание OTK больше не глушит переписку.
  */
+data class OlmFallbackPublish (
+    var `accountPickle`: kotlin.String, 
+    var `identityKeyB64`: kotlin.String, 
+    var `keyId`: kotlin.String, 
+    var `keyB64`: kotlin.String, 
+    var `sigB64`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOlmFallbackPublish: FfiConverterRustBuffer<OlmFallbackPublish> {
+    override fun read(buf: ByteBuffer): OlmFallbackPublish {
+        return OlmFallbackPublish(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: OlmFallbackPublish) = (
+            FfiConverterString.allocationSize(value.`accountPickle`) +
+            FfiConverterString.allocationSize(value.`identityKeyB64`) +
+            FfiConverterString.allocationSize(value.`keyId`) +
+            FfiConverterString.allocationSize(value.`keyB64`) +
+            FfiConverterString.allocationSize(value.`sigB64`)
+    )
+
+    override fun write(value: OlmFallbackPublish, buf: ByteBuffer) {
+            FfiConverterString.write(value.`accountPickle`, buf)
+            FfiConverterString.write(value.`identityKeyB64`, buf)
+            FfiConverterString.write(value.`keyId`, buf)
+            FfiConverterString.write(value.`keyB64`, buf)
+            FfiConverterString.write(value.`sigB64`, buf)
+    }
+}
+
+
+
 data class OlmInbound (
-    /**
-     * Аккаунт после списания использованного one-time key.
-     */
     var `accountPickle`: kotlin.String, 
     var `sessionPickle`: kotlin.String, 
     var `plaintext`: kotlin.String
@@ -5054,14 +6766,69 @@ public object FfiConverterTypeOlmInbound: FfiConverterRustBuffer<OlmInbound> {
 
 
 /**
- * Публикуемые ключи: обновлённый аккаунт + identity + пачка one-time keys.
+ * TOFU-пин olm-identity устройства пира (Double Ratchet, SEC HIGH-2).
+ * peer_key — то же соглашение, что у olm_sessions: "peer" (primary) или "peer::device".
+ * ed25519_b64 = None, пока от устройства не видели подписанный бандл.
  */
+data class OlmPin (
+    var `peerKey`: kotlin.String, 
+    var `curve25519B64`: kotlin.String, 
+    var `ed25519B64`: kotlin.String?, 
+    var `verified`: kotlin.Boolean, 
+    var `firstSeen`: kotlin.Long, 
+    var `prevCurve25519B64`: kotlin.String?, 
+    var `prevEd25519B64`: kotlin.String?, 
+    var `changedTs`: kotlin.Long?
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOlmPin: FfiConverterRustBuffer<OlmPin> {
+    override fun read(buf: ByteBuffer): OlmPin {
+        return OlmPin(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: OlmPin) = (
+            FfiConverterString.allocationSize(value.`peerKey`) +
+            FfiConverterString.allocationSize(value.`curve25519B64`) +
+            FfiConverterOptionalString.allocationSize(value.`ed25519B64`) +
+            FfiConverterBoolean.allocationSize(value.`verified`) +
+            FfiConverterLong.allocationSize(value.`firstSeen`) +
+            FfiConverterOptionalString.allocationSize(value.`prevCurve25519B64`) +
+            FfiConverterOptionalString.allocationSize(value.`prevEd25519B64`) +
+            FfiConverterOptionalLong.allocationSize(value.`changedTs`)
+    )
+
+    override fun write(value: OlmPin, buf: ByteBuffer) {
+            FfiConverterString.write(value.`peerKey`, buf)
+            FfiConverterString.write(value.`curve25519B64`, buf)
+            FfiConverterOptionalString.write(value.`ed25519B64`, buf)
+            FfiConverterBoolean.write(value.`verified`, buf)
+            FfiConverterLong.write(value.`firstSeen`, buf)
+            FfiConverterOptionalString.write(value.`prevCurve25519B64`, buf)
+            FfiConverterOptionalString.write(value.`prevEd25519B64`, buf)
+            FfiConverterOptionalLong.write(value.`changedTs`, buf)
+    }
+}
+
+
+
 data class OlmPublish (
     var `accountPickle`: kotlin.String, 
     var `identityKeyB64`: kotlin.String, 
-    /**
-     * JSON-объект {keyId: pubkey_b64} для загрузки на сервер.
-     */
     var `oneTimeKeysJson`: kotlin.String
 ) {
     
@@ -5090,6 +6857,130 @@ public object FfiConverterTypeOlmPublish: FfiConverterRustBuffer<OlmPublish> {
             FfiConverterString.write(value.`accountPickle`, buf)
             FfiConverterString.write(value.`identityKeyB64`, buf)
             FfiConverterString.write(value.`oneTimeKeysJson`, buf)
+    }
+}
+
+
+
+data class OlmPublishSigned (
+    var `accountPickle`: kotlin.String, 
+    var `identityKeyB64`: kotlin.String, 
+    var `ed25519KeyB64`: kotlin.String, 
+    var `identitySigB64`: kotlin.String, 
+    var `oneTimeKeysJson`: kotlin.String, 
+    var `otkSignaturesJson`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOlmPublishSigned: FfiConverterRustBuffer<OlmPublishSigned> {
+    override fun read(buf: ByteBuffer): OlmPublishSigned {
+        return OlmPublishSigned(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: OlmPublishSigned) = (
+            FfiConverterString.allocationSize(value.`accountPickle`) +
+            FfiConverterString.allocationSize(value.`identityKeyB64`) +
+            FfiConverterString.allocationSize(value.`ed25519KeyB64`) +
+            FfiConverterString.allocationSize(value.`identitySigB64`) +
+            FfiConverterString.allocationSize(value.`oneTimeKeysJson`) +
+            FfiConverterString.allocationSize(value.`otkSignaturesJson`)
+    )
+
+    override fun write(value: OlmPublishSigned, buf: ByteBuffer) {
+            FfiConverterString.write(value.`accountPickle`, buf)
+            FfiConverterString.write(value.`identityKeyB64`, buf)
+            FfiConverterString.write(value.`ed25519KeyB64`, buf)
+            FfiConverterString.write(value.`identitySigB64`, buf)
+            FfiConverterString.write(value.`oneTimeKeysJson`, buf)
+            FfiConverterString.write(value.`otkSignaturesJson`, buf)
+    }
+}
+
+
+
+/**
+ * Olm-сессия с устройством пира (мультисессии, P10 / SEC MED-4).
+ * `session_id` совпадает у обеих сторон одной сессии — по нему входящий
+ * prekey-конверт сопоставляется с уже имеющейся сессией.
+ */
+data class OlmSession (
+    var `sessionId`: kotlin.String, 
+    var `sessionJson`: kotlin.String, 
+    var `updatedTs`: kotlin.Long
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOlmSession: FfiConverterRustBuffer<OlmSession> {
+    override fun read(buf: ByteBuffer): OlmSession {
+        return OlmSession(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterLong.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: OlmSession) = (
+            FfiConverterString.allocationSize(value.`sessionId`) +
+            FfiConverterString.allocationSize(value.`sessionJson`) +
+            FfiConverterLong.allocationSize(value.`updatedTs`)
+    )
+
+    override fun write(value: OlmSession, buf: ByteBuffer) {
+            FfiConverterString.write(value.`sessionId`, buf)
+            FfiConverterString.write(value.`sessionJson`, buf)
+            FfiConverterLong.write(value.`updatedTs`, buf)
+    }
+}
+
+
+
+/**
+ * Разобранная QR-метка сверки ключей.
+ */
+data class OlmVerifyQr (
+    var `userId`: kotlin.String, 
+    var `masterKeyB64`: kotlin.String
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOlmVerifyQr: FfiConverterRustBuffer<OlmVerifyQr> {
+    override fun read(buf: ByteBuffer): OlmVerifyQr {
+        return OlmVerifyQr(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: OlmVerifyQr) = (
+            FfiConverterString.allocationSize(value.`userId`) +
+            FfiConverterString.allocationSize(value.`masterKeyB64`)
+    )
+
+    override fun write(value: OlmVerifyQr, buf: ByteBuffer) {
+            FfiConverterString.write(value.`userId`, buf)
+            FfiConverterString.write(value.`masterKeyB64`, buf)
     }
 }
 
@@ -5142,11 +7033,27 @@ public object FfiConverterTypeOpened: FfiConverterRustBuffer<Opened> {
 
 /**
  * Prekey-bundle пира для установки Olm-сессии (identity + один one-time key).
+ * Поля подписи (SEC HIGH-2) — None у легаси-бандлов, загруженных до апдейта;
+ * клиент обязан верифицировать их через olm_verify_prekey_bundle перед сессией.
  */
 data class PrekeyBundle (
     var `identityKeyB64`: kotlin.String, 
     var `oneTimeKeyId`: kotlin.String, 
-    var `oneTimeKeyB64`: kotlin.String
+    var `oneTimeKeyB64`: kotlin.String, 
+    var `ed25519KeyB64`: kotlin.String?, 
+    var `identitySigB64`: kotlin.String?, 
+    var `oneTimeKeySigB64`: kotlin.String?, 
+    /**
+     * P10 / SEC MED-3: выдан fallback-ключ, а не одноразовый — у пира кончились
+     * OTK (или мы исчерпали свою квоту на его устройство). Ключ переиспользуемый,
+     * поэтому forward secrecy у первой сессии слабее; подписи проверяются так же.
+     */
+    var `fallback`: kotlin.Boolean, 
+    /**
+     * Cross-signing (P8): мастер-ключ аккаунта пира и подпись им этого устройства.
+     */
+    var `masterKeyB64`: kotlin.String?, 
+    var `deviceSigB64`: kotlin.String?
 ) {
     
     companion object
@@ -5161,51 +7068,37 @@ public object FfiConverterTypePrekeyBundle: FfiConverterRustBuffer<PrekeyBundle>
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
             FfiConverterString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterOptionalString.read(buf),
+            FfiConverterOptionalString.read(buf),
         )
     }
 
     override fun allocationSize(value: PrekeyBundle) = (
             FfiConverterString.allocationSize(value.`identityKeyB64`) +
             FfiConverterString.allocationSize(value.`oneTimeKeyId`) +
-            FfiConverterString.allocationSize(value.`oneTimeKeyB64`)
+            FfiConverterString.allocationSize(value.`oneTimeKeyB64`) +
+            FfiConverterOptionalString.allocationSize(value.`ed25519KeyB64`) +
+            FfiConverterOptionalString.allocationSize(value.`identitySigB64`) +
+            FfiConverterOptionalString.allocationSize(value.`oneTimeKeySigB64`) +
+            FfiConverterBoolean.allocationSize(value.`fallback`) +
+            FfiConverterOptionalString.allocationSize(value.`masterKeyB64`) +
+            FfiConverterOptionalString.allocationSize(value.`deviceSigB64`)
     )
 
     override fun write(value: PrekeyBundle, buf: ByteBuffer) {
             FfiConverterString.write(value.`identityKeyB64`, buf)
             FfiConverterString.write(value.`oneTimeKeyId`, buf)
             FfiConverterString.write(value.`oneTimeKeyB64`, buf)
-    }
-}
-
-
-
-data class PrekeyState (
-    var `count`: kotlin.UInt, 
-    var `identityKeyB64`: kotlin.String?
-) {
-    
-    companion object
-}
-
-/**
- * @suppress
- */
-public object FfiConverterTypePrekeyState: FfiConverterRustBuffer<PrekeyState> {
-    override fun read(buf: ByteBuffer): PrekeyState {
-        return PrekeyState(
-            FfiConverterUInt.read(buf),
-            FfiConverterOptionalString.read(buf),
-        )
-    }
-
-    override fun allocationSize(value: PrekeyState) = (
-            FfiConverterUInt.allocationSize(value.`count`) +
-            FfiConverterOptionalString.allocationSize(value.`identityKeyB64`)
-    )
-
-    override fun write(value: PrekeyState, buf: ByteBuffer) {
-            FfiConverterUInt.write(value.`count`, buf)
-            FfiConverterOptionalString.write(value.`identityKeyB64`, buf)
+            FfiConverterOptionalString.write(value.`ed25519KeyB64`, buf)
+            FfiConverterOptionalString.write(value.`identitySigB64`, buf)
+            FfiConverterOptionalString.write(value.`oneTimeKeySigB64`, buf)
+            FfiConverterBoolean.write(value.`fallback`, buf)
+            FfiConverterOptionalString.write(value.`masterKeyB64`, buf)
+            FfiConverterOptionalString.write(value.`deviceSigB64`, buf)
     }
 }
 
@@ -5293,6 +7186,125 @@ public object FfiConverterTypeSealed: FfiConverterRustBuffer<Sealed> {
     override fun write(value: Sealed, buf: ByteBuffer) {
             FfiConverterString.write(value.`nonceB64`, buf)
             FfiConverterByteArray.write(value.`ciphertext`, buf)
+    }
+}
+
+
+
+data class ServerInfo (
+    /**
+     * Origin, по которому сервер реально ответил (схема + хост + порт).
+     */
+    var `origin`: kotlin.String, 
+    var `serverId`: kotlin.String, 
+    var `name`: kotlin.String, 
+    var `apiUrl`: kotlin.String, 
+    var `websocketUrl`: kotlin.String, 
+    var `registrationMode`: kotlin.String, 
+    var `protocolVersion`: kotlin.UInt, 
+    var `supportsE2ee`: kotlin.Boolean, 
+    var `supportsDataImport`: kotlin.Boolean, 
+    var `capabilities`: List<kotlin.String>, 
+    var `maxUploadBytes`: kotlin.Long, 
+    var `officialClaim`: kotlin.Boolean, 
+    var `software`: kotlin.String, 
+    /**
+     * Публичный ключ подписи (Ed25519, b64url) — основа TOFU-пина.
+     */
+    var `publicKeyB64`: kotlin.String, 
+    /**
+     * SHA-256 от публичного ключа: то, что показывается человеку.
+     */
+    var `fingerprintB64`: kotlin.String, 
+    var `signedAt`: kotlin.String, 
+    /**
+     * Подпись сошлась. False сюда не доходит — несошедшаяся подпись это ошибка.
+     */
+    var `signatureValid`: kotlin.Boolean, 
+    /**
+     * Хост в api_url/websocket_url совпадает с origin, куда мы стучались.
+     * Расхождение — повод для тревоги: Host подконтролен посреднику.
+     */
+    var `endpointsMatchOrigin`: kotlin.Boolean, 
+    /**
+     * Соединение без TLS (локальный режим). Клиент обязан это показать.
+     */
+    var `cleartext`: kotlin.Boolean
+) {
+    
+    companion object
+}
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeServerInfo: FfiConverterRustBuffer<ServerInfo> {
+    override fun read(buf: ByteBuffer): ServerInfo {
+        return ServerInfo(
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterUInt.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterSequenceString.read(buf),
+            FfiConverterLong.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterString.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+            FfiConverterBoolean.read(buf),
+        )
+    }
+
+    override fun allocationSize(value: ServerInfo) = (
+            FfiConverterString.allocationSize(value.`origin`) +
+            FfiConverterString.allocationSize(value.`serverId`) +
+            FfiConverterString.allocationSize(value.`name`) +
+            FfiConverterString.allocationSize(value.`apiUrl`) +
+            FfiConverterString.allocationSize(value.`websocketUrl`) +
+            FfiConverterString.allocationSize(value.`registrationMode`) +
+            FfiConverterUInt.allocationSize(value.`protocolVersion`) +
+            FfiConverterBoolean.allocationSize(value.`supportsE2ee`) +
+            FfiConverterBoolean.allocationSize(value.`supportsDataImport`) +
+            FfiConverterSequenceString.allocationSize(value.`capabilities`) +
+            FfiConverterLong.allocationSize(value.`maxUploadBytes`) +
+            FfiConverterBoolean.allocationSize(value.`officialClaim`) +
+            FfiConverterString.allocationSize(value.`software`) +
+            FfiConverterString.allocationSize(value.`publicKeyB64`) +
+            FfiConverterString.allocationSize(value.`fingerprintB64`) +
+            FfiConverterString.allocationSize(value.`signedAt`) +
+            FfiConverterBoolean.allocationSize(value.`signatureValid`) +
+            FfiConverterBoolean.allocationSize(value.`endpointsMatchOrigin`) +
+            FfiConverterBoolean.allocationSize(value.`cleartext`)
+    )
+
+    override fun write(value: ServerInfo, buf: ByteBuffer) {
+            FfiConverterString.write(value.`origin`, buf)
+            FfiConverterString.write(value.`serverId`, buf)
+            FfiConverterString.write(value.`name`, buf)
+            FfiConverterString.write(value.`apiUrl`, buf)
+            FfiConverterString.write(value.`websocketUrl`, buf)
+            FfiConverterString.write(value.`registrationMode`, buf)
+            FfiConverterUInt.write(value.`protocolVersion`, buf)
+            FfiConverterBoolean.write(value.`supportsE2ee`, buf)
+            FfiConverterBoolean.write(value.`supportsDataImport`, buf)
+            FfiConverterSequenceString.write(value.`capabilities`, buf)
+            FfiConverterLong.write(value.`maxUploadBytes`, buf)
+            FfiConverterBoolean.write(value.`officialClaim`, buf)
+            FfiConverterString.write(value.`software`, buf)
+            FfiConverterString.write(value.`publicKeyB64`, buf)
+            FfiConverterString.write(value.`fingerprintB64`, buf)
+            FfiConverterString.write(value.`signedAt`, buf)
+            FfiConverterBoolean.write(value.`signatureValid`, buf)
+            FfiConverterBoolean.write(value.`endpointsMatchOrigin`, buf)
+            FfiConverterBoolean.write(value.`cleartext`, buf)
     }
 }
 
@@ -5549,6 +7561,101 @@ public object FfiConverterTypeCoreError : FfiConverterRustBuffer<CoreException> 
     }
 
 }
+
+
+
+/**
+ * Что запускает отсчёт.
+ */
+
+enum class EphemeralTrigger {
+    
+    /**
+     * С момента отправки.
+     */
+    SENT,
+    /**
+     * С момента подтверждения доставки.
+     */
+    DELIVERED,
+    /**
+     * С первого открытия получателем.
+     */
+    FIRST_OPEN,
+    /**
+     * С закрытия просмотра.
+     */
+    CLOSE,
+    /**
+     * Абсолютный момент времени.
+     */
+    ABSOLUTE;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeEphemeralTrigger: FfiConverterRustBuffer<EphemeralTrigger> {
+    override fun read(buf: ByteBuffer) = try {
+        EphemeralTrigger.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: EphemeralTrigger) = 4UL
+
+    override fun write(value: EphemeralTrigger, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
+
+
+
+/**
+ * Итог TOFU-проверки olm-identity.
+ */
+
+enum class OlmPinStatus {
+    
+    /**
+     * Первый контакт — ключ запинен (trust on first use).
+     */
+    FIRST_USE,
+    /**
+     * Совпало с пином (в т.ч. дозаполнен ed25519, которого раньше не видели).
+     */
+    MATCH,
+    /**
+     * Расхождение с пином — смена устройства или атака. Пин НЕ обновлён;
+     * принять новый ключ можно только явным olm_pin_accept.
+     */
+    MISMATCH;
+    companion object
+}
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterTypeOlmPinStatus: FfiConverterRustBuffer<OlmPinStatus> {
+    override fun read(buf: ByteBuffer) = try {
+        OlmPinStatus.values()[buf.getInt() - 1]
+    } catch (e: IndexOutOfBoundsException) {
+        throw RuntimeException("invalid enum value, something is very wrong!!", e)
+    }
+
+    override fun allocationSize(value: OlmPinStatus) = 4UL
+
+    override fun write(value: OlmPinStatus, buf: ByteBuffer) {
+        buf.putInt(value.ordinal + 1)
+    }
+}
+
+
 
 
 
@@ -5960,6 +8067,38 @@ public object FfiConverterTypeWsListener: FfiConverterCallbackInterface<WsListen
 /**
  * @suppress
  */
+public object FfiConverterOptionalInt: FfiConverterRustBuffer<kotlin.Int?> {
+    override fun read(buf: ByteBuffer): kotlin.Int? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterInt.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.Int?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterInt.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.Int?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterInt.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalLong: FfiConverterRustBuffer<kotlin.Long?> {
     override fun read(buf: ByteBuffer): kotlin.Long? {
         if (buf.get().toInt() == 0) {
@@ -6056,6 +8195,102 @@ public object FfiConverterOptionalString: FfiConverterRustBuffer<kotlin.String?>
 /**
  * @suppress
  */
+public object FfiConverterOptionalByteArray: FfiConverterRustBuffer<kotlin.ByteArray?> {
+    override fun read(buf: ByteBuffer): kotlin.ByteArray? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterByteArray.read(buf)
+    }
+
+    override fun allocationSize(value: kotlin.ByteArray?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterByteArray.allocationSize(value)
+        }
+    }
+
+    override fun write(value: kotlin.ByteArray?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterByteArray.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeEphemeralSpec: FfiConverterRustBuffer<EphemeralSpec?> {
+    override fun read(buf: ByteBuffer): EphemeralSpec? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeEphemeralSpec.read(buf)
+    }
+
+    override fun allocationSize(value: EphemeralSpec?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeEphemeralSpec.allocationSize(value)
+        }
+    }
+
+    override fun write(value: EphemeralSpec?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeEphemeralSpec.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeEphemeralState: FfiConverterRustBuffer<EphemeralState?> {
+    override fun read(buf: ByteBuffer): EphemeralState? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeEphemeralState.read(buf)
+    }
+
+    override fun allocationSize(value: EphemeralState?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeEphemeralState.allocationSize(value)
+        }
+    }
+
+    override fun write(value: EphemeralState?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeEphemeralState.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterOptionalTypeKeyPin: FfiConverterRustBuffer<KeyPin?> {
     override fun read(buf: ByteBuffer): KeyPin? {
         if (buf.get().toInt() == 0) {
@@ -6078,6 +8313,102 @@ public object FfiConverterOptionalTypeKeyPin: FfiConverterRustBuffer<KeyPin?> {
         } else {
             buf.put(1)
             FfiConverterTypeKeyPin.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMasterPin: FfiConverterRustBuffer<MasterPin?> {
+    override fun read(buf: ByteBuffer): MasterPin? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMasterPin.read(buf)
+    }
+
+    override fun allocationSize(value: MasterPin?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMasterPin.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MasterPin?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMasterPin.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeMessageRoute: FfiConverterRustBuffer<MessageRoute?> {
+    override fun read(buf: ByteBuffer): MessageRoute? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeMessageRoute.read(buf)
+    }
+
+    override fun allocationSize(value: MessageRoute?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeMessageRoute.allocationSize(value)
+        }
+    }
+
+    override fun write(value: MessageRoute?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeMessageRoute.write(value, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterOptionalTypeOlmPin: FfiConverterRustBuffer<OlmPin?> {
+    override fun read(buf: ByteBuffer): OlmPin? {
+        if (buf.get().toInt() == 0) {
+            return null
+        }
+        return FfiConverterTypeOlmPin.read(buf)
+    }
+
+    override fun allocationSize(value: OlmPin?): ULong {
+        if (value == null) {
+            return 1UL
+        } else {
+            return 1UL + FfiConverterTypeOlmPin.allocationSize(value)
+        }
+    }
+
+    override fun write(value: OlmPin?, buf: ByteBuffer) {
+        if (value == null) {
+            buf.put(0)
+        } else {
+            buf.put(1)
+            FfiConverterTypeOlmPin.write(value, buf)
         }
     }
 }
@@ -6148,6 +8479,34 @@ public object FfiConverterSequenceString: FfiConverterRustBuffer<List<kotlin.Str
 /**
  * @suppress
  */
+public object FfiConverterSequenceTypeBackupChunk: FfiConverterRustBuffer<List<BackupChunk>> {
+    override fun read(buf: ByteBuffer): List<BackupChunk> {
+        val len = buf.getInt()
+        return List<BackupChunk>(len) {
+            FfiConverterTypeBackupChunk.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<BackupChunk>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeBackupChunk.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<BackupChunk>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeBackupChunk.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
 public object FfiConverterSequenceTypeChat: FfiConverterRustBuffer<List<Chat>> {
     override fun read(buf: ByteBuffer): List<Chat> {
         val len = buf.getInt()
@@ -6166,6 +8525,34 @@ public object FfiConverterSequenceTypeChat: FfiConverterRustBuffer<List<Chat>> {
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeChat.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeDeliveryAttempt: FfiConverterRustBuffer<List<DeliveryAttempt>> {
+    override fun read(buf: ByteBuffer): List<DeliveryAttempt> {
+        val len = buf.getInt()
+        return List<DeliveryAttempt>(len) {
+            FfiConverterTypeDeliveryAttempt.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<DeliveryAttempt>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeDeliveryAttempt.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<DeliveryAttempt>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeDeliveryAttempt.write(it, buf)
         }
     }
 }
@@ -6222,6 +8609,34 @@ public object FfiConverterSequenceTypeInboxItem: FfiConverterRustBuffer<List<Inb
         buf.putInt(value.size)
         value.iterator().forEach {
             FfiConverterTypeInboxItem.write(it, buf)
+        }
+    }
+}
+
+
+
+
+/**
+ * @suppress
+ */
+public object FfiConverterSequenceTypeOlmSession: FfiConverterRustBuffer<List<OlmSession>> {
+    override fun read(buf: ByteBuffer): List<OlmSession> {
+        val len = buf.getInt()
+        return List<OlmSession>(len) {
+            FfiConverterTypeOlmSession.read(buf)
+        }
+    }
+
+    override fun allocationSize(value: List<OlmSession>): ULong {
+        val sizeForLength = 4UL
+        val sizeForItems = value.map { FfiConverterTypeOlmSession.allocationSize(it) }.sum()
+        return sizeForLength + sizeForItems
+    }
+
+    override fun write(value: List<OlmSession>, buf: ByteBuffer) {
+        buf.putInt(value.size)
+        value.iterator().forEach {
+            FfiConverterTypeOlmSession.write(it, buf)
         }
     }
 }
@@ -6329,6 +8744,21 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
+        /**
+         * Ключ шифрования резервной копии истории (P9): AES-256-GCM, выводится из
+         * приватного ключа аккаунта — доступен на любом устройстве после входа,
+         * сервер вывести его не может.
+         */
+    @Throws(CoreException::class) fun `backupKey`(`accountSecretB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_backup_key(
+        FfiConverterString.lower(`accountSecretB64`),_status)
+}
+    )
+    }
+    
+
     @Throws(CoreException::class) fun `boxDecrypt`(`nonceB64`: kotlin.String, `ciphertext`: kotlin.ByteArray, `senderPubB64`: kotlin.String, `recipientPrivB64`: kotlin.String): kotlin.ByteArray {
             return FfiConverterByteArray.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6363,14 +8793,85 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     
 
         /**
+         * Полный проход: нормализовать ввод и опросить кандидатов по очереди.
+         */
+    @Throws(CoreException::class) fun `discoverServer`(`input`: kotlin.String, `nonce`: kotlin.String, `allowCleartext`: kotlin.Boolean): ServerInfo {
+            return FfiConverterTypeServerInfo.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_discover_server(
+        FfiConverterString.lower(`input`),FfiConverterString.lower(`nonce`),FfiConverterBoolean.lower(`allowCleartext`),_status)
+}
+    )
+    }
+    
+
+        /**
          * Бэкап приватного ключа: PBKDF2 100k + AES-GCM. Формат `salt:iv:ct` (b64url).
          * Шифруется b64url-СТРОКА ключа, не сырые байты (канон Android/web).
+         *
+         * ПИШЕТ ФОРМАТ v1 НАМЕРЕННО — см. комментарий выше. Не переключать на v2, пока
+         * Android и веб не научатся его читать.
          */
     @Throws(CoreException::class) fun `encryptPrivateKey`(`privateKeyB64`: kotlin.String, `password`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_func_encrypt_private_key(
         FfiConverterString.lower(`privateKeyB64`),FfiConverterString.lower(`password`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Копия в формате v2 (Argon2id). Пока НЕ используется при регистрации:
+         * существует, чтобы шаг 3 перехода сводился к замене одного вызова, и чтобы
+         * формат можно было проверить тестами уже сейчас.
+         */
+    @Throws(CoreException::class) fun `encryptPrivateKeyV2`(`privateKeyB64`: kotlin.String, `password`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_encrypt_private_key_v2(
+        FfiConverterString.lower(`privateKeyB64`),FfiConverterString.lower(`password`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Прочитать поведение из расшифрованного payload.
+         *
+         * None означает обычное сообщение: так шлют и старые клиенты, и мы сами,
+         * когда режим не выбран.
+         */ fun `ephemeralFromPayload`(`payloadJson`: kotlin.String): EphemeralSpec? {
+            return FfiConverterOptionalTypeEphemeralSpec.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_ephemeral_from_payload(
+        FfiConverterString.lower(`payloadJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Опросить один origin. Ошибка — это «здесь не Aether» или «не достучались».
+         */
+    @Throws(CoreException::class) fun `fetchServerInfo`(`origin`: kotlin.String, `nonce`: kotlin.String): ServerInfo {
+            return FfiConverterTypeServerInfo.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_fetch_server_info(
+        FfiConverterString.lower(`origin`),FfiConverterString.lower(`nonce`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Отпечаток группами по 4 символа — так его читают вслух и сверяют глазами.
+         */ fun `formatFingerprint`(`fingerprintB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_format_fingerprint(
+        FfiConverterString.lower(`fingerprintB64`),_status)
 }
     )
     }
@@ -6386,9 +8887,212 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     
 
         /**
-         * Сгенерировать `count` one-time keys, пометить опубликованными, вернуть их
-         * публичные части для заливки на сервер.
+         * Адрес из локальной сети: RFC1918, link-local, loopback, .local.
+         * По нему и только по нему допускается режим открытого транспорта.
+         */ fun `isPrivateHost`(`host`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_is_private_host(
+        FfiConverterString.lower(`host`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Похоже ли на идентификатор сообщения Aether.
+         *
+         * Нужна на приёме: `mid` приходит из расшифрованного payload, то есть от
+         * другой стороны. Данным по Bluetooth доверия не больше, чем данным с
+         * сервера, поэтому проверяем форму перед тем, как класть в базу как
+         * первичный ключ.
+         */ fun `isValidMessageId`(`id`: kotlin.String): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_is_valid_message_id(
+        FfiConverterString.lower(`id`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Извлечь логический id из расшифрованного payload.
+         *
+         * Отсутствие поля — не ошибка: так шлют клиенты, выпущенные до слоя
+         * доставки. Для них идентичностью остаётся серверный id, и это правильное
+         * поведение — иначе старые сообщения перестали бы дедуплицироваться.
+         */ fun `messageIdFromPayload`(`payloadJson`: kotlin.String): kotlin.String? {
+            return FfiConverterOptionalString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_message_id_from_payload(
+        FfiConverterString.lower(`payloadJson`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Упаковать маячок в 128-битный UUID сервиса.
+         *
+         * Так требует платформа: iOS разрешает объявлять в эфир только имя и список
+         * UUID сервисов — произвольные данные рекламы приложению недоступны. Значит
+         * единственное место, куда помещаются 15 байт маячка, это сам UUID.
+         * Формат живёт в ядре, чтобы Android собирал и разбирал те же байты.
+         *
+         * Раскладка: [0xAE | маячок(15)] = ровно 16 байт.
          */
+    @Throws(CoreException::class) fun `nearbyBeaconToUuid`(`beacon`: kotlin.ByteArray): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_beacon_to_uuid(
+        FfiConverterByteArray.lower(`beacon`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Собрать маячок для эфира. Каждый вызов даёт новые байты: nonce случаен,
+         * поэтому два объявления подряд нельзя связать между собой.
+         */
+    @Throws(CoreException::class) fun `nearbyBuildBeacon`(`discoveryKeyB64`: kotlin.String, `epoch`: kotlin.Long): kotlin.ByteArray {
+            return FfiConverterByteArray.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_build_beacon(
+        FfiConverterString.lower(`discoveryKeyB64`),FfiConverterLong.lower(`epoch`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Текущий интервал ротации.
+         */ fun `nearbyCurrentEpoch`(): kotlin.Long {
+            return FfiConverterLong.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_current_epoch(
+        _status)
+}
+    )
+    }
+    
+
+        /**
+         * Идентификатор интервала — то, что сверяют между собой знакомые устройства.
+         */
+    @Throws(CoreException::class) fun `nearbyEdi`(`discoveryKeyB64`: kotlin.String, `epoch`: kotlin.Long): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_edi(
+        FfiConverterString.lower(`discoveryKeyB64`),FfiConverterLong.lower(`epoch`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Похоже ли на маячок Aether вообще. Нужно, чтобы не разбирать чужую рекламу.
+         */ fun `nearbyIsBeacon`(`beacon`: kotlin.ByteArray): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_is_beacon(
+        FfiConverterByteArray.lower(`beacon`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Наш ли это маячок (или знакомого, чей DK у нас есть).
+         *
+         * Проверяются соседние интервалы: часы устройств расходятся, и на границе
+         * пятнадцатиминутки объявление может прийти из «прошлого» окна. Без этого
+         * знакомые переставали бы видеть друг друга по четыре раза в час.
+         */ fun `nearbyMatchBeacon`(`beacon`: kotlin.ByteArray, `discoveryKeyB64`: kotlin.String, `epoch`: kotlin.Long): kotlin.Boolean {
+            return FfiConverterBoolean.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_match_beacon(
+        FfiConverterByteArray.lower(`beacon`),FfiConverterString.lower(`discoveryKeyB64`),FfiConverterLong.lower(`epoch`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Новый ключ обнаружения. Хранить только в защищённом хранилище платформы.
+         */ fun `nearbyNewDiscoveryKey`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_new_discovery_key(
+        _status)
+}
+    )
+    }
+    
+
+        /**
+         * Достать маячок из объявленного UUID. None — это не наш UUID.
+         */ fun `nearbyUuidToBeacon`(`uuid`: kotlin.String): kotlin.ByteArray? {
+            return FfiConverterOptionalByteArray.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_nearby_uuid_to_beacon(
+        FfiConverterString.lower(`uuid`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Новый идентификатор сообщения. Единый генератор для iOS, Android и веба:
+         * формат обязан совпадать побайтно, иначе дедупликация между платформами
+         * сломается на ровном месте.
+         */ fun `newMessageId`(): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_new_message_id(
+        _status)
+}
+    )
+    }
+    
+
+        /**
+         * Разбор адреса, введённого человеком, в список кандидатов для проверки.
+         *
+         * `allow_cleartext` добавляет http-кандидатов, и ТОЛЬКО для адресов из
+         * приватных диапазонов: включать открытый транспорт для публичного домена
+         * нельзя ни по какой просьбе пользователя.
+         */ fun `normalizeServerInput`(`input`: kotlin.String, `allowCleartext`: kotlin.Boolean): List<kotlin.String> {
+            return FfiConverterSequenceString.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_normalize_server_input(
+        FfiConverterString.lower(`input`),FfiConverterBoolean.lower(`allowCleartext`),_status)
+}
+    )
+    }
+    
+
+    @Throws(CoreException::class) fun `olmAccountEd25519`(`accountPickle`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_account_ed25519(
+        FfiConverterString.lower(`accountPickle`),_status)
+}
+    )
+    }
+    
+
+    @Throws(CoreException::class) fun `olmAccountGenerateFallbackSigned`(`accountPickle`: kotlin.String, `userId`: kotlin.String, `deviceId`: kotlin.String): OlmFallbackPublish {
+            return FfiConverterTypeOlmFallbackPublish.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_account_generate_fallback_signed(
+        FfiConverterString.lower(`accountPickle`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),_status)
+}
+    )
+    }
+    
+
     @Throws(CoreException::class) fun `olmAccountGenerateOtks`(`accountPickle`: kotlin.String, `count`: kotlin.UInt): OlmPublish {
             return FfiConverterTypeOlmPublish.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6399,9 +9103,16 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Curve25519 identity-ключ аккаунта (b64) — публикуется на сервер.
-         */
+    @Throws(CoreException::class) fun `olmAccountGenerateOtksSigned`(`accountPickle`: kotlin.String, `count`: kotlin.UInt, `userId`: kotlin.String, `deviceId`: kotlin.String): OlmPublishSigned {
+            return FfiConverterTypeOlmPublishSigned.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_account_generate_otks_signed(
+        FfiConverterString.lower(`accountPickle`),FfiConverterUInt.lower(`count`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),_status)
+}
+    )
+    }
+    
+
     @Throws(CoreException::class) fun `olmAccountIdentity`(`accountPickle`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6412,9 +9123,6 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Новый Olm-аккаунт (identity + Ed25519). Возвращает pickle.
-         */
     @Throws(CoreException::class) fun `olmAccountNew`(): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6425,9 +9133,6 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Сколько one-time keys ещё хранится локально (для решения о пополнении).
-         */
     @Throws(CoreException::class) fun `olmAccountOtkCount`(`accountPickle`: kotlin.String): kotlin.UInt {
             return FfiConverterUInt.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6438,9 +9143,6 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Установить входящую сессию из prekey-сообщения (type 0) и расшифровать его.
-         */
     @Throws(CoreException::class) fun `olmCreateInbound`(`accountPickle`: kotlin.String, `theirIdentityB64`: kotlin.String, `bodyB64`: kotlin.String): OlmInbound {
             return FfiConverterTypeOlmInbound.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6451,10 +9153,6 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Исходящая сессия к пиру по его identity + claimed one-time key.
-         * Первое сообщение, зашифрованное этой сессией, будет prekey (type 0).
-         */
     @Throws(CoreException::class) fun `olmCreateOutbound`(`accountPickle`: kotlin.String, `theirIdentityB64`: kotlin.String, `theirOneTimeKeyB64`: kotlin.String): kotlin.String {
             return FfiConverterString.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6465,10 +9163,6 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Расшифровать сообщение существующей сессией (type 0 prekey ИЛИ 1 normal —
-         * после установки сессии пир может ещё слать prekey, пока не увидит наш ответ).
-         */
     @Throws(CoreException::class) fun `olmDecrypt`(`sessionPickle`: kotlin.String, `messageType`: kotlin.UInt, `bodyB64`: kotlin.String): OlmDecrypted {
             return FfiConverterTypeOlmDecrypted.lift(
     uniffiRustCallWithError(CoreException) { _status ->
@@ -6479,14 +9173,111 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     }
     
 
-        /**
-         * Зашифровать сообщение существующей сессией (ратчет продвигается).
-         */
     @Throws(CoreException::class) fun `olmEncrypt`(`sessionPickle`: kotlin.String, `plaintext`: kotlin.String): OlmEncrypted {
             return FfiConverterTypeOlmEncrypted.lift(
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_encrypt(
         FfiConverterString.lower(`sessionPickle`),FfiConverterString.lower(`plaintext`),_status)
+}
+    )
+    }
+    
+
+    @Throws(CoreException::class) fun `olmMasterPublic`(`accountSecretB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_master_public(
+        FfiConverterString.lower(`accountSecretB64`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Идентификатор сессии, которую завёл бы входящий prekey-конверт. Совпал с
+         * имеющейся — конверт принадлежит ей, новую сессию заводить не надо.
+         */
+    @Throws(CoreException::class) fun `olmPrekeySessionId`(`bodyB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_prekey_session_id(
+        FfiConverterString.lower(`bodyB64`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Идентификатор сессии — ключ строки в таблице `olm_sessions` (мультисессии, P10).
+         */
+    @Throws(CoreException::class) fun `olmSessionId`(`sessionPickle`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_session_id(
+        FfiConverterString.lower(`sessionPickle`),_status)
+}
+    )
+    }
+    
+
+    @Throws(CoreException::class) fun `olmSignDevice`(`accountSecretB64`: kotlin.String, `userId`: kotlin.String, `deviceId`: kotlin.String, `identityKeyB64`: kotlin.String, `ed25519KeyB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_sign_device(
+        FfiConverterString.lower(`accountSecretB64`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`ed25519KeyB64`),_status)
+}
+    )
+    }
+    
+
+    @Throws(CoreException::class) fun `olmVerifyDevice`(`masterKeyB64`: kotlin.String, `userId`: kotlin.String, `deviceId`: kotlin.String, `identityKeyB64`: kotlin.String, `ed25519KeyB64`: kotlin.String, `deviceSigB64`: kotlin.String)
+        = 
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_verify_device(
+        FfiConverterString.lower(`masterKeyB64`),FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`ed25519KeyB64`),FfiConverterString.lower(`deviceSigB64`),_status)
+}
+    
+    
+
+    @Throws(CoreException::class) fun `olmVerifyIdentity`(`userId`: kotlin.String, `deviceId`: kotlin.String, `identityKeyB64`: kotlin.String, `ed25519KeyB64`: kotlin.String, `identitySigB64`: kotlin.String)
+        = 
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_verify_identity(
+        FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`ed25519KeyB64`),FfiConverterString.lower(`identitySigB64`),_status)
+}
+    
+    
+
+    @Throws(CoreException::class) fun `olmVerifyPrekeyBundle`(`userId`: kotlin.String, `deviceId`: kotlin.String, `identityKeyB64`: kotlin.String, `ed25519KeyB64`: kotlin.String, `identitySigB64`: kotlin.String, `otkId`: kotlin.String, `otkB64`: kotlin.String, `otkSigB64`: kotlin.String)
+        = 
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_verify_prekey_bundle(
+        FfiConverterString.lower(`userId`),FfiConverterString.lower(`deviceId`),FfiConverterString.lower(`identityKeyB64`),FfiConverterString.lower(`ed25519KeyB64`),FfiConverterString.lower(`identitySigB64`),FfiConverterString.lower(`otkId`),FfiConverterString.lower(`otkB64`),FfiConverterString.lower(`otkSigB64`),_status)
+}
+    
+    
+
+        /**
+         * Содержимое QR-метки для сверки мастер-ключа (канон `aether:verify?v=2`).
+         */
+    @Throws(CoreException::class) fun `olmVerifyQrBuild`(`userId`: kotlin.String, `masterKeyB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_verify_qr_build(
+        FfiConverterString.lower(`userId`),FfiConverterString.lower(`masterKeyB64`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Разобрать отсканированную метку. Ошибка = это не наш QR либо он испорчен.
+         */
+    @Throws(CoreException::class) fun `olmVerifyQrParse`(`text`: kotlin.String): OlmVerifyQr {
+            return FfiConverterTypeOlmVerifyQr.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_olm_verify_qr_parse(
+        FfiConverterString.lower(`text`),_status)
 }
     )
     }
@@ -6516,6 +9307,48 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_func_open_envelope_multi(
         FfiConverterString.lower(`envelopeJson`),FfiConverterString.lower(`myPrivB64`),FfiConverterSequenceString.lower(`groupKeys`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Вписать поведение в payload перед шифрованием.
+         */
+    @Throws(CoreException::class) fun `payloadWithEphemeral`(`payloadJson`: kotlin.String, `spec`: EphemeralSpec): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_payload_with_ephemeral(
+        FfiConverterString.lower(`payloadJson`),FfiConverterTypeEphemeralSpec.lower(`spec`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Вписать логический id в payload перед шифрованием.
+         *
+         * Именно перед шифрованием: сервер не должен видеть идентификатор, по
+         * которому можно связать копии одного сообщения на разных устройствах.
+         */
+    @Throws(CoreException::class) fun `payloadWithMessageId`(`payloadJson`: kotlin.String, `messageId`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_payload_with_message_id(
+        FfiConverterString.lower(`payloadJson`),FfiConverterString.lower(`messageId`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Какого поколения резервная копия. Нужно интерфейсу, чтобы объяснить
+         * человеку, почему старый клиент её не открыл.
+         */ fun `privateKeyBackupVersion`(`blob`: kotlin.String): kotlin.UInt {
+            return FfiConverterUInt.lift(
+    uniffiRustCall() { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_private_key_backup_version(
+        FfiConverterString.lower(`blob`),_status)
 }
     )
     }
@@ -6554,6 +9387,19 @@ public object FfiConverterSequenceTypeStoredMessage: FfiConverterRustBuffer<List
     uniffiRustCallWithError(CoreException) { _status ->
     UniffiLib.INSTANCE.uniffi_sm_core_fn_func_seal_group(
         FfiConverterString.lower(`plaintextJson`),FfiConverterString.lower(`groupKeyB64`),_status)
+}
+    )
+    }
+    
+
+        /**
+         * Отпечаток ключа сервера — то, что человек сверяет с владельцем сервера.
+         */
+    @Throws(CoreException::class) fun `serverFingerprint`(`publicKeyB64`: kotlin.String): kotlin.String {
+            return FfiConverterString.lift(
+    uniffiRustCallWithError(CoreException) { _status ->
+    UniffiLib.INSTANCE.uniffi_sm_core_fn_func_server_fingerprint(
+        FfiConverterString.lower(`publicKeyB64`),_status)
 }
     )
     }
