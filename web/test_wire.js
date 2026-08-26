@@ -14,6 +14,9 @@ if (start < 0 || end < 0 || end < start) {
 const code = src.slice(start, end);
 eval(code); // определяет toWire и fromWire в текущей области
 
+// Сквозной идентификатор обязан пережить преобразование в обе стороны:
+// без него получатель откатится на серверный id, а он у каждой копии свой.
+const MID = '01a03ec5-3784-7cea-8963-027cc4799d46';
 let failed = 0;
 function eq(a, b, name) {
     const ja = JSON.stringify(a), jb = JSON.stringify(b);
@@ -112,3 +115,14 @@ eq(fromWire(toWire(m)), m, 'roundtrip media exact');
     console.log(failed === 0 ? '\nВСЕ ТЕСТЫ ПРОЙДЕНЫ' : `\n${failed} ТЕСТ(ОВ) УПАЛО`);
     process.exit(failed === 0 ? 0 : 1);
 })();
+
+eq(toWire({ type: 'text', content: 'привет', mid: MID }).mid, MID, 'mid переживает toWire');
+eq(fromWire({ type: 'text', text: 'привет', mid: MID }).mid, MID, 'mid переживает fromWire');
+eq(fromWire({ type: 'media', kind: 'image', file_id: 'f1', mid: MID }).mid, MID, 'mid переживает fromWire для медиа');
+// Мусор в mid не должен попадать во внутреннее представление: он приходит
+// от другой стороны и станет ключом в списке сообщений.
+eq(fromWire({ type: 'text', text: 'x', mid: '../../etc' }).mid, undefined, 'мусор в mid отброшен');
+eq(fromWire({ type: 'text', text: 'x' }).mid, undefined, 'без mid поле не появляется');
+
+if (failed) { console.error(`\n${failed} проверок не прошли`); process.exit(1); }
+console.log('\nВсе проверки wire-адаптера прошли.');

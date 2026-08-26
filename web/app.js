@@ -283,7 +283,31 @@ function mediaDisplayType(o) {
     return 'file';
 }
 
+// Логический идентификатор обязан пережить преобразование формата.
+//
+// toWire и fromWire пересобирают объект по белому списку полей — так и задумано,
+// чужие поля в канон не протаскиваются. Но mid — не чужое поле: без него
+// сквозной идентификатор теряется, и получатель откатывается на серверный.
+// Поэтому переносим его отдельно, поверх обеих сборок.
 function toWire(p) {
+    const w = toWireInner(p);
+    if (w && typeof w === 'object' && p && typeof p.mid === 'string') w.mid = p.mid;
+    return w;
+}
+
+// Форма проверяется здесь же: адаптер формата не должен зависеть от остального
+// приложения, а mid приходит от другой стороны — доверять ему нельзя.
+const WIRE_MID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function fromWire(o) {
+    const p = fromWireInner(o);
+    if (p && typeof p === 'object' && o && typeof o.mid === 'string' && WIRE_MID_RE.test(o.mid)) {
+        p.mid = o.mid;
+    }
+    return p;
+}
+
+function toWireInner(p) {
     if (!p || typeof p !== 'object' || !p.type) return p;
     switch (p.type) {
         case 'text': {
@@ -331,7 +355,7 @@ function toWire(p) {
     }
 }
 
-function fromWire(o) {
+function fromWireInner(o) {
     if (!o || typeof o !== 'object' || !o.type) return o;
     switch (o.type) {
         case 'text': {
