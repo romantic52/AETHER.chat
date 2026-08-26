@@ -24,6 +24,9 @@ struct NearbyPeer: Identifiable, Equatable {
     var displayName: String?
     var rssi: Int
     var lastSeen: Date
+    /// Кого звать для прямой доставки. Не идентичность человека: iOS выдаёт
+    /// этот идентификатор сам и меняет его вместе с рандомизацией адреса.
+    var peripheralId: UUID?
 
     /// Грубая близость. Bluetooth не даёт расстояния — только «сильнее/слабее»,
     /// поэтому и категории грубые, а в интерфейсе стоит пометка «приблизительно».
@@ -179,7 +182,7 @@ final class NearbyDiscoveryService: NSObject, ObservableObject {
         }
     }
 
-    fileprivate func handle(advertisement: [String: Any], rssi: Int) {
+    fileprivate func handle(advertisement: [String: Any], rssi: Int, peripheralId: UUID? = nil) {
         guard let uuids = advertisement[CBAdvertisementDataServiceUUIDsKey] as? [CBUUID] else { return }
         let epoch = nearbyCurrentEpoch()
 
@@ -202,20 +205,22 @@ final class NearbyDiscoveryService: NSObject, ObservableObject {
             // и это правильно: связывать находки между интервалами мы не должны
             // ни у себя, ни в интерфейсе.
             let key = beacon.map { String(format: "%02x", $0) }.joined()
-            upsert(key: key, identityId: identityId, rssi: rssi)
+            upsert(key: key, identityId: identityId, rssi: rssi, peripheralId: peripheralId)
         }
     }
 
-    private func upsert(key: String, identityId: String?, rssi: Int) {
+    private func upsert(key: String, identityId: String?, rssi: Int, peripheralId: UUID? = nil) {
         if let idx = peers.firstIndex(where: { $0.id == key }) {
             peers[idx].rssi = rssi
             peers[idx].lastSeen = Date()
             peers[idx].identityId = identityId ?? peers[idx].identityId
             peers[idx].known = peers[idx].identityId != nil
+            if let peripheralId { peers[idx].peripheralId = peripheralId }
         } else {
             peers.append(NearbyPeer(id: key, known: identityId != nil,
                                     identityId: identityId, displayName: nil,
-                                    rssi: rssi, lastSeen: Date()))
+                                    rssi: rssi, lastSeen: Date(),
+                                    peripheralId: peripheralId))
         }
     }
 }
@@ -246,7 +251,8 @@ extension NearbyDiscoveryService: CBCentralManagerDelegate {
                                     advertisementData: [String: Any],
                                     rssi RSSI: NSNumber) {
         Task { @MainActor in
-            handle(advertisement: advertisementData, rssi: RSSI.intValue)
+            handle(advertisement: advertisementData, rssi: RSSI.intValue,
+                   peripheralId: peripheral.identifier)
         }
     }
 }

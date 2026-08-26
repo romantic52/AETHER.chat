@@ -796,6 +796,59 @@ actor CoreClient {
         return String(decoding: data, as: UTF8.self)
     }
 
+    // MARK: - Прямая доставка (Bluetooth)
+
+    /// Связка для того, кто подключился к нам по Bluetooth.
+    ///
+    /// Выдаём одноразовый ключ из своего же аккаунта — сервер в этом не
+    /// участвует, иначе прямой канал не имел бы смысла в поезде без сети.
+    func directPrekeyBundle() throws -> (deviceId: String, identityKeyB64: String, oneTimeKeyB64: String) {
+        let published = try olmAccountGenerateOtks(accountPickle: olmAccount(), count: 1)
+        try store.metaSet(key: "olm_account", value: published.accountPickle)
+        guard let data = published.oneTimeKeysJson.data(using: .utf8),
+              let root = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let curve = root["curve25519"] as? [String: Any],
+              let otk = curve.values.first as? String else {
+            throw CoreError.Crypto(msg: "не удалось выделить одноразовый ключ")
+        }
+        return (try requireDeviceId(), published.identityKeyB64, otk)
+    }
+
+    /// Запечатать текст связкой, полученной по радио.
+    ///
+    /// Ключ проходит то же закрепление, что и серверный: знакомому с чужим
+    /// identity отправка обязана сорваться. Сервера рядом нет, поручиться за
+    /// ключ некому — эта проверка единственное, что ловит подмену.
+    func sealForDirect(peer peerId: String, deviceId: String,
+                       identityKeyB64: String, oneTimeKeyB64: String,
+                       wirePayload: String) throws -> String {
+        let id = peerId.lowercased()
+        let key = sessionKey(id, deviceId)
+        let pickle: String
+        if let existing = ((try? store.olmSessionGet(peerId: key)) ?? nil) {
+            pickle = existing
+        } else {
+            let bundle = PrekeyBundle(identityKeyB64: identityKeyB64, oneTimeKeyId: "",
+                                      oneTimeKeyB64: oneTimeKeyB64, ed25519KeyB64: nil,
+                                      identitySigB64: nil, oneTimeKeySigB64: nil,
+                                      fallback: false, masterKeyB64: nil, deviceSigB64: nil)
+            try verifyAndPinBundle(peer: id, deviceId: deviceId, bundle: bundle)
+            pickle = try olmCreateOutbound(accountPickle: olmAccount(),
+                                           theirIdentityB64: identityKeyB64,
+                                           theirOneTimeKeyB64: oneTimeKeyB64)
+        }
+        let enc = try olmEncrypt(sessionPickle: pickle, plaintext: wirePayload)
+        try store.olmSessionSet(peerId: key, sessionJson: enc.sessionPickle)
+        return try ratchetEnvelope(type: enc.messageType, body: enc.bodyB64)
+    }
+
+    /// Принятое по Bluetooth идёт обычным путём: дедупликация по mid общая.
+    func openDirect(from senderId: String, envelopeJson: String) throws -> Opened {
+        try open(item: InboxItem(id: "ble:" + UUID().uuidString.lowercased(),
+                                 senderId: senderId, recipientId: myId,
+                                 envelope: envelopeJson, createdAt: nil))
+    }
+
     // MARK: - Отправка
 
     /// Запечатать личное сообщение Double Ratchet'ом и отправить. При первом
