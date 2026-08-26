@@ -56,6 +56,13 @@ class MessageRepository(
     private var cachedOlmIdentity = ""
     // CONFLATED: множественные сигналы «есть что отправить» схлопываются в один
     private val outboxSignal = Channel<Unit>(Channel.CONFLATED)
+    /**
+     * Готовность к отправке: сессия привязана к устройству, наши ключи
+     * опубликованы. Без этих ворот outbox стартовал одновременно с публикацией
+     * и первое сообщение после чистой установки уходило раньше ключей —
+     * падало и уползало в откат до 30 секунд.
+     */
+    private val sendingReady = kotlinx.coroutines.CompletableDeferred<Unit>()
     private val mediaDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
     private val transportRouter = TransportRouter(store, listOf(ServerTransport(serverId)))
     @Volatile private var appActive = true
@@ -472,6 +479,9 @@ class MessageRepository(
             // слота только сессии, привязанной к этому device_id.
             runCatching { api.bindSessionDevice(myId, myDeviceId()) }
             runCatching { ensureOlmKeys() }
+            // Открываем и при неудаче: иначе offline-старт запер бы очередь
+            // навсегда. Не вышло — outbox сам переспросит с откатом.
+            sendingReady.complete(Unit)
             while (true) {
                 syncInbox()
                 delay(10_000)
@@ -980,6 +990,7 @@ class MessageRepository(
     }
 
     private suspend fun outboxLoop() {
+        sendingReady.await()
         var backoffMs = 2_000L
         // Счётчик подряд неудачных попыток на сообщение (в памяти): после лимита — status=-1,
         // чтобы один вечно падающий конверт не держал очередь чата бесконечно.
