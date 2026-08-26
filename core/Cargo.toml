@@ -16,6 +16,9 @@ uniffi = { version = "0.29", features = ["cli"] }
 crypto_box = { version = "0.9", features = ["std"] }
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+# Argon2id для резервной копии приватного ключа (формат v2). PBKDF2 остаётся
+# для ЧТЕНИЯ старых копий — см. docs/TRANSPORT_LAYER_DESIGN.md, приложение Г.
+argon2 = { version = "0.5", default-features = false, features = ["alloc"] }
 hmac = "0.12"
 # HKDF (RFC 5869) для ротации идентификаторов обнаружения. Тот же RustCrypto,
 # что hmac и sha2 — своя реализация вывода ключей была бы лишним риском.
