@@ -1361,6 +1361,7 @@ dependencies = [
  "base64",
  "crypto_box",
  "ed25519-dalek",
+ "hkdf",
  "hmac",
  "pbkdf2",
  "rand_core",

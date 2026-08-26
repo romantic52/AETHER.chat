@@ -17,6 +17,9 @@ crypto_box = { version = "0.9", features = ["std"] }
 aes-gcm = "0.10"
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
 hmac = "0.12"
+# HKDF (RFC 5869) для ротации идентификаторов обнаружения. Тот же RustCrypto,
+# что hmac и sha2 — своя реализация вывода ключей была бы лишним риском.
+hkdf = "0.12"
 sha2 = "0.10"
 # Проверка подписи /server/info. Уже в дереве через ratchet-core — новой загрузки нет.
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
