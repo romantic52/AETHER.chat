@@ -131,6 +131,75 @@ class CoreStore private constructor(
         store.getMessage(msgId)?.takeUnless { it.deleted }?.toEntity()
     }
 
+    fun trackEphemeral(messageId: String, payloadJson: String, timestamp: Long) {
+        val spec = uniffi.sm_core.ephemeralFromPayload(payloadJson) ?: return
+        val expiresAt = when (spec.trigger) {
+            uniffi.sm_core.EphemeralTrigger.SENT,
+            uniffi.sm_core.EphemeralTrigger.DELIVERED -> timestamp + spec.ttlSeconds * 1_000L
+            uniffi.sm_core.EphemeralTrigger.ABSOLUTE -> spec.absoluteMs
+            uniffi.sm_core.EphemeralTrigger.FIRST_OPEN,
+            uniffi.sm_core.EphemeralTrigger.CLOSE -> null
+        }
+        store.ephemeralSet(
+            uniffi.sm_core.EphemeralState(
+                messageId = messageId,
+                state = if (expiresAt == null) "UNOPENED" else "COUNTDOWN",
+                openedTs = null,
+                expiresTs = expiresAt,
+                views = 0,
+            )
+        )
+    }
+
+    fun openEphemeral(messageId: String, payloadJson: String): Boolean {
+        val spec = uniffi.sm_core.ephemeralFromPayload(payloadJson) ?: return true
+        val current = store.ephemeralGet(messageId)
+        if (current?.state == "PURGED") return false
+        if (spec.viewLimit != null && (current?.views ?: 0) >= spec.viewLimit!!) return false
+        val now = System.currentTimeMillis()
+        val expiresAt = when (spec.trigger) {
+            uniffi.sm_core.EphemeralTrigger.FIRST_OPEN -> current?.expiresTs
+                ?: if (spec.ttlSeconds > 0) now + spec.ttlSeconds * 1_000L else now + 5 * 60_000L
+            uniffi.sm_core.EphemeralTrigger.CLOSE -> current?.expiresTs
+            else -> current?.expiresTs
+        }
+        store.ephemeralSet(
+            uniffi.sm_core.EphemeralState(
+                messageId = messageId,
+                state = if (expiresAt == null) "OPENED" else "COUNTDOWN",
+                openedTs = current?.openedTs ?: now,
+                expiresTs = expiresAt,
+                views = (current?.views ?: 0) + 1,
+            )
+        )
+        return true
+    }
+
+    fun closeEphemeral(messageId: String, payloadJson: String) {
+        val spec = uniffi.sm_core.ephemeralFromPayload(payloadJson) ?: return
+        val current = store.ephemeralGet(messageId) ?: return
+        if (current.state == "PURGED") return
+        if (spec.viewLimit != null && current.views >= spec.viewLimit!!) {
+            store.ephemeralPurge(messageId)
+            return
+        }
+        if (spec.trigger == uniffi.sm_core.EphemeralTrigger.CLOSE) {
+            store.ephemeralSet(
+                current.copy(
+                    state = "COUNTDOWN",
+                    expiresTs = System.currentTimeMillis() + spec.ttlSeconds * 1_000L,
+                )
+            )
+        }
+    }
+
+    fun dueEphemeral(now: Long = System.currentTimeMillis()): List<String> =
+        store.ephemeralDue(now)
+
+    fun purgeEphemeral(messageId: String) {
+        store.ephemeralPurge(messageId)
+    }
+
     suspend fun getMessagesForPeerOnce(peerId: String): List<MessageEntity> =
         withContext(Dispatchers.IO) { readMessages(peerId) }
 
@@ -146,7 +215,13 @@ class CoreStore private constructor(
 
     suspend fun updateText(msgId: String, text: String) = withContext(Dispatchers.IO) {
         val previous = store.getMessage(msgId)?.takeUnless { it.deleted }?.toEntity()
-        val payload = if (looksLikeWireJson(text)) {
+        val previousPayload = previous?.payloadJson?.let { raw ->
+            runCatching { org.json.JSONObject(raw) }.getOrNull()
+                ?.takeIf { it.optString("type") == "text" }
+                ?.put("text", text)
+                ?.toString()
+        }
+        val payload = previousPayload ?: if (looksLikeWireJson(text)) {
             text
         } else {
             uniffi.sm_core.wireEncode(
@@ -158,12 +233,18 @@ class CoreStore private constructor(
                 )
             )
         }
-        store.updateText(msgId, payload)
+        val payloadWithId = runCatching {
+            uniffi.sm_core.payloadWithMessageId(payload, msgId)
+        }.getOrDefault(payload)
+        store.updateText(msgId, payloadWithId)
         store.peerOf(msgId)?.let(::refreshChatPreview)
     }
 
     suspend fun updatePayload(msgId: String, payload: String) = withContext(Dispatchers.IO) {
-        store.updatePayload(msgId, payload)
+        val payloadWithId = runCatching {
+            uniffi.sm_core.payloadWithMessageId(payload, msgId)
+        }.getOrDefault(payload)
+        store.updatePayload(msgId, payloadWithId)
         store.peerOf(msgId)?.let(::refreshChatPreview)
     }
 
@@ -174,6 +255,82 @@ class CoreStore private constructor(
     suspend fun getPendingOutgoing(): List<MessageEntity> = withContext(Dispatchers.IO) {
         store.getPendingOutgoing().filterNot { it.deleted }.map { it.toEntity() }
     }
+
+    fun chatDeliveryPolicy(peerId: String): uniffi.sm_core.ChatDeliveryPolicy =
+        store.chatPolicy(peerId)
+
+    fun deliveryPolicy(peerId: String): DeliveryPolicySnapshot =
+        store.chatPolicy(peerId).let {
+            DeliveryPolicySnapshot(it.deliveryMode, it.serverStorage)
+        }
+
+    fun setDeliveryPolicy(peerId: String, deliveryMode: String, serverStorage: String) {
+        store.setChatPolicy(
+            uniffi.sm_core.ChatDeliveryPolicy(
+                peerId = peerId.trim().lowercase(),
+                deliveryMode = deliveryMode,
+                transportOrder = null,
+                serverStorage = serverStorage,
+                updatedTs = System.currentTimeMillis(),
+            )
+        )
+    }
+
+    fun serverAllows(serverId: String, contentKind: String): Boolean =
+        store.serverAllows(serverId, contentKind)
+
+    fun addDeliveryAttempt(messageId: String, transport: String, startedTs: Long): Int =
+        store.addDeliveryAttempt(messageId, transport, null, startedTs)
+
+    fun finishDeliveryAttempt(
+        messageId: String,
+        attempt: Int,
+        outcome: String,
+        finishedTs: Long,
+    ) {
+        store.finishDeliveryAttempt(messageId, attempt, outcome, null, finishedTs)
+    }
+
+    fun setMessageRoute(
+        messageId: String,
+        transport: String,
+        serverId: String?,
+        serverStored: Boolean,
+    ) {
+        store.setRoute(
+            uniffi.sm_core.MessageRoute(
+                messageId = messageId,
+                transport = transport,
+                physical = "tcp",
+                serverId = serverId,
+                serverStored = serverStored,
+                deliveredTs = null,
+                readTs = null,
+            )
+        )
+    }
+
+    fun messageDeliveryInfo(messageId: String): MessageDeliveryInfo = MessageDeliveryInfo(
+        route = store.routeFor(messageId)?.let {
+            MessageRouteInfo(
+                transport = it.transport,
+                physical = it.physical,
+                serverId = it.serverId,
+                serverStored = it.serverStored,
+                deliveredTs = it.deliveredTs,
+                readTs = it.readTs,
+            )
+        },
+        attempts = store.deliveryAttempts(messageId).map {
+            DeliveryAttemptInfo(
+                attempt = it.attempt,
+                transport = it.transport,
+                startedTs = it.startedTs,
+                finishedTs = it.finishedTs,
+                outcome = it.outcome,
+            )
+        },
+    )
 
     suspend fun markOutgoingRead(peerId: String) = withContext(Dispatchers.IO) {
         store.markOutgoingStatus(peerId, 3)
@@ -269,8 +426,8 @@ class CoreStore private constructor(
         meta.edit().apply {
             if (pin.previousKeyB64 == null) remove(previousKey(pin.peerId))
             else putString(previousKey(pin.peerId), pin.previousKeyB64)
-            if (pin.changedAt == null) remove(changedKey(pin.peerId))
-            else putLong(changedKey(pin.peerId), pin.changedAt)
+            pin.changedAt?.let { putLong(changedKey(pin.peerId), it) }
+                ?: remove(changedKey(pin.peerId))
         }.apply()
         store.pinUpsert(pin.peerId, pin.publicKeyB64, pin.pinnedAt)
         if (pin.verified) store.pinSetVerified(pin.peerId, true)
@@ -517,14 +674,22 @@ class CoreStore private constructor(
         private const val HISTORY_LIMIT = 2_000u
 
         @Synchronized
-        fun create(context: Context, accountId: String): CoreStore {
-            val accountKey = accountKey(accountId)
+        fun create(
+            context: Context,
+            accountId: String,
+            serverId: String = ServerRecord.OFFICIAL_PLACEHOLDER_ID,
+        ): CoreStore {
+            val legacyAccountKey = accountKey(accountId)
+            val accountKey = accountKey("$serverId|$accountId")
             if (accountId != "__anonymous__") {
-                migrateLegacyStore(context, accountKey)
+                if (serverId == ServerRecord.OFFICIAL_PLACEHOLDER_ID) {
+                    migrateLegacyStore(context, legacyAccountKey)
+                    migrateStoreScope(context, legacyAccountKey, accountKey)
+                }
             }
             return CoreStore(
                 context = context,
-                encKeyB64 = dbKey(context),
+                encKeyB64 = dbKey(context, serverId),
                 accountId = accountId.trim().lowercase(),
                 accountKey = accountKey,
             )
@@ -551,6 +716,32 @@ class CoreStore private constructor(
             migrateLegacyDatabase(context, accountKey)
             migrateLegacyMeta(context, accountKey)
             migration.edit().putString("legacy_owner", accountKey).apply()
+        }
+
+        /** Первая мультисерверная версия переносит старую базу username → official+username. */
+        private fun migrateStoreScope(context: Context, oldKey: String, newKey: String) {
+            if (oldKey == newKey) return
+            val source = context.getDatabasePath("sm_core_store_$oldKey.db")
+            val target = context.getDatabasePath("sm_core_store_$newKey.db")
+            if (source.exists() && !target.exists()) {
+                target.parentFile?.mkdirs()
+                listOf("", "-wal", "-shm").forEach { suffix ->
+                    val part = java.io.File(source.absolutePath + suffix)
+                    if (part.exists()) part.copyTo(java.io.File(target.absolutePath + suffix))
+                }
+            }
+
+            val sourceMeta = context.getSharedPreferences(
+                "sm_core_android_meta_$oldKey",
+                Context.MODE_PRIVATE,
+            )
+            val targetMeta = context.getSharedPreferences(
+                "sm_core_android_meta_$newKey",
+                Context.MODE_PRIVATE,
+            )
+            if (targetMeta.all.isEmpty() && sourceMeta.all.isNotEmpty()) {
+                copyPreferences(sourceMeta, targetMeta)
+            }
         }
 
         private fun migrateLegacyDatabase(context: Context, accountKey: String) {
@@ -586,7 +777,22 @@ class CoreStore private constructor(
             }.apply()
         }
 
-        private fun dbKey(context: Context): String {
+        private fun copyPreferences(source: SharedPreferences, target: SharedPreferences) {
+            target.edit().apply {
+                source.all.forEach { (key, value) ->
+                    when (value) {
+                        is String -> putString(key, value)
+                        is Int -> putInt(key, value)
+                        is Long -> putLong(key, value)
+                        is Float -> putFloat(key, value)
+                        is Boolean -> putBoolean(key, value)
+                        is Set<*> -> putStringSet(key, value.filterIsInstance<String>().toSet())
+                    }
+                }
+            }.apply()
+        }
+
+        private fun dbKey(context: Context, serverId: String): String {
             val prefs = EncryptedSharedPreferences.create(
                 context,
                 "sm_core_db_key",
@@ -596,13 +802,20 @@ class CoreStore private constructor(
                 EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
                 EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM,
             )
-            prefs.getString("k", null)?.let { return it }
+            val scopedKey = "k.${accountKey(serverId)}"
+            prefs.getString(scopedKey, null)?.let { return it }
+            if (serverId == ServerRecord.OFFICIAL_PLACEHOLDER_ID) {
+                prefs.getString("k", null)?.let { legacy ->
+                    prefs.edit().putString(scopedKey, legacy).apply()
+                    return legacy
+                }
+            }
             val bytes = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }
             val key = Base64.encodeToString(
                 bytes,
                 Base64.URL_SAFE or Base64.NO_PADDING or Base64.NO_WRAP,
             )
-            prefs.edit().putString("k", key).apply()
+            prefs.edit().putString(scopedKey, key).apply()
             return key
         }
     }
@@ -628,7 +841,11 @@ private fun StoredMessage.toEntity(): MessageEntity {
             forwardedFrom = wire.fwdFrom
         }
         is WireMessage.Unknown -> {
-            text = wire.raw
+            text = runCatching {
+                if (org.json.JSONObject(wire.raw).optString("type") == "expired") {
+                    "Сообщение исчезло"
+                } else wire.raw
+            }.getOrDefault(wire.raw)
             replyToId = null
             replyToText = null
             forwardedFrom = null
@@ -653,15 +870,12 @@ private fun StoredMessage.toEntity(): MessageEntity {
         status = status,
         isEdited = edited,
         forwardedFrom = forwardedFrom,
+        payloadJson = payloadJson,
     )
 }
 
-private fun MessageEntity.toCore(): StoredMessage = StoredMessage(
-    id = msgId,
-    peerId = peerId,
-    outgoing = isOut,
-    senderId = if (isOut) "" else peerId,
-    payloadJson = if (looksLikeWireJson(text)) {
+private fun MessageEntity.toCore(): StoredMessage {
+    val payload = payloadJson ?: if (looksLikeWireJson(text)) {
         text
     } else {
         uniffi.sm_core.wireEncode(
@@ -672,13 +886,23 @@ private fun MessageEntity.toCore(): StoredMessage = StoredMessage(
                 fwdFrom = forwardedFrom,
             )
         )
-    },
-    status = status,
-    ts = timestamp,
-    reactionsJson = reactions.ifBlank { "{}" },
-    edited = isEdited,
-    deleted = false,
-)
+    }
+    val payloadWithId = runCatching {
+        uniffi.sm_core.payloadWithMessageId(payload, msgId)
+    }.getOrDefault(payload)
+    return StoredMessage(
+        id = msgId,
+        peerId = peerId,
+        outgoing = isOut,
+        senderId = if (isOut) "" else peerId,
+        payloadJson = payloadWithId,
+        status = status,
+        ts = timestamp,
+        reactionsJson = reactions.ifBlank { "{}" },
+        edited = isEdited,
+        deleted = false,
+    )
+}
 
 private fun CoreChat.toEntity(meta: SharedPreferences): ChatEntity = ChatEntity(
     peerId = peerId,

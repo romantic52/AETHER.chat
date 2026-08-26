@@ -108,16 +108,25 @@ class MainActivity : FragmentActivity() {
                 SecureMessengerTheme(themeSettings = themeSettings) {
                 val navController = rememberNavController()
                 val coroutineScope = rememberCoroutineScope()
-                val sessionPrefs = remember { org.groktest.securemessenger.data.SessionPrefs(this@MainActivity) }
-                val initialStoreAccount = remember {
-                    sessionPrefs.load()?.username?.lowercase() ?: "__anonymous__"
+                val serverRegistry = remember {
+                    org.groktest.securemessenger.data.ServerRegistry(this@MainActivity)
                 }
-                var storeAccount by remember { mutableStateOf(initialStoreAccount) }
+                val sessionPrefs = remember {
+                    org.groktest.securemessenger.data.SessionPrefs(this@MainActivity, serverRegistry)
+                }
+                val initialSession = remember { sessionPrefs.load() }
+                var currentSpace by remember { mutableStateOf(initialSession) }
+                val initialStoreAccount = initialSession?.username?.lowercase() ?: "__anonymous__"
+                val initialStoreServer = initialSession?.let { session ->
+                    serverRegistry.server(session.serverId)?.storageServerId ?: session.serverId
+                } ?: org.groktest.securemessenger.data.ServerRecord.OFFICIAL_PLACEHOLDER_ID
+                var storeSpace by remember { mutableStateOf("$initialStoreServer|$initialStoreAccount") }
                 var store by remember {
                     mutableStateOf(
                         org.groktest.securemessenger.data.CoreStore.create(
                             this@MainActivity,
                             initialStoreAccount,
+                            initialStoreServer,
                         )
                     )
                 }
@@ -193,25 +202,42 @@ class MainActivity : FragmentActivity() {
                                 )
                             }
                         ) {
-                            composable("login") {
-                        val savedSession = remember { sessionPrefs.load() }
-                        val legacyLogin = remember { sessionPrefs.legacyLogin() }
+                            composable(
+                                route = "login?custom={custom}",
+                                arguments = listOf(
+                                    navArgument("custom") {
+                                        type = NavType.BoolType
+                                        defaultValue = false
+                                    }
+                                )
+                            ) { entry ->
+                        val forceCustom = entry.arguments?.getBoolean("custom") ?: false
+                        val savedSession = remember(forceCustom) {
+                            if (forceCustom) null else sessionPrefs.load()
+                        }
+                        val legacyLogin = remember(forceCustom) {
+                            if (forceCustom) null else sessionPrefs.legacyLogin()
+                        }
 
                         LoginScreen(
+                            registry = serverRegistry,
                             savedSession = savedSession,
                             legacyLogin = legacyLogin,
-                            onLoginSuccess = { prefs, kp, apiInstance, id, rememberMe ->
+                            forceCustomServer = forceCustom,
+                            onLoginSuccess = { serverRecord, kp, apiInstance, id, rememberMe ->
                                 val accountId = id.lowercase()
-                                if (storeAccount != accountId) {
+                                val nextStoreSpace = "${serverRecord.storageServerId}|$accountId"
+                                if (storeSpace != nextStoreSpace) {
                                     repo?.shutdown()
                                     store = org.groktest.securemessenger.data.CoreStore.create(
                                         this@MainActivity,
                                         accountId,
+                                        serverRecord.storageServerId,
                                     )
                                     trustStore = org.groktest.securemessenger.crypto.KeyTrustStore(store)
                                     olmTrustStore = org.groktest.securemessenger.crypto.KeyTrustStore(store, "olm")
                                     myOlmIdentity = ""
-                                    storeAccount = accountId
+                                    storeSpace = nextStoreSpace
                                 }
                                 keys = kp
                                 api = apiInstance
@@ -227,15 +253,28 @@ class MainActivity : FragmentActivity() {
                                 // Пароль не сохраняем: только server|username + токен сессии
                                 val token = apiInstance.token
                                 if (rememberMe && token != null) {
-                                    sessionPrefs.save(prefs.substringBefore("|"), id, token)
+                                    sessionPrefs.save(
+                                        serverId = serverRecord.id,
+                                        server = serverRecord.apiUrl,
+                                        serverName = serverRecord.displayName,
+                                        username = id,
+                                        token = token,
+                                    )
                                 } else {
-                                    sessionPrefs.clear()
+                                    sessionPrefs.remove(serverRecord.id, id)
                                 }
+                                currentSpace = org.groktest.securemessenger.data.SessionPrefs.Session(
+                                    serverId = serverRecord.id,
+                                    server = serverRecord.apiUrl,
+                                    serverName = serverRecord.displayName,
+                                    username = id,
+                                    token = token.orEmpty(),
+                                )
                                 if (legacyLogin?.username?.equals(id, ignoreCase = true) == true) {
                                     sessionPrefs.clearLegacyLogin()
                                 }
 
-                                org.groktest.securemessenger.api.ServerConfig.baseUrl = prefs.substringBefore("|")
+                                org.groktest.securemessenger.api.ServerConfig.baseUrl = serverRecord.apiUrl
 
                                 // Ensure Saved Messages chat exists
                                 coroutineScope.launch(Dispatchers.IO) {
@@ -281,6 +320,7 @@ class MainActivity : FragmentActivity() {
                                 repo?.shutdown()
                                 val r = org.groktest.securemessenger.data.MessageRepository(
                                     api = apiInstance,
+                                    serverId = serverRecord.id,
                                     keys = kp,
                                     myId = id,
                                     store = store,
@@ -306,7 +346,7 @@ class MainActivity : FragmentActivity() {
                                 }
 
 
-                                val serverUrl = prefs.substringBefore("|")
+                                val serverUrl = serverRecord.apiUrl
                                 val serviceIntent = Intent(this@MainActivity, AetherService::class.java).apply {
                                     putExtra("server_url", serverUrl)
                                     putExtra("token", apiInstance.token)
@@ -315,7 +355,7 @@ class MainActivity : FragmentActivity() {
                                 ContextCompat.startForegroundService(this@MainActivity, serviceIntent)
                                 
                                 navController.navigate("main") {
-                                    popUpTo("login") { inclusive = true }
+                                    popUpTo(if (forceCustom) "main" else "login") { inclusive = true }
                                 }
                             }
                         )
@@ -334,6 +374,9 @@ class MainActivity : FragmentActivity() {
                         org.groktest.securemessenger.ui.screens.MainScreen(
                             api = apiSafe,
                             myId = myId,
+                            activeSpace = currentSpace,
+                            spaces = (sessionPrefs.sessions() + listOfNotNull(currentSpace))
+                                .distinctBy { "${it.serverId}|${it.username.lowercase()}" },
                             chatListFlow = store.getChatList(),
                             onChatSelected = { peerId ->
                                 coroutineScope.launch {
@@ -343,6 +386,7 @@ class MainActivity : FragmentActivity() {
                             },
                             onLogout = {
                                 sessionPrefs.clear()
+                                currentSpace = sessionPrefs.load()
                                 // (#A4) Отзываем токен на сервере (best effort)
                                 val apiForLogout = api
                                 coroutineScope.launch(Dispatchers.IO) {
@@ -385,6 +429,23 @@ class MainActivity : FragmentActivity() {
                                     }
                                 }
                             },
+                            onSwitchSpace = { target ->
+                                if (sessionPrefs.activate(target.serverId, target.username) != null) {
+                                    currentSpace = target
+                                    repo?.shutdown()
+                                    repo = null
+                                    AetherService.onNewMessage = null
+                                    AetherService.chatLookup = null
+                                    stopService(Intent(this@MainActivity, AetherService::class.java))
+                                    api = null
+                                    keys = null
+                                    myId = ""
+                                    navController.navigate("login") {
+                                        popUpTo("main") { inclusive = true }
+                                    }
+                                }
+                            },
+                            onAddServer = { navController.navigateSingle("login?custom=true") },
                             onNavigateToProfileSettings = { navController.navigateSingle("profile_settings") },
                             onNavigateToNotificationsSettings = { navController.navigateSingle("notifications_settings") },
                             onNavigateToPrivacySettings = { navController.navigateSingle("privacy_settings") },
@@ -455,6 +516,7 @@ class MainActivity : FragmentActivity() {
                                     // Сервер уже отозвал сессию этого устройства («Выйти»
                                     // на экране безопасности) — локально гасим всё, как при logout.
                                     sessionPrefs.clear()
+                                    currentSpace = sessionPrefs.load()
                                     repo?.shutdown()
                                     repo = null
                                     AetherService.onNewMessage = null
@@ -664,8 +726,8 @@ class MainActivity : FragmentActivity() {
                                 },
                                 // (#A2) Optimistic send: запись в Room мгновенно (status=0),
                                 // сеть — в фоновой очереди репозитория с ретраями.
-                                onSendMessage = { text, replyToId, replyToText ->
-                                    repoSafe.enqueueText(peerId, text, replyToId, replyToText)
+                                onSendMessage = { text, replyToId, replyToText, ephemeral ->
+                                    repoSafe.enqueueText(peerId, text, replyToId, replyToText, ephemeral)
                                 },
                                 onSendMedia = { uris, caption ->
                                     repoSafe.sendMedia(peerId, uris, caption)
@@ -694,6 +756,13 @@ class MainActivity : FragmentActivity() {
                                     coroutineScope.launch(Dispatchers.IO) { repoSafe.react(peerId, targetMsgId, emoji) }
                                 },
                                 onRetryMessage = { msgId -> repoSafe.retryMessage(msgId) },
+                                onOpenEphemeral = { message -> repoSafe.openEphemeral(message) },
+                                onCloseEphemeral = { message -> repoSafe.closeEphemeral(message) },
+                                loadMessageDeliveryInfo = { msgId -> store.messageDeliveryInfo(msgId) },
+                                loadDeliveryPolicy = { targetPeer -> store.deliveryPolicy(targetPeer) },
+                                saveDeliveryPolicy = { targetPeer, mode, storageMode ->
+                                    store.setDeliveryPolicy(targetPeer, mode, storageMode)
+                                },
                                 onSeen = {
                                     coroutineScope.launch(Dispatchers.IO) { repoSafe.sendReadReceipt(peerId) }
                                 },
@@ -707,13 +776,23 @@ class MainActivity : FragmentActivity() {
                                     coroutineScope.launch(Dispatchers.IO) {
                                         try {
                                             // Шифруем сразу — worker получает только готовый конверт
-                                            val wire = org.json.JSONObject().put("type", "text").put("text", text)
-                                            val env = repoSafe.encryptForPeer(peerId, wire.toString())
+                                            val messageId = uniffi.sm_core.newMessageId()
+                                            val wire = uniffi.sm_core.payloadWithMessageId(
+                                                org.json.JSONObject().put("type", "text").put("text", text).toString(),
+                                                messageId,
+                                            )
+                                            val env = repoSafe.encryptForPeer(peerId, wire)
+                                            val space = currentSpace ?: return@launch
+                                            val storageServerId = serverRegistry.server(space.serverId)
+                                                ?.storageServerId ?: space.serverId
                                             val data = androidx.work.Data.Builder()
                                                 .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_SERVER_URL, org.groktest.securemessenger.api.ServerConfig.baseUrl)
+                                                .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_SERVER_ID, space.serverId)
+                                                .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_STORAGE_SERVER_ID, storageServerId)
                                                 .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_TOKEN, api?.token)
                                                 .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_MY_ID, myId)
                                                 .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_PEER_ID, peerId)
+                                                .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_MESSAGE_ID, messageId)
                                                 .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_TEXT, text)
                                                 .putString(org.groktest.securemessenger.workers.ScheduledMessageWorker.KEY_ENVELOPE_JSON, org.json.JSONObject(env).toString())
                                                 .build()

@@ -56,6 +56,7 @@ import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.data.ChatListEntry
+import org.groktest.securemessenger.data.SessionPrefs
 import org.groktest.securemessenger.data.messagePreview
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.theme.AetherEdge
@@ -80,6 +81,8 @@ private data class MainTab(
 fun MainScreen(
     api: RelayApi,
     myId: String,
+    activeSpace: SessionPrefs.Session?,
+    spaces: List<SessionPrefs.Session>,
     chatListFlow: kotlinx.coroutines.flow.StateFlow<List<ChatListEntry>>,
     onChatSelected: (String) -> Unit,
     onLogout: () -> Unit,
@@ -88,6 +91,8 @@ fun MainScreen(
     onNavigateToSearch: () -> Unit,
     onCreateGroupClick: (Boolean) -> Unit,
     onAction: (String, String) -> Unit,
+    onSwitchSpace: (SessionPrefs.Session) -> Unit,
+    onAddServer: () -> Unit,
     onNavigateToProfileSettings: () -> Unit,
     onNavigateToNotificationsSettings: () -> Unit,
     onNavigateToPrivacySettings: () -> Unit,
@@ -386,11 +391,15 @@ fun MainScreen(
                     )
                     2 -> ChatListScreen(
                         chats = chats,
+                        activeSpace = activeSpace,
+                        spaces = spaces,
                         onChatSelected = onChatSelected,
                         onNewChat = onNewChat,
                         onCreateGroup = { onCreateGroupClick(false) },
                         onCreateChannel = { onCreateGroupClick(true) },
-                        onAction = onAction
+                        onAction = onAction,
+                        onSwitchSpace = onSwitchSpace,
+                        onAddServer = onAddServer,
                     )
                     3 -> SettingsScreen(
                         api = api,

@@ -7,6 +7,9 @@ import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.data.CoreStore
 import org.groktest.securemessenger.data.ChatEntity
 import org.groktest.securemessenger.data.MessageEntity
+import org.groktest.securemessenger.data.DeliveryRequest
+import org.groktest.securemessenger.data.ServerTransport
+import org.groktest.securemessenger.data.TransportRouter
 
 /**
  * Отправка отложенного сообщения.
@@ -19,9 +22,12 @@ class ScheduledMessageWorker(context: Context, params: WorkerParameters) :
 
     override suspend fun doWork(): Result {
         val serverUrl = inputData.getString(KEY_SERVER_URL) ?: return Result.failure()
+        val serverId = inputData.getString(KEY_SERVER_ID) ?: return Result.failure()
+        val storageServerId = inputData.getString(KEY_STORAGE_SERVER_ID) ?: return Result.failure()
         val token = inputData.getString(KEY_TOKEN) ?: return Result.failure()
         val myId = inputData.getString(KEY_MY_ID) ?: return Result.failure()
         val peerId = inputData.getString(KEY_PEER_ID) ?: return Result.failure()
+        val messageId = inputData.getString(KEY_MESSAGE_ID) ?: return Result.failure()
         val text = inputData.getString(KEY_TEXT) ?: return Result.failure()
         // (#A3) Конверт целиком (JSON): личный box или групповой is_group-конверт
         val envelopeJson = inputData.getString(KEY_ENVELOPE_JSON) ?: return Result.failure()
@@ -32,10 +38,20 @@ class ScheduledMessageWorker(context: Context, params: WorkerParameters) :
             val envObj = org.json.JSONObject(envelopeJson)
             val envelope = mutableMapOf<String, Any>()
             for (k in envObj.keys()) envelope[k] = envObj.get(k)
+            val store = CoreStore.create(applicationContext, myId, storageServerId)
+            val router = TransportRouter(store, listOf(ServerTransport(serverId)))
             // (#A2) id воркера стабилен между ретраями → сервер не создаст дубликат
-            val serverMsgId = api.sendMessage(myId, peerId, envelope, clientMsgId = id.toString())
+            val serverMsgId = router.send(
+                DeliveryRequest(
+                    messageId = messageId,
+                    peerId = peerId,
+                    contentKind = "text",
+                    sealAndSend = {
+                        api.sendMessage(myId, peerId, envelope, clientMsgId = messageId)
+                    },
+                )
+            )
 
-            val store = CoreStore.create(applicationContext, myId)
             if (store.getChat(peerId) == null) {
                 val chatType = if (peerId.startsWith("channel_")) 2 else if (peerId.startsWith("group_")) 1 else 0
                 store.insertChat(ChatEntity(peerId = peerId, name = peerId, type = chatType))
@@ -58,9 +74,12 @@ class ScheduledMessageWorker(context: Context, params: WorkerParameters) :
 
     companion object {
         const val KEY_SERVER_URL = "server_url"
+        const val KEY_SERVER_ID = "server_id"
+        const val KEY_STORAGE_SERVER_ID = "storage_server_id"
         const val KEY_TOKEN = "token"
         const val KEY_MY_ID = "my_id"
         const val KEY_PEER_ID = "peer_id"
+        const val KEY_MESSAGE_ID = "message_id"
         const val KEY_TEXT = "text"
         const val KEY_ENVELOPE_JSON = "envelope_json"
     }

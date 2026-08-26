@@ -33,6 +33,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import org.groktest.securemessenger.data.ChatListEntry
+import org.groktest.securemessenger.data.SessionPrefs
 import org.groktest.securemessenger.data.messagePreview
 import org.groktest.securemessenger.ui.components.AetherSettingsTopBar
 import org.groktest.securemessenger.ui.theme.AetherEdge
@@ -73,13 +74,18 @@ private data class PendingChatToggle(
 @Composable
 fun ChatListScreen(
     chats: List<ChatListEntry>,
+    activeSpace: SessionPrefs.Session?,
+    spaces: List<SessionPrefs.Session>,
     onChatSelected: (String) -> Unit,
     onNewChat: () -> Unit,
     onCreateGroup: () -> Unit,
     onCreateChannel: () -> Unit,
-    onAction: (String, String) -> Unit = { _, _ -> } // peerId, action ("mute", "archive", "pin", "delete")
+    onAction: (String, String) -> Unit = { _, _ -> },
+    onSwitchSpace: (SessionPrefs.Session) -> Unit,
+    onAddServer: () -> Unit,
 ) {
     var createMenuOpen by remember { mutableStateOf(false) }
+    var showSpaces by remember { mutableStateOf(false) }
     val appearance = LocalThemeSettings.current
     val activeListState = rememberLazyListState()
     val archiveListState = rememberLazyListState()
@@ -169,13 +175,28 @@ fun ChatListScreen(
                         .padding(horizontal = 16.dp, vertical = 8.dp),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    Text(
-                        "Aether",
-                        modifier = Modifier.weight(1f),
-                        fontSize = 24.sp,
-                        fontWeight = FontWeight.Bold,
-                        color = MaterialTheme.colorScheme.onBackground
-                    )
+                    Row(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(12.dp))
+                            .clickable { showSpaces = true }
+                            .padding(vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            activeSpace?.serverName ?: "Aether",
+                            fontSize = 24.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Text(
+                            "  ▾",
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            fontSize = 16.sp,
+                        )
+                    }
                     Box(
                         modifier = Modifier
                             .size(AetherStyle.SmallControlSize)
@@ -323,6 +344,58 @@ fun ChatListScreen(
                     TextButton(onClick = { confirmDelete = null }) { Text("Отмена") }
                 }
             )
+        }
+    }
+
+    if (showSpaces) {
+        ModalBottomSheet(onDismissRequest = { showSpaces = false }) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .navigationBarsPadding()
+                    .padding(horizontal = 20.dp, vertical = 8.dp),
+            ) {
+                Text("Пространства", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold)
+                Spacer(Modifier.height(12.dp))
+                spaces.forEach { space ->
+                    val selected = activeSpace?.serverId == space.serverId &&
+                        activeSpace.username.equals(space.username, ignoreCase = true)
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(14.dp))
+                            .clickable {
+                                showSpaces = false
+                                if (!selected) onSwitchSpace(space)
+                            }
+                            .padding(horizontal = 12.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text(space.serverName, fontWeight = FontWeight.SemiBold)
+                            Text(
+                                "${space.server.removePrefix("https://").removePrefix("http://")} · @${space.username}",
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                style = MaterialTheme.typography.bodySmall,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        }
+                        if (selected) Text("✓", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold)
+                    }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 8.dp))
+                TextButton(
+                    onClick = {
+                        showSpaces = false
+                        onAddServer()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Text("+  Добавить сервер")
+                }
+                Spacer(Modifier.height(8.dp))
+            }
         }
     }
 }

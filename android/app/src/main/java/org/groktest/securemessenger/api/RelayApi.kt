@@ -157,15 +157,6 @@ class RelayApi(baseUrl: String) {
         }
     }
 
-    fun olmKeysState(userId: String): uniffi.sm_core.PrekeyState {
-        restoreSession(userId)
-        try {
-            return core.keysState()
-        } catch (e: Exception) {
-            throw asHttpError("Проверка защищённых ключей", e)
-        }
-    }
-
     fun claimOlmKeys(userId: String, peerId: String): uniffi.sm_core.PrekeyBundle {
         restoreSession(userId)
         try {

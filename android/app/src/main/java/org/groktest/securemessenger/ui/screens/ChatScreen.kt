@@ -3,6 +3,8 @@ package org.groktest.securemessenger.ui.screens
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
@@ -128,7 +130,7 @@ fun ChatScreen(
     onBack: () -> Unit,
     onAudioCall: () -> Unit,
     onVideoCall: () -> Unit,
-    onSendMessage: suspend (String, String?, String?) -> Exception?,
+    onSendMessage: suspend (String, String?, String?, org.groktest.securemessenger.data.EphemeralDraft?) -> Exception?,
     onSendMedia: suspend (List<android.net.Uri>, String?) -> Exception?,
     // Отправка как документ (файл) — без сжатия, с именем/размером
     onSendFiles: suspend (List<android.net.Uri>, String?) -> Exception? = { _, _ -> null },
@@ -138,6 +140,15 @@ fun ChatScreen(
     onReact: (String, String) -> Unit = { _, _ -> },
     // (#A2) Повторная отправка сообщения со статусом «ошибка» (-1)
     onRetryMessage: (String) -> Unit = {},
+    onOpenEphemeral: suspend (MessageEntity) -> Boolean = { true },
+    onCloseEphemeral: suspend (MessageEntity) -> Unit = {},
+    loadMessageDeliveryInfo: suspend (String) -> org.groktest.securemessenger.data.MessageDeliveryInfo = {
+        org.groktest.securemessenger.data.MessageDeliveryInfo(null, emptyList())
+    },
+    loadDeliveryPolicy: suspend (String) -> org.groktest.securemessenger.data.DeliveryPolicySnapshot = {
+        org.groktest.securemessenger.data.DeliveryPolicySnapshot("AUTO", "ENCRYPTED_BACKUP")
+    },
+    saveDeliveryPolicy: suspend (String, String, String) -> Unit = { _, _, _ -> },
     onSeen: () -> Unit = {},
     myId: String = "",
     onDownloadMedia: suspend (String) -> java.io.File?,
@@ -171,6 +182,30 @@ fun ChatScreen(
     val coroutineScope = rememberCoroutineScope()
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
     val appearance = LocalThemeSettings.current
+    var showDeliveryPolicy by remember(peerId) { mutableStateOf(false) }
+    var showEphemeralPicker by remember(peerId) { mutableStateOf(false) }
+    var pendingEphemeral by remember(peerId) {
+        mutableStateOf<org.groktest.securemessenger.data.EphemeralDraft?>(null)
+    }
+
+    if (showDeliveryPolicy) {
+        DeliveryPolicyDialog(
+            peerId = peerId,
+            loadPolicy = loadDeliveryPolicy,
+            savePolicy = saveDeliveryPolicy,
+            onDismiss = { showDeliveryPolicy = false },
+        )
+    }
+    if (showEphemeralPicker) {
+        EphemeralPickerDialog(
+            selected = pendingEphemeral,
+            onSelect = {
+                pendingEphemeral = it
+                showEphemeralPicker = false
+            },
+            onDismiss = { showEphemeralPicker = false },
+        )
+    }
 
     var replyingTo by remember { mutableStateOf<MessageEntity?>(null) }
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
@@ -206,22 +241,25 @@ fun ChatScreen(
         val reply = replyingTo
         val rId = reply?.msgId
         val rText = reply?.let { if (it.text.startsWith("{")) "Вложение" else it.text.take(80) }
+        val ephemeral = pendingEphemeral.takeIf { editing == null }
 
         // Outbox уже оптимистичный: освобождаем composer в момент тапа, а не после IO.
         inputText = ""
         replyingTo = null
         editingMessage = null
+        if (editing == null) pendingEphemeral = null
         sendPulseTrigger++
         coroutineScope.launch {
             val error = withContext(Dispatchers.IO) {
                 if (editing != null) onEditMessage(editing.msgId, textToSend)
-                else onSendMessage(textToSend, rId, rText)
+                else onSendMessage(textToSend, rId, rText, ephemeral)
             }
             if (error != null) {
                 if (inputText.isEmpty() && replyingTo == null && editingMessage == null) {
                     inputText = inputBeforeSend
                     replyingTo = reply
                     editingMessage = editing
+                    if (editing == null) pendingEphemeral = ephemeral
                 }
                 snackbarHostState.showSnackbar(
                     message = "Ошибка отправки: ${error.message ?: "Неизвестная ошибка"}",
@@ -928,6 +966,14 @@ fun ChatScreen(
                                             onClick = { headerMenuOpen = false; onOpenSafety() }
                                         )
                                     }
+                                    DropdownMenuItem(
+                                        text = { Text("Доставка и хранение") },
+                                        leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                                        onClick = {
+                                            headerMenuOpen = false
+                                            showDeliveryPolicy = true
+                                        }
+                                    )
                                 }
                                 } // MaterialTheme (канон меню)
                             }
@@ -1114,6 +1160,22 @@ fun ChatScreen(
                                 }
                             }
                         } else {
+                            IconButton(
+                                onClick = { showEphemeralPicker = true },
+                                enabled = !isSending,
+                                modifier = Modifier.size(40.dp),
+                            ) {
+                                Icon(
+                                    Icons.Default.Lock,
+                                    contentDescription = "Режим исчезающего сообщения",
+                                    tint = if (pendingEphemeral == null) {
+                                        MaterialTheme.colorScheme.onSurfaceVariant
+                                    } else {
+                                        MaterialTheme.colorScheme.primary
+                                    },
+                                    modifier = Modifier.size(19.dp),
+                                )
+                            }
                             BasicTextField(
                                 value = inputText,
                                 onValueChange = {
@@ -1521,6 +1583,9 @@ fun ChatScreen(
                                         }
                                     },
                                     onRetry = onRetryMessage,
+                                    loadDeliveryInfo = loadMessageDeliveryInfo,
+                                    onOpenEphemeral = onOpenEphemeral,
+                                    onCloseEphemeral = onCloseEphemeral,
                                     onReply = {
                                         editingMessage = null
                                         replyingTo = it
@@ -1971,6 +2036,11 @@ fun MessageBubble(
     myId: String = "",
     onReact: (String, String) -> Unit = { _, _ -> },
     onRetry: (String) -> Unit = {},
+    loadDeliveryInfo: suspend (String) -> org.groktest.securemessenger.data.MessageDeliveryInfo = {
+        org.groktest.securemessenger.data.MessageDeliveryInfo(null, emptyList())
+    },
+    onOpenEphemeral: suspend (MessageEntity) -> Boolean = { true },
+    onCloseEphemeral: suspend (MessageEntity) -> Unit = {},
     onReply: (MessageEntity) -> Unit = {},
     onEdit: (MessageEntity) -> Unit = {},
     onForward: (MessageEntity) -> Unit = {},
@@ -1978,6 +2048,45 @@ fun MessageBubble(
     onOpenDiscussion: ((MessageEntity) -> Unit)? = null
 ) {
     val isOut = msg.isOut
+    val ephemeralSpec = remember(msg.payloadJson) {
+        msg.payloadJson?.let { runCatching { uniffi.sm_core.ephemeralFromPayload(it) }.getOrNull() }
+    }
+    var ephemeralRevealed by remember(msg.msgId) { mutableStateOf(false) }
+    var ephemeralUnavailable by remember(msg.msgId) { mutableStateOf(false) }
+    val ephemeralScope = rememberCoroutineScope()
+
+    if (ephemeralSpec != null && ephemeralSpec.kind != "VIEW_ONCE") {
+        LaunchedEffect(msg.msgId) { onOpenEphemeral(msg) }
+    }
+    if (ephemeralSpec?.kind == "VIEW_ONCE" && ephemeralRevealed) {
+        DisposableEffect(msg.msgId) {
+            onDispose { ephemeralScope.launch { onCloseEphemeral(msg) } }
+        }
+    }
+    if (ephemeralSpec?.kind == "VIEW_ONCE" && !ephemeralRevealed) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 48.dp, vertical = 4.dp)
+                .clip(RoundedCornerShape(AetherStyle.IslandRadius))
+                .background(MaterialTheme.colorScheme.surfaceVariant)
+                .clickable(enabled = !ephemeralUnavailable) {
+                    ephemeralScope.launch {
+                        if (onOpenEphemeral(msg)) ephemeralRevealed = true
+                        else ephemeralUnavailable = true
+                    }
+                }
+                .padding(16.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                if (ephemeralUnavailable) "Сообщение уже просмотрено" else "Просмотр один раз · нажмите, чтобы открыть",
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                fontWeight = FontWeight.SemiBold,
+            )
+        }
+        return
+    }
     // В канале посты выровнены одинаково (слева) — как лента, без «моих справа».
     val alignEnd = isOut && !isChannelPost
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -2027,6 +2136,7 @@ fun MessageBubble(
     val coroutineScope = rememberCoroutineScope()
     var menuOpen by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
+    var showDeliveryInfo by remember(msg.msgId) { mutableStateOf(false) }
     val clipboard = androidx.compose.ui.platform.LocalClipboardManager.current
     val bubbleInteraction = remember(msg.msgId) { MutableInteractionSource() }
     var reactionBurstTrigger by remember(msg.msgId) { mutableIntStateOf(0) }
@@ -2117,6 +2227,12 @@ fun MessageBubble(
                                 Icons.Filled.Schedule,
                                 contentDescription = "Отправляется",
                                 tint = textColor.copy(alpha = 0.6f),
+                                modifier = Modifier.fillMaxSize()
+                            )
+                            status == 4 -> Icon(
+                                Icons.Filled.Schedule,
+                                contentDescription = "Ждёт прямого подключения",
+                                tint = MaterialTheme.colorScheme.tertiary,
                                 modifier = Modifier.fillMaxSize()
                             )
                             else -> Icon(
@@ -2660,9 +2776,9 @@ fun MessageBubble(
                     }
                 }
             }
-            if (isOut && msg.status == -1) {
+            if (isOut && (msg.status == -1 || msg.status == 4)) {
                 DropdownMenuItem(
-                    text = { Text("Повторить отправку") },
+                    text = { Text(if (msg.status == 4) "Проверить прямое подключение" else "Повторить отправку") },
                     onClick = { onRetry(msg.msgId); menuOpen = false }
                 )
             }
@@ -2689,6 +2805,13 @@ fun MessageBubble(
                     }
                 )
             }
+            DropdownMenuItem(
+                text = { Text("О сообщении") },
+                onClick = {
+                    showDeliveryInfo = true
+                    menuOpen = false
+                }
+            )
             DropdownMenuItem(
                 text = { Text("Удалить") },
                 onClick = {
@@ -2732,8 +2855,239 @@ fun MessageBubble(
                 }
             )
         }
+        if (showDeliveryInfo) {
+            MessageDeliveryInfoDialog(
+                message = msg,
+                loadInfo = loadDeliveryInfo,
+                onDismiss = { showDeliveryInfo = false },
+            )
+        }
         }
     }
+}
+
+@Composable
+private fun EphemeralPickerDialog(
+    selected: org.groktest.securemessenger.data.EphemeralDraft?,
+    onSelect: (org.groktest.securemessenger.data.EphemeralDraft?) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val options = listOf(
+        null to ("Обычное сообщение" to "Остаётся в переписке"),
+        org.groktest.securemessenger.data.EphemeralDraft("VIEW_ONCE", 0, 1) to
+            ("Просмотр один раз" to "После просмотра содержимое стирается"),
+        org.groktest.securemessenger.data.EphemeralDraft("EPHEMERAL", 10) to
+            ("10 секунд" to "Исчезнет через 10 секунд после открытия"),
+        org.groktest.securemessenger.data.EphemeralDraft("EPHEMERAL", 60) to
+            ("1 минута" to "Исчезнет через минуту после открытия"),
+        org.groktest.securemessenger.data.EphemeralDraft("EPHEMERAL", 3_600) to
+            ("1 час" to "Исчезнет через час после открытия"),
+        org.groktest.securemessenger.data.EphemeralDraft("EPHEMERAL", 86_400) to
+            ("24 часа" to "Исчезнет через сутки после открытия"),
+    )
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Режим следующего сообщения") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                options.forEach { (option, labels) ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable { onSelect(option) }
+                            .padding(vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = selected == option, onClick = { onSelect(option) })
+                        Column {
+                            Text(labels.first)
+                            Text(
+                                labels.second,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
+                    }
+                }
+                Text(
+                    "Режим действует только для одного сообщения. Aether стирает содержимое из своей базы, но не может помешать снять экран другим телефоном.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
+    )
+}
+
+@Composable
+private fun DeliveryPolicyDialog(
+    peerId: String,
+    loadPolicy: suspend (String) -> org.groktest.securemessenger.data.DeliveryPolicySnapshot,
+    savePolicy: suspend (String, String, String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    var mode by remember(peerId) { mutableStateOf("AUTO") }
+    var storage by remember(peerId) { mutableStateOf("ENCRYPTED_BACKUP") }
+    var loaded by remember(peerId) { mutableStateOf(false) }
+    var saving by remember(peerId) { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
+
+    LaunchedEffect(peerId) {
+        val current = withContext(Dispatchers.IO) { loadPolicy(peerId) }
+        mode = current.deliveryMode
+        storage = current.serverStorage
+        loaded = true
+    }
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Доставка и хранение") },
+        text = {
+            if (!loaded) {
+                Box(Modifier.fillMaxWidth().height(120.dp), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator()
+                }
+            } else {
+                Column(
+                    modifier = Modifier.verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text("Как доставлять", fontWeight = FontWeight.SemiBold)
+                    listOf(
+                        Triple("AUTO", "Автоматически", "Сейчас используется доступный серверный путь"),
+                        Triple("DIRECT_ONLY", "Только напрямую", "Не отправлять серверу; пока прямого канала нет, сообщение будет ждать"),
+                        Triple("SERVER", "Через сервер", "Использовать только выбранный сервер"),
+                    ).forEach { (value, title, hint) ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { mode = value }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = mode == value, onClick = { mode = value })
+                            Column {
+                                Text(title)
+                                Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    Text("Что может сервер", fontWeight = FontWeight.SemiBold)
+                    listOf(
+                        Triple("ENCRYPTED_BACKUP", "Хранить шифрованную копию", "Нужно для доставки и синхронизации устройств"),
+                        Triple("NEVER", "Ничего не отдавать серверу", "Сообщения будут ждать прямого подключения"),
+                    ).forEach { (value, title, hint) ->
+                        Row(
+                            Modifier.fillMaxWidth().clickable { storage = value }.padding(vertical = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            RadioButton(selected = storage == value, onClick = { storage = value })
+                            Column {
+                                Text(title)
+                                Text(hint, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                    }
+                    Text(
+                        "Режим «только передать» пока не предлагается: текущий сервер хранит шифрованный конверт до подтверждения получателем.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = loaded && !saving,
+                onClick = {
+                    saving = true
+                    scope.launch {
+                        withContext(Dispatchers.IO) { savePolicy(peerId, mode, storage) }
+                        saving = false
+                        onDismiss()
+                    }
+                },
+            ) { Text("Сохранить") }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
+}
+
+@Composable
+private fun MessageDeliveryInfoDialog(
+    message: MessageEntity,
+    loadInfo: suspend (String) -> org.groktest.securemessenger.data.MessageDeliveryInfo,
+    onDismiss: () -> Unit,
+) {
+    val result by produceState<Result<org.groktest.securemessenger.data.MessageDeliveryInfo>?>(
+        initialValue = null,
+        key1 = message.msgId,
+    ) {
+        value = runCatching { withContext(Dispatchers.IO) { loadInfo(message.msgId) } }
+    }
+    val info = result?.getOrNull()
+    val status = when (message.status) {
+        -1 -> "Не отправлено"
+        0 -> "Отправляется"
+        1 -> "Отправлено"
+        2 -> "Доставлено"
+        3 -> "Прочитано"
+        4 -> "Ждёт получателя рядом"
+        else -> "Неизвестно"
+    }
+    val formatter = remember {
+        java.text.DateFormat.getDateTimeInstance(java.text.DateFormat.SHORT, java.text.DateFormat.MEDIUM)
+    }
+    fun time(value: Long): String = formatter.format(java.util.Date(value))
+
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("О сообщении") },
+        text = {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text("Состояние: $status")
+                Text("Создано: ${time(message.timestamp)}")
+                when {
+                    result == null -> CircularProgressIndicator(Modifier.size(24.dp), strokeWidth = 2.dp)
+                    result?.isFailure == true -> Text("Не удалось прочитать сведения о доставке")
+                    info?.route == null -> Text(
+                        if (message.status == 4) "Маршрут ещё не выбран. Сервер не использован."
+                        else "Маршрут не записан (возможно, сообщение создано старой версией)."
+                    )
+                    else -> info.route.let { route ->
+                        HorizontalDivider()
+                        Text("Как доставлено", fontWeight = FontWeight.SemiBold)
+                        Text("Маршрут: ${if (route.transport.startsWith("server.")) "через сервер" else route.transport}")
+                        Text("Канал: ${route.physical ?: "не указан"}")
+                        Text("Сервер: ${route.serverId ?: "не использован"}")
+                        Text("Копия на сервере: ${if (route.serverStored) "да, шифрованная" else "нет"}")
+                        route.deliveredTs?.let { Text("Доставлено: ${time(it)}") }
+                        route.readTs?.let { Text("Прочитано: ${time(it)}") }
+                    }
+                }
+                if (!info?.attempts.isNullOrEmpty()) {
+                    HorizontalDivider()
+                    Text("Попытки доставки", fontWeight = FontWeight.SemiBold)
+                    info?.attempts.orEmpty().forEach { attempt ->
+                        Text(
+                            "${attempt.attempt}. ${if (attempt.transport.startsWith("server.")) "сервер" else attempt.transport} · " +
+                                "${attempt.outcome ?: "в процессе"} · ${time(attempt.startedTs)}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                }
+                HorizontalDivider()
+                Text("Идентификатор", fontWeight = FontWeight.SemiBold)
+                Text(message.msgId, style = MaterialTheme.typography.bodySmall)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Готово") } },
+    )
 }
 
 /** Последние фото/видео из MediaStore для шторки вложений. Pair<Uri, isVideo>, новые сверху. */

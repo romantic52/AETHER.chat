@@ -7,8 +7,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -22,46 +20,105 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.groktest.securemessenger.api.RelayApi
+import org.groktest.securemessenger.api.ServerDirectory
 import org.groktest.securemessenger.api.ServerConfig
 import org.groktest.securemessenger.crypto.E2ECrypto
 import org.groktest.securemessenger.data.SecurePrefs
+import org.groktest.securemessenger.data.ServerInspection
+import org.groktest.securemessenger.data.ServerRecord
+import org.groktest.securemessenger.data.ServerRegistrationMode
+import org.groktest.securemessenger.data.ServerRegistry
 import org.groktest.securemessenger.data.SessionPrefs
 import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.theme.AetherStyle
-import org.groktest.securemessenger.ui.theme.aetherControl
-import org.groktest.securemessenger.ui.theme.aetherControlContent
 import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun LoginScreen(
+    registry: ServerRegistry,
     savedSession: SessionPrefs.Session?,
     legacyLogin: SessionPrefs.LegacyLogin? = null,
-    onLoginSuccess: (String, E2ECrypto.KeyPair, RelayApi, String, Boolean) -> Unit
+    forceCustomServer: Boolean = false,
+    onLoginSuccess: (ServerRecord, E2ECrypto.KeyPair, RelayApi, String, Boolean) -> Unit
 ) {
-    var server by remember { mutableStateOf(legacyLogin?.server ?: ServerConfig.DEFAULT_BASE_URL) }
+    val official = remember(registry) { registry.official() }
+    var selectedServer by remember {
+        mutableStateOf(savedSession?.let { registry.server(it.serverId) } ?: official)
+    }
+    var customMode by remember { mutableStateOf(forceCustomServer || selectedServer.kind.name == "CUSTOM") }
+    var serverInput by remember { mutableStateOf(legacyLogin?.server.orEmpty()) }
+    var knownServers by remember { mutableStateOf(registry.servers().filterNot { it.isOfficial }) }
     var username by remember { mutableStateOf(legacyLogin?.username.orEmpty()) }
     var password by remember { mutableStateOf(legacyLogin?.password.orEmpty()) }
     var isRegister by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
-    var showSettings by remember { mutableStateOf(false) }
     var rememberMe by remember { mutableStateOf(true) }
     var isSubmitting by remember { mutableStateOf(false) }
+    var isDiscovering by remember { mutableStateOf(false) }
+    var identityChange by remember { mutableStateOf<ServerInspection.IdentityChanged?>(null) }
+    var identityConfirmStep by remember { mutableStateOf(false) }
     var totpNeeded by remember { mutableStateOf(false) }
     var totpCode by remember { mutableStateOf("") }
 
     val coroutineScope = rememberCoroutineScope()
     val crypto = remember { E2ECrypto() }
     val context = androidx.compose.ui.platform.LocalContext.current
+    val directory = remember(registry) { ServerDirectory(registry) }
+
+    suspend fun discoverServer() {
+        if (isDiscovering) return
+        isDiscovering = true
+        error = null
+        try {
+            val inspection = withContext(Dispatchers.IO) { directory.inspect(serverInput) }
+            selectedServer = when (inspection) {
+                is ServerInspection.Fresh -> registry.trust(inspection.info)
+                is ServerInspection.Known -> registry.trust(inspection.info, inspection.record.kind)
+                is ServerInspection.IdentityChanged -> {
+                    identityChange = inspection
+                    identityConfirmStep = false
+                    throw IllegalStateException(
+                        "Идентификатор сервера изменился. Подключение заблокировано."
+                    )
+                }
+            }
+            serverInput = selectedServer.origin
+            knownServers = registry.servers().filterNot { it.isOfficial }
+        } catch (e: Exception) {
+            error = when (e) {
+                is uniffi.sm_core.CoreException.Crypto -> "Не удалось подтвердить подпись сервера"
+                is uniffi.sm_core.CoreException.Network -> "Нет соединения с сервером"
+                is uniffi.sm_core.CoreException.BadInput -> e.msg
+                else -> e.message ?: "По этому адресу нет сервера Aether"
+            }
+        } finally {
+            isDiscovering = false
+        }
+    }
 
     suspend fun submit(register: Boolean) {
         if (isSubmitting) return
         isSubmitting = true
         error = null
         try {
-            val normalizedServer = ServerConfig.normalizeBaseUrl(server)
+            val target = selectedServer
+            if (customMode && target.isOfficial) {
+                throw IllegalArgumentException("Сначала найдите и выберите пользовательский сервер")
+            }
+            if (register && target.registrationMode != ServerRegistrationMode.OPEN) {
+                throw IllegalArgumentException(
+                    when (target.registrationMode) {
+                        ServerRegistrationMode.APPROVAL -> "На этом сервере регистрация только по одобрению администратора"
+                        ServerRegistrationMode.INVITE_ONLY -> "Для регистрации на этом сервере нужен код приглашения"
+                        ServerRegistrationMode.CLOSED -> "Регистрация на этом сервере отключена"
+                        ServerRegistrationMode.OPEN -> ""
+                    }
+                )
+            }
+            val normalizedServer = ServerConfig.normalizeBaseUrl(target.apiUrl)
             val normalizedUsername = username.trim().lowercase()
             if (!normalizedServer.startsWith("http://") &&
                 !normalizedServer.startsWith("https://")
@@ -74,7 +131,6 @@ fun LoginScreen(
             }
             if (!register && password.isEmpty()) throw IllegalArgumentException("Введите пароль")
 
-            server = normalizedServer
             username = normalizedUsername
             val api = RelayApi(normalizedServer)
             val keyPair = if (register) {
@@ -82,14 +138,14 @@ fun LoginScreen(
                 val encryptedPrivateKey = crypto.encryptPrivateKey(generated.privateB64, password)
                 withContext(Dispatchers.IO) {
                     api.register(normalizedUsername, generated.publicB64, encryptedPrivateKey, password)
-                    SecurePrefs(context, normalizedUsername).saveKeys(generated)
+                    SecurePrefs(context, target.storageServerId, normalizedUsername).saveKeys(generated)
                 }
                 generated
             } else {
                 val result = withContext(Dispatchers.IO) {
                     api.login(normalizedUsername, password, totpCode.trim().takeIf { it.isNotBlank() })
                 }
-                val secure = SecurePrefs(context, normalizedUsername)
+                val secure = SecurePrefs(context, target.storageServerId, normalizedUsername)
                 val restored = if (result.encryptedPrivateKeyB64.isNotEmpty() &&
                     result.encryptedPrivateKeyB64 != "null"
                 ) {
@@ -107,7 +163,7 @@ fun LoginScreen(
                 restored
             }
             onLoginSuccess(
-                "$normalizedServer|$normalizedUsername",
+                target,
                 keyPair,
                 api,
                 normalizedUsername,
@@ -119,7 +175,14 @@ fun LoginScreen(
             error = if (e.invalid) "Неверный код 2FA — попробуйте ещё раз"
             else "На аккаунте включена 2FA: введите код из аутентификатора"
         } catch (e: Exception) {
-            error = e.message ?: "Ошибка сети"
+            error = if (selectedServer.isOfficial) {
+                e.message ?: "Ошибка сети"
+            } else {
+                when (e) {
+                    is IllegalArgumentException -> e.message
+                    else -> if (register) "Сервер не принял регистрацию" else "Не удалось войти на сервер"
+                } ?: "Ошибка запроса"
+            }
         } finally {
             isSubmitting = false
         }
@@ -127,20 +190,39 @@ fun LoginScreen(
 
     // Token first; the old password record is consumed only after a successful migration.
     LaunchedEffect(savedSession, legacyLogin) {
-        if (savedSession != null) {
+        if (!forceCustomServer && savedSession != null) {
             val sessionServer = ServerConfig.normalizeBaseUrl(savedSession.server)
             val sessionUsername = savedSession.username.trim().lowercase()
-            server = sessionServer
+            var target = registry.server(savedSession.serverId) ?: official
+            selectedServer = target
+            customMode = !target.isOfficial
+            serverInput = sessionServer
             username = sessionUsername
             try {
+                if (!target.isOfficial) {
+                    target = when (val inspection = withContext(Dispatchers.IO) {
+                        directory.inspect(target.origin)
+                    }) {
+                        is ServerInspection.Fresh -> throw IllegalStateException("Сервер потерян из локального реестра")
+                        is ServerInspection.Known -> registry.trust(inspection.info, target.kind)
+                        is ServerInspection.IdentityChanged -> {
+                            identityChange = inspection
+                            identityConfirmStep = false
+                            throw IllegalStateException(
+                                "Идентификатор сервера изменился. Автоматический вход заблокирован."
+                            )
+                        }
+                    }
+                    selectedServer = target
+                }
                 val api = RelayApi(sessionServer)
                 api.token = savedSession.token
                 val tokenValid = withContext(Dispatchers.IO) { api.heartbeat() }
                 val kp = withContext(Dispatchers.IO) {
-                    SecurePrefs(context, savedSession.username).loadKeys()
+                    SecurePrefs(context, target.storageServerId, savedSession.username).loadKeys()
                 }
                 if (tokenValid && kp != null) {
-                    onLoginSuccess("$sessionServer|$sessionUsername", kp, api, sessionUsername, true)
+                    onLoginSuccess(target, kp, api, sessionUsername, true)
                     return@LaunchedEffect
                 }
                 val nextStep = if (legacyLogin != null) "выполняю восстановление" else "войдите снова"
@@ -150,8 +232,9 @@ fun LoginScreen(
                 error = e.message ?: "Не удалось восстановить сессию"
             }
         }
-        if (legacyLogin != null) {
-            server = legacyLogin.server
+        if (!forceCustomServer && legacyLogin != null) {
+            selectedServer = official
+            serverInput = legacyLogin.server
             username = legacyLogin.username
             password = legacyLogin.password
             rememberMe = true
@@ -161,18 +244,6 @@ fun LoginScreen(
 
     GlassBackground {
         Box(modifier = Modifier.fillMaxSize()) {
-            IconButton(
-                onClick = { showSettings = !showSettings },
-                modifier = Modifier
-                    .align(Alignment.TopEnd)
-                    .statusBarsPadding()
-                    .padding(16.dp)
-                    .size(AetherStyle.SmallControlSize)
-                    .aetherControl()
-            ) {
-                Icon(Icons.Default.Settings, contentDescription = "Настройки", tint = aetherControlContent())
-            }
-
             Column(
                 modifier = Modifier
                     .align(Alignment.Center)
@@ -195,23 +266,94 @@ fun LoginScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
 
-                Spacer(modifier = Modifier.height(48.dp))
+                Spacer(modifier = Modifier.height(24.dp))
 
-                AnimatedVisibility(visible = showSettings) {
-                    OutlinedTextField(
-                        value = server,
-                        onValueChange = { server = it },
-                        label = { Text("Сервер") },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(bottom = 16.dp)
-                            .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
-                        singleLine = true,
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
-                        colors = aetherTextFieldColors(containerAlpha = 0f),
-                        shape = RoundedCornerShape(AetherStyle.FieldRadius)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    FilterChip(
+                        selected = !customMode,
+                        onClick = {
+                            customMode = false
+                            selectedServer = official
+                            error = null
+                        },
+                        label = { Text("Наши серверы") },
+                        modifier = Modifier.weight(1f),
+                    )
+                    FilterChip(
+                        selected = customMode,
+                        onClick = {
+                            customMode = true
+                            selectedServer = knownServers.firstOrNull() ?: official
+                            error = null
+                        },
+                        label = { Text("Пользовательские") },
+                        modifier = Modifier.weight(1f),
                     )
                 }
+
+                AnimatedVisibility(visible = customMode) {
+                    Column {
+                        Spacer(Modifier.height(16.dp))
+                        OutlinedTextField(
+                            value = serverInput,
+                            onValueChange = { serverInput = it },
+                            label = { Text("Адрес сервера") },
+                            supportingText = { Text("Домен, IP или ссылка aether://") },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .aetherField(shape = RoundedCornerShape(AetherStyle.FieldRadius)),
+                            singleLine = true,
+                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                            colors = aetherTextFieldColors(containerAlpha = 0f),
+                            shape = RoundedCornerShape(AetherStyle.FieldRadius),
+                        )
+                        Spacer(Modifier.height(10.dp))
+                        OutlinedButton(
+                            onClick = { coroutineScope.launch { discoverServer() } },
+                            enabled = serverInput.isNotBlank() && !isDiscovering,
+                            modifier = Modifier.fillMaxWidth(),
+                        ) {
+                            if (isDiscovering) {
+                                CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp)
+                                Spacer(Modifier.width(8.dp))
+                            }
+                            Text("Найти сервер")
+                        }
+                        if (!selectedServer.isOfficial) {
+                            Spacer(Modifier.height(12.dp))
+                            Card(modifier = Modifier.fillMaxWidth()) {
+                                Column(Modifier.padding(14.dp)) {
+                                    Text(selectedServer.displayName, fontWeight = FontWeight.Bold)
+                                    Text(selectedServer.hostLabel, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    selectedServer.pin?.let { pin ->
+                                        Spacer(Modifier.height(6.dp))
+                                        Text(
+                                            "Отпечаток: ${pin.fingerprintB64.chunked(4).take(4).joinToString(" ")}…",
+                                            style = MaterialTheme.typography.bodySmall,
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        knownServers.filter { it.id != selectedServer.id }.forEach { known ->
+                            TextButton(
+                                onClick = {
+                                    selectedServer = known
+                                    serverInput = known.origin
+                                    error = null
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                            ) {
+                                Text("${known.displayName} · ${known.hostLabel}")
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
 
                 OutlinedTextField(
                     value = username,
@@ -289,19 +431,81 @@ fun LoginScreen(
 
                 Spacer(modifier = Modifier.height(24.dp))
 
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                if (!customMode || selectedServer.registrationMode == ServerRegistrationMode.OPEN) {
+                    Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                        Text(
+                            text = if (isRegister) "Уже есть аккаунт? Войти" else "Нет аккаунта? Создать",
+                            color = MaterialTheme.colorScheme.primary,
+                            style = MaterialTheme.typography.bodyLarge,
+                            fontWeight = FontWeight.SemiBold,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .clickable { isRegister = !isRegister; error = null }
+                                .padding(8.dp)
+                        )
+                    }
+                } else if (!selectedServer.isOfficial) {
                     Text(
-                        text = if (isRegister) "Уже есть аккаунт? Войти" else "Нет аккаунта? Создать",
-                        color = MaterialTheme.colorScheme.primary,
-                        style = MaterialTheme.typography.bodyLarge,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .clickable { isRegister = !isRegister; error = null }
-                            .padding(8.dp)
+                        when (selectedServer.registrationMode) {
+                            ServerRegistrationMode.APPROVAL -> "Регистрация требует подтверждения администратора"
+                            ServerRegistrationMode.INVITE_ONLY -> "Регистрация доступна только по приглашению"
+                            ServerRegistrationMode.CLOSED -> "Регистрация на этом сервере отключена"
+                            ServerRegistrationMode.OPEN -> ""
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.bodyMedium,
                     )
                 }
             }
         }
+    }
+
+    identityChange?.let { change ->
+        AlertDialog(
+            onDismissRequest = {
+                identityChange = null
+                identityConfirmStep = false
+            },
+            title = { Text("Идентификатор сервера изменился") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        if (identityConfirmStep) {
+                            "Подтвердите ещё раз. Новый ключ может принадлежать другому владельцу."
+                        } else {
+                            "Это может означать переустановку сервера или попытку подмены. Сверьте новый отпечаток с владельцем другим способом."
+                        }
+                    )
+                    Text(
+                        "Было: ${change.oldPin.fingerprintB64.chunked(4).take(4).joinToString(" ")}…\n" +
+                            "Стало: ${change.info.fingerprintB64.chunked(4).take(4).joinToString(" ")}…",
+                        style = MaterialTheme.typography.bodySmall,
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    if (!identityConfirmStep) {
+                        identityConfirmStep = true
+                    } else {
+                        selectedServer = registry.acceptChangedIdentity(change.info, change.record)
+                        serverInput = selectedServer.origin
+                        knownServers = registry.servers().filterNot { it.isOfficial }
+                        identityChange = null
+                        identityConfirmStep = false
+                        error = null
+                    }
+                }) {
+                    Text(if (identityConfirmStep) "Доверять новому серверу" else "Я сверил отпечаток")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    identityChange = null
+                    identityConfirmStep = false
+                }) { Text("Отмена") }
+            },
+        )
     }
 }

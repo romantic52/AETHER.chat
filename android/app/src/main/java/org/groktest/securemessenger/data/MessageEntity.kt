@@ -17,5 +17,13 @@ data class MessageEntity(
     val reactions: String = "",       // JSON {userId: emoji}
     val status: Int = 1,              // -1=ошибка, 0=отправляется, 1=отправлено, 2=доставлено, 3=прочитано
     val isEdited: Boolean = false,    // сообщение было отредактировано
-    val forwardedFrom: String? = null // ID автора оригинала при пересылке
+    val forwardedFrom: String? = null, // ID автора оригинала при пересылке
+    /** Полный wire нужен для mid и исчезающих полей; UI по-прежнему читает [text]. */
+    val payloadJson: String? = null,
+)
+
+data class EphemeralDraft(
+    val kind: String,
+    val ttlSeconds: Long,
+    val viewLimit: Int? = null,
 )

@@ -11,6 +11,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.groktest.securemessenger.api.RelayApi
 import org.groktest.securemessenger.crypto.E2ECrypto
@@ -39,6 +40,7 @@ import java.util.UUID
  */
 class MessageRepository(
     private val api: RelayApi,
+    serverId: String,
     private val keys: E2ECrypto.KeyPair,
     val myId: String,
     private val store: CoreStore,
@@ -55,6 +57,7 @@ class MessageRepository(
     // CONFLATED: множественные сигналы «есть что отправить» схлопываются в один
     private val outboxSignal = Channel<Unit>(Channel.CONFLATED)
     private val mediaDownloadLocks = java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+    private val transportRouter = TransportRouter(store, listOf(ServerTransport(serverId)))
     @Volatile private var appActive = true
 
     // ------------------------------------------------------------------
@@ -328,7 +331,17 @@ class MessageRepository(
     /** Единая отправка wire-нагрузки: группа — общий ключ, личка — Olm-копия
      * каждому устройству получателя (multi-device fanout). Возвращает message_id
      * первой копии. */
-    private suspend fun sendWire(peerId: String, wire: String, clientMsgId: String? = null): String {
+    private suspend fun sendWire(peerId: String, wire: String, clientMsgId: String? = null): String =
+        transportRouter.send(
+            DeliveryRequest(
+                messageId = clientMsgId,
+                peerId = peerId,
+                contentKind = contentKindOf(wire),
+                sealAndSend = { sendViaServer(peerId, wire, clientMsgId) },
+            )
+        )
+
+    private suspend fun sendViaServer(peerId: String, wire: String, clientMsgId: String?): String {
         if (isGroupPeer(peerId)) {
             return api.sendMessage(myId, peerId, encryptGroupWire(peerId, wire), clientMsgId = clientMsgId)
         }
@@ -337,7 +350,18 @@ class MessageRepository(
         // копия для остальных устройств аккаунта пропала бы навсегда (проверено
         // вживую: десктоп не получил сообщение). Пробрасываем — outbox повторит
         // с backoff. Пустой список — легаси-аккаунт без устройств, primary законен.
-        val devices = peerDevices(id).ifEmpty { listOf(uniffi.sm_core.DeviceInfo("primary", "")) }
+        val devices = peerDevices(id).ifEmpty {
+            listOf(
+                uniffi.sm_core.DeviceInfo(
+                    deviceId = "primary",
+                    identityKeyB64 = "",
+                    ed25519KeyB64 = null,
+                    identitySigB64 = null,
+                    masterKeyB64 = null,
+                    deviceSigB64 = null,
+                )
+            )
+        }
         var firstId: String? = null
         var firstError: Exception? = null
         for ((index, dev) in devices.withIndex()) {
@@ -395,11 +419,14 @@ class MessageRepository(
         val batch = synchronized(pendingCopies) { pendingCopies.toList() }
         for (copy in batch) {
             val done = try {
+                transportRouter.requireAvailableRoute(copy.peerId, contentKindOf(copy.wire))
                 val envelope = ratchetMutex.withLock {
                     encryptDirectForDeviceLocked(copy.peerId, copy.deviceId, copy.wire)
                 }
                 api.sendMessageDevice(myId, copy.peerId, envelope, copy.clientId, copy.deviceId)
                 true
+            } catch (_: WaitingForNearbyException) {
+                false
             } catch (e: Exception) {
                 copy.attempts += 1
                 if (copy.attempts >= MAX_COPY_ATTEMPTS) {
@@ -460,6 +487,17 @@ class MessageRepository(
             while (true) {
                 if (appActive) runCatching { api.heartbeat() }
                 delay(25_000)
+            }
+        }
+        scope.launch {
+            while (true) {
+                store.dueEphemeral().forEach { messageId ->
+                    store.getMessageByMsgId(messageId)?.text?.let(::mediaRef)?.let { media ->
+                        mediaCacheFile(media.fileId, media.nonce, media.key).delete()
+                    }
+                    store.purgeEphemeral(messageId)
+                }
+                delay(1_000)
             }
         }
         scope.launch { outboxLoop() }
@@ -696,6 +734,19 @@ class MessageRepository(
                 crypto.decrypt(E2ECrypto.Envelope(m.senderPubkeyB64, m.nonceB64, m.ciphertextB64), keys)
             }
         }
+        val logicalId = runCatching { uniffi.sm_core.messageIdFromPayload(plain) }
+            .getOrNull()
+            ?.takeIf(String::isNotBlank)
+            ?: m.id
+        if (logicalId != m.id) {
+            store.getMessageByMsgId(logicalId)?.let { existing ->
+                return if (
+                    !m.isGroupEnvelope && !existing.isOut &&
+                    !m.senderId.equals(myId, ignoreCase = true)
+                ) m.senderId else null
+            }
+        }
+
         val obj = try { JSONObject(plain) } catch (e: Exception) { null }?.let { normalizeIncomingPayload(it) }
         val ptype = obj?.optString("type") ?: ""
 
@@ -765,7 +816,7 @@ class MessageRepository(
             ensureChatExists(msgPeerId, forceGroup = groupLike)
             store.insertMessage(
                 MessageEntity(
-                    msgId = m.id,
+                    msgId = logicalId,
                     peerId = msgPeerId,
                     isOut = false,
                     text = "[Вложение не поддерживается этой версией]",
@@ -797,7 +848,7 @@ class MessageRepository(
 
         store.insertMessage(
             MessageEntity(
-                msgId = m.id,
+                msgId = logicalId,
                 peerId = msgPeerId,
                 isOut = false,
                 text = storeText,
@@ -808,6 +859,7 @@ class MessageRepository(
                 forwardedFrom = fwdFrom
             )
         )
+        store.trackEphemeral(logicalId, plain, msgTimestamp)
         if (ptype == "media" && shouldAutoCache(storeText)) {
             scope.launch { downloadMedia(storeText) }
         }
@@ -824,21 +876,47 @@ class MessageRepository(
     // ------------------------------------------------------------------
 
     /** Мгновенно сохраняет текст в чат (status=0) и будит очередь. Без сети. */
-    suspend fun enqueueText(peerId: String, text: String, replyToId: String?, replyToText: String?): Exception? {
+    suspend fun enqueueText(
+        peerId: String,
+        text: String,
+        replyToId: String?,
+        replyToText: String?,
+        ephemeral: EphemeralDraft? = null,
+    ): Exception? {
         return try {
             ensureChatExists(peerId, fetchProfile = false) // без сети: вставка мгновенная
+            val messageId = uniffi.sm_core.newMessageId()
+            val timestamp = System.currentTimeMillis()
+            val basePayload = uniffi.sm_core.wireEncode(
+                uniffi.sm_core.WireMessage.Text(text, replyToId, replyToText, null)
+            )
+            val ephemeralPayload = ephemeral?.let { draft ->
+                uniffi.sm_core.payloadWithEphemeral(
+                    basePayload,
+                    uniffi.sm_core.EphemeralSpec(
+                        kind = draft.kind,
+                        ttlSeconds = draft.ttlSeconds,
+                        trigger = uniffi.sm_core.EphemeralTrigger.FIRST_OPEN,
+                        absoluteMs = null,
+                        viewLimit = draft.viewLimit,
+                    ),
+                )
+            } ?: basePayload
+            val payload = withMessageId(ephemeralPayload, messageId)
             store.insertMessage(
                 MessageEntity(
-                    msgId = UUID.randomUUID().toString(),
+                    msgId = messageId,
                     peerId = peerId,
                     isOut = true,
                     text = text,
-                    timestamp = System.currentTimeMillis(),
+                    timestamp = timestamp,
                     replyToId = replyToId,
                     replyToText = replyToText,
-                    status = 0
+                    status = 0,
+                    payloadJson = payload,
                 )
             )
+            store.trackEphemeral(messageId, payload, timestamp)
             outboxSignal.trySend(Unit)
             null
         } catch (e: Exception) { e }
@@ -851,7 +929,7 @@ class MessageRepository(
             ensureChatExists(targetPeerId, fetchProfile = false)
             store.insertMessage(
                 MessageEntity(
-                    msgId = UUID.randomUUID().toString(),
+                    msgId = uniffi.sm_core.newMessageId(),
                     peerId = targetPeerId,
                     isOut = true,
                     text = msg.text,
@@ -873,10 +951,21 @@ class MessageRepository(
         }
     }
 
+    suspend fun openEphemeral(message: MessageEntity): Boolean = withContext(Dispatchers.IO) {
+        message.payloadJson?.let { store.openEphemeral(message.msgId, it) } ?: true
+    }
+
+    suspend fun closeEphemeral(message: MessageEntity) = withContext(Dispatchers.IO) {
+        message.payloadJson?.let { store.closeEphemeral(message.msgId, it) }
+    }
+
     /** Восстанавливает wire-JSON исходящего из полей entity. */
     private fun buildWire(msg: MessageEntity): String {
+        msg.payloadJson?.takeIf(String::isNotBlank)?.let {
+            return withMessageId(it, msg.msgId)
+        }
         val isMedia = msg.text.startsWith("{\"type\":\"media\"")
-        return if (isMedia) {
+        val wire = if (isMedia) {
             val o = JSONObject(msg.text)
             if (msg.forwardedFrom != null) o.put("fwd_from", msg.forwardedFrom)
             o.toString()
@@ -887,6 +976,7 @@ class MessageRepository(
             if (msg.forwardedFrom != null) o.put("fwd_from", msg.forwardedFrom)
             o.toString()
         }
+        return withMessageId(wire, msg.msgId)
     }
 
     private suspend fun outboxLoop() {
@@ -916,6 +1006,9 @@ class MessageRepository(
                         sendWire(msg.peerId, buildWire(msg), clientMsgId = msg.msgId)
                         store.updateStatus(msg.msgId, 1)
                     }
+                    attempts.remove(msg.msgId)
+                } catch (e: WaitingForNearbyException) {
+                    store.updateStatus(msg.msgId, 4)
                     attempts.remove(msg.msgId)
                 } catch (e: KeyTrustStore.KeyChangedException) {
                     android.util.Log.w("Outbox", "KeyChanged for ${msg.peerId} msg=${msg.msgId}", e)
@@ -1006,6 +1099,11 @@ class MessageRepository(
     private suspend fun sendUris(peerId: String, uris: List<Uri>, caption: String?, asFile: Boolean): Exception? {
         return try {
             for (uri in uris) {
+                val selectedMime = resolver.getType(uri) ?: "application/octet-stream"
+                transportRouter.requireAvailableRoute(
+                    peerId,
+                    if (asFile) "file" else mediaKindFor(selectedMime),
+                )
                 // (#A4) Стриминг: plaintext шифруется кусками во временный файл,
                 // файл уходит на сервер тоже стримом. Раньше readBytes() + base64
                 // держали в памяти ~3.5 размера файла → OOM на слабых устройствах.
@@ -1022,7 +1120,7 @@ class MessageRepository(
                     val fileId = api.uploadFile(tmp)
                     cachePlaintext(uri, mediaCacheFile(fileId, nonceB64, symKey.keyB64))
 
-                    val mimeType = resolver.getType(uri) ?: "application/octet-stream"
+                    val mimeType = selectedMime
                     val jsonObj = JSONObject()
                         .put("type", "media")
                         .put("file_id", fileId)
@@ -1048,8 +1146,9 @@ class MessageRepository(
                     tmp.delete()
                 }
 
-                val clientId = UUID.randomUUID().toString()
-                sendWire(peerId, jsonText, clientMsgId = clientId)
+                val clientId = uniffi.sm_core.newMessageId()
+                val payload = withMessageId(jsonText, clientId)
+                sendWire(peerId, payload, clientMsgId = clientId)
 
                 ensureChatExists(peerId)
                 store.insertMessage(
@@ -1057,7 +1156,7 @@ class MessageRepository(
                         msgId = clientId,
                         peerId = peerId,
                         isOut = true,
-                        text = jsonText,
+                        text = payload,
                         timestamp = System.currentTimeMillis(),
                         status = 1
                     )
@@ -1080,7 +1179,7 @@ class MessageRepository(
         waveform: List<Int>? = null
     ): Exception? {
         return try {
-            val clientId = UUID.randomUUID().toString()
+            val clientId = uniffi.sm_core.newMessageId()
             val wireKind = if (kind == "video_note" || kind == "circle") "video_msg" else kind
             val localFile = localRecordingFile(clientId)
             if (!source.renameTo(localFile)) {
@@ -1122,6 +1221,7 @@ class MessageRepository(
     }
 
     private suspend fun uploadLocalRecording(msg: MessageEntity) {
+        transportRouter.requireAvailableRoute(msg.peerId, contentKindOf(msg.text))
         val localId = localRecordingId(msg.text)
             ?: throw IllegalArgumentException("Нет локальной записи")
         val source = findLocalRecordingFile(localId)
@@ -1315,6 +1415,21 @@ class MessageRepository(
         // ставит только sendRecording для собственных записей диктофона.
         else -> "file"
     }
+
+    private fun contentKindOf(wire: String): String = runCatching {
+        val value = JSONObject(wire)
+        when (value.optString("kind").ifBlank { value.optString("type") }) {
+            "image" -> "image"
+            "video", "video_msg", "video_note", "circle" -> "video"
+            "voice", "audio" -> "voice"
+            "file", "media" -> "file"
+            else -> "text"
+        }
+    }.getOrDefault("text")
+
+    private fun withMessageId(wire: String, messageId: String): String = runCatching {
+        uniffi.sm_core.payloadWithMessageId(wire, messageId)
+    }.getOrDefault(wire)
 
     private fun normalizeIncomingPayload(obj: JSONObject): JSONObject {
         val type = obj.optString("type")

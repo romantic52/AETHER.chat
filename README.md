@@ -90,18 +90,20 @@ proxy. Windows dev scripts: [`scripts/run_server.ps1`](scripts/run_server.ps1).
 ## Core (Rust)
 
 `core/` is the shared crypto/protocol/storage for Android and iOS. Android
-build: [`core/build_android.ps1`](core/build_android.ps1) (drops `.so` into
-`android/app/src/main/jniLibs` and generates Kotlin bindings). iOS build:
+build: [`core/build_android.sh`](core/build_android.sh) on macOS or
+[`core/build_android.ps1`](core/build_android.ps1) on Windows (drops `.so`
+into `android/app/src/main/jniLibs` and generates Kotlin bindings). iOS build:
 [`ios/build_core_ios.sh`](ios/build_core_ios.sh) (macOS — builds the
 XCFramework + Swift bindings).
 
 ## Android
 
-Open [`android/`](android/) in Android Studio. Run `core/build_android.ps1`
-before the first build, otherwise the core `.so` and Kotlin bindings are
-missing. Console APK build: [`scripts/build_apk.ps1`](scripts/build_apk.ps1)
-(PowerShell + gradlew; bat/cmd break on encoding). The emulator reaches the
-server at `http://10.0.2.2:8765`. Set your server URL on the login screen.
+Open [`android/`](android/) in Android Studio. Run `core/build_android.sh` on
+macOS or `core/build_android.ps1` on Windows before the first build, otherwise
+the core `.so` and Kotlin bindings are missing. Console APK build:
+[`scripts/build_apk.ps1`](scripts/build_apk.ps1) (PowerShell + gradlew; bat/cmd
+break on encoding). The emulator reaches the server at `http://10.0.2.2:8765`.
+Set your server URL on the login screen.
 
 ## iOS
 
