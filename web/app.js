@@ -566,24 +566,57 @@ function spaceKey(prefix, suffix) {
     return suffix ? `${prefix}${scope}_${suffix}` : `${prefix}${scope}`;
 }
 
+// Метки серверов, уже опрошенных в этой вкладке. Кеш нужен не ради скорости,
+// а ради ОДИНАКОВОСТИ: метку выводят два разных пути — вход и переключение
+// пространства, — и разойтись они не должны.
+const serverTagCache = new Map();
+
+/// Постоянная метка сервера по его адресу.
+///
+/// Порядок источников важен и одинаков для всех вызывающих:
+///   1. реестр — там лежит server_id уже добавленного сервера;
+///   2. сам сервер — он представляется на /server/info;
+///   3. адрес — для старого инстанса, который представляться не умеет.
+///
+/// Разойдись эти пути — и одно пространство получило бы два разных имени:
+/// переписка нашлась бы, а пароль или ключи нет.
+async function resolveServerTag(origin) {
+    if (!origin) return '';
+    if (serverTagCache.has(origin)) return serverTagCache.get(origin);
+
+    const known = aetherLoadServers().servers.find(s => s.origin === origin);
+    let tag = known && known.id ? known.id : null;
+    if (!tag) {
+        try {
+            const res = await fetch(`${origin}/server/info`, { method: 'GET' });
+            if (res.ok) {
+                const info = await res.json();
+                if (info && info.server_id) tag = info.server_id;
+            }
+        } catch (e) { /* старый инстанс: меткой послужит адрес */ }
+    }
+    tag = tag || origin;
+    serverTagCache.set(origin, tag);
+    return tag;
+}
+
 /// Установить пространство и разово перенести в него старые данные.
 async function applyStorageScope() {
     if (!myId) return;
-    let tag = serverUrl;
-    try {
-        // Сервер, который умеет представляться, даёт постоянный server_id.
-        // Старый инстанс отвечает 404 — тогда меткой служит адрес.
-        const res = await fetch(`${serverUrl}/server/info`, { method: 'GET' });
-        if (res.ok) {
-            const info = await res.json();
-            if (info && info.server_id) tag = info.server_id;
-        }
-    } catch (e) { /* адрес как метка — этого достаточно для разделения */ }
+    const tag = await resolveServerTag(serverUrl);
     storageScope = window.aetherStorageScope(tag, myId);
     const moved = window.aetherMigrateSpaceStorage(tag, myId);
     if (moved && moved.migrated) console.log(`Хранилище перенесено в пространство ${moved.scope}: ${moved.migrated} ключей`);
 }
 let myPin = '';
+// Пароли пространств, в которые уже входили в этой вкладке. ТОЛЬКО в памяти:
+// никуда не сохраняются и стираются при выходе. Держать их нужно потому, что
+// приватный ключ выводится из пароля — без него переключение обратно в
+// пространство означало бы вводить пароль каждый раз.
+//
+// Уровень доступности тот же, что у myPin, который приложение и так хранит
+// в глобальной переменной всю сессию: нового вида утечки это не создаёт.
+const spacePasswords = new Map();
 let serverUrl = '';
 let myKeys = null;
 let serverPublicKeyB64 = '';
@@ -659,6 +692,87 @@ function formatServerError(data, fallback) {
         if (messages.length) return messages.join('; ');
     }
     return fallback;
+}
+
+// --- Переключатель пространства в шапке ---------------------------------------
+//
+// Намеренно не колонка серверов слева: главная сущность Aether — чаты и люди,
+// а сервер это инфраструктурный уровень, к которому обращаются изредка.
+
+function currentSpaceTitle() {
+    if (!serverUrl) return 'Чаты';
+    const rec = aetherLoadServers().servers.find(s => s.origin === serverUrl);
+    if (rec) return rec.displayName;
+    return serverUrl.replace(/^https?:\/\//, '');
+}
+
+function refreshSpaceTitle() {
+    const el = document.getElementById('space-title');
+    if (el) el.textContent = currentSpaceTitle();
+}
+
+function renderSpaceMenu() {
+    const menu = document.getElementById('space-menu');
+    if (!menu) return;
+    const esc = v => String(v == null ? '' : v).replace(/[&<>"']/g,
+        c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+    const state = aetherLoadServers();
+    // Текущий сервер может ещё не быть в реестре — например, официальный,
+    // добавленный до появления мультисерверности. Показываем его всё равно.
+    const rows = state.servers.slice();
+    if (serverUrl && !rows.some(s => s.origin === serverUrl)) {
+        rows.unshift({ id: '', origin: serverUrl, displayName: currentSpaceTitle(), accounts: [] });
+    }
+
+    const items = rows.map(rec => {
+        const active = rec.origin === serverUrl;
+        const host = rec.origin.replace(/^https?:\/\//, '');
+        const who = active && myId ? ` · @${esc(myId)}` : '';
+        return `<div class="aether-space-item" data-origin="${esc(rec.origin)}" data-user="${esc(active ? myId : (rec.accounts && rec.accounts[0] ? rec.accounts[0] : myId))}">
+                    <div><div class="name">${esc(rec.displayName)}</div><div class="sub">${esc(host)}${who}</div></div>
+                    ${active ? '<span class="mark">✓</span>' : ''}
+                </div>`;
+    }).join('');
+
+    menu.innerHTML = items +
+        '<div class="aether-space-sep"></div>' +
+        '<div class="aether-space-action" id="space-add">Добавить сервер</div>';
+
+    menu.querySelectorAll('.aether-space-item').forEach(item => {
+        item.addEventListener('click', async () => {
+            menu.classList.add('hidden');
+            const origin = item.dataset.origin;
+            const user = item.dataset.user;
+            if (origin === serverUrl && user === myId) return;
+            await switchSpace(origin, user);
+            refreshSpaceTitle();
+        });
+    });
+    // «Добавить сервер» ведёт на экран входа: там живёт вкладка с обнаружением.
+    document.getElementById('space-add').addEventListener('click', () => {
+        menu.classList.add('hidden');
+        chatScreen.classList.add('hidden');
+        loginScreen.classList.remove('hidden');
+        const custom = document.getElementById('tab-custom');
+        if (custom) custom.click();
+    });
+}
+
+if (typeof window !== 'undefined') {
+    window.addEventListener('DOMContentLoaded', () => {
+        const btn = document.getElementById('space-switch-btn');
+        const menu = document.getElementById('space-menu');
+        if (!btn || !menu) return;
+        btn.addEventListener('click', e => {
+            e.stopPropagation();
+            const hidden = menu.classList.contains('hidden');
+            if (hidden) renderSpaceMenu();
+            menu.classList.toggle('hidden', !hidden);
+        });
+        document.addEventListener('click', () => menu.classList.add('hidden'));
+        menu.addEventListener('click', e => e.stopPropagation());
+    });
 }
 
 // Экраны выбора сервера живут в servers.js: app.js и так велик, а работа с
@@ -2209,6 +2323,7 @@ async function prepareLoginState(password) {
     // Пространство определяется ПЕРЕД первым чтением хранилища: дальше всё
     // читается и пишется уже под ключами этого сервера и этого аккаунта.
     await applyStorageScope();
+    if (storageScope) spacePasswords.set(storageScope, password);
 
     const salt = getSalt(myId);
     
@@ -2258,6 +2373,7 @@ async function prepareLoginState(password) {
     
     loginScreen.classList.add('hidden');
     chatScreen.classList.remove('hidden');
+    refreshSpaceTitle();
     
     showStatus('', '');
     
@@ -2399,14 +2515,104 @@ async function performRegister() {
     registerBtn.disabled = false;
 }
 
-async function logout() {
-    const token = sessionToken;
+/// Переключиться на другое пространство без перезагрузки страницы.
+///
+/// Пространство — это сервер плюс аккаунт. Всё состояние принадлежит одному
+/// пространству, поэтому переключение обязано начинаться с полного разбора:
+/// оставить хоть что-то — значит показать чужую переписку или зашифровать
+/// сообщение ключами прежнего аккаунта.
+///
+/// Если пароль этого пространства уже вводили в этой вкладке — входим молча.
+/// Иначе показываем экран входа с подставленными адресом и логином: приватный
+/// ключ выводится из пароля, и взять его больше неоткуда.
+async function switchSpace(origin, userId) {
+    const uid = String(userId || '').toLowerCase();
+    if (!origin || !uid) return false;
+
+    // Метка выводится ТЕМ ЖЕ путём, что при входе: иначе пространство получит
+    // два разных имени и пароль будет искаться не по тому ключу.
+    const scope = window.aetherStorageScope(await resolveServerTag(origin), uid);
+    const password = spacePasswords.get(scope);
+
+    teardownSession();
+    serverUrl = origin;
+    myId = uid;
+    localStorage.setItem('last_server_url', origin);
+
+    if (!password) {
+        // Пароля нет — просим его, но избавляем человека от ввода адреса и логина.
+        chatScreen.classList.add('hidden');
+        loginScreen.classList.remove('hidden');
+        serverInput.value = origin;
+        usernameInput.value = uid;
+        passwordInput.value = '';
+        passwordInput.focus();
+        showStatus(`Введите пароль для ${uid} на этом сервере`, '');
+        return false;
+    }
+
+    // Вход выполняется ПОЛНОСТЬЮ тем же путём, что обычный: loginOnServer
+    // только получает токен, а ключи, состояние ратчета, область хранилища и
+    // историю поднимает prepareLoginState. Позвать одно без другого — значит
+    // показать экран чатов без ключей: приложение выглядит рабочим, а отправить
+    // ничего не может.
+    passwordInput.value = password;
+    usernameInput.value = uid;
+    serverInput.value = origin;
+    chatScreen.classList.add('hidden');
+    loginScreen.classList.remove('hidden');
+    await performLogin();
+    passwordInput.value = '';
+
+    const ok = !!storageScope && !!myKeys;
+    if (!ok) {
+        // Не поднялись — оставляем человека на экране входа, а не в полурабочем
+        // состоянии. Пароль мог протухнуть: аккаунт удалили, сервер сбросили.
+        spacePasswords.delete(scope);
+        showStatus(`Не удалось войти как ${uid}. Введите пароль заново.`, 'error');
+    }
+    return ok;
+}
+
+/// Разобрать сессию: разорвать соединения и очистить состояние в памяти.
+///
+/// Вынесено из logout, потому что нужно дважды: при выходе и при переключении
+/// пространства. Разница в том, что делать ПОСЛЕ: выход перезагружает страницу,
+/// переключение поднимает другое пространство на том же месте.
+///
+/// Всё, что здесь очищается, принадлежит ОДНОМУ пространству. Оставить хоть
+/// что-то — значит показать в новом пространстве чужую переписку или, хуже,
+/// зашифровать сообщение ключами прежнего аккаунта.
+function teardownSession() {
     try { if (realtimeWs) { realtimeWs.onclose = null; realtimeWs.close(); } } catch (_) {}
+    realtimeWs = null;
     if (pollInterval) clearInterval(pollInterval);
     pollInterval = null;
     stopWsPing();
     if (wsReconnectTimer) clearTimeout(wsReconnectTimer);
     wsReconnectTimer = null;
+
+    sessionToken = '';
+    myKeys = null;
+    myPin = '';
+    serverPublicKeyB64 = '';
+    loginEncPrivKeyB64 = '';
+    loginEncOlmAccountB64 = '';
+    olmAccountPickle = '';
+    olmIdentityB64 = '';
+    olmSessions = Object.create(null);
+    olmIdentityPins = Object.create(null);
+    pendingKeyChanges = Object.create(null);
+    chatSettingsCache = Object.create(null);
+    messages = [];
+    selectedPeer = null;
+    myProfile = { username: '', display_name: '', avatar_data: '' };
+    storageScope = '';
+}
+
+async function logout() {
+    const token = sessionToken;
+    teardownSession();
 
     if (token && serverUrl) {
         try {
@@ -2421,16 +2627,10 @@ async function logout() {
     // Clear remember-me settings to prevent auto-login
     localStorage.removeItem('remember_me');
     localStorage.removeItem('remember_username');
-    
-    sessionToken = '';
-    myKeys = null;
-    serverPublicKeyB64 = '';
-    loginEncOlmAccountB64 = '';
-    olmAccountPickle = '';
-    olmIdentityB64 = '';
-    olmSessions = Object.create(null);
-    olmIdentityPins = Object.create(null);
-    // Reload the page to cleanly wipe all JS state, caches, and UI variables
+    // Пароли пространств живут только в памяти вкладки — выход стирает их.
+    spacePasswords.clear();
+    // Перезагрузка добивает всё, до чего мог не дотянуться teardownSession:
+    // таймеры сторонних экранов, состояние звонков, кеши DOM.
     window.location.reload();
 }
 

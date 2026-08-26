@@ -2540,3 +2540,28 @@ button.tg-btn-primary:hover,
 .aether-card-fp p { margin: 4px 0 0; font-size: 11px; color: var(--text-secondary, #8b8f96); }
 .aether-note { margin: 8px 0 0; font-size: 12px; color: var(--text-secondary, #8b8f96); }
 .aether-danger { color: var(--danger-color, #e5484d) !important; }
+
+/* Переключатель пространства в шапке списка чатов. */
+.aether-space-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text-primary, #fff); font-size: 17px; font-weight: 600;
+    display: inline-flex; align-items: center; padding: 4px 8px; border-radius: 8px;
+}
+.aether-space-btn:hover { background: var(--bg-hover, #24262b); }
+.aether-space-menu {
+    position: absolute; top: 52px; left: 50%; transform: translateX(-50%);
+    min-width: 240px; max-width: 320px; z-index: 60; padding: 6px;
+    background: var(--bg-secondary, #1b1c20); border-radius: 14px;
+    box-shadow: 0 12px 32px rgba(0,0,0,.45);
+}
+.aether-space-item {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    padding: 9px 10px; border-radius: 10px; cursor: pointer;
+}
+.aether-space-item:hover { background: var(--bg-hover, #24262b); }
+.aether-space-item .name { color: var(--text-primary, #fff); font-size: 14px; }
+.aether-space-item .sub { color: var(--text-secondary, #8b8f96); font-size: 12px; margin-top: 2px; }
+.aether-space-item .mark { color: var(--accent-color, #5b8cff); font-size: 13px; }
+.aether-space-sep { height: 1px; margin: 6px 4px; background: var(--border-color, #2a2c31); }
+.aether-space-action { color: var(--accent-color, #5b8cff); font-size: 14px; padding: 9px 10px; cursor: pointer; border-radius: 10px; }
+.aether-space-action:hover { background: var(--bg-hover, #24262b); }
