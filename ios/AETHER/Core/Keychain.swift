@@ -81,6 +81,12 @@ enum Keychain {
     static func dbKeyKey(_ serverId: String) -> String {
         "srv.\(serverId).dbkey"
     }
+    /// Ключ обнаружения рядом. Свой у каждой личности: сброс ключа мгновенно
+    /// разрывает связь со всеми прошлыми объявлениями в эфир.
+    static func discoveryKey(_ serverId: String, _ userId: String) -> String {
+        "srv.\(serverId).acct.\(userId.lowercased()).discovery"
+    }
+
     /// Поданная и ещё не решённая заявка на регистрацию (request_id + claim_token).
     static func pendingRequestKey(_ serverId: String) -> String {
         "srv.\(serverId).pending_request"

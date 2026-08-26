@@ -67,6 +67,31 @@ struct ContactsView: View {
                         .listRowBackground(Color.clear)
                         .listRowSeparator(.hidden)
                         .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
+
+                        // «Рядом» живёт среди людей, а не отдельной вкладкой:
+                        // это способ найти собеседника, а не самостоятельный
+                        // раздел приложения. Шестая вкладка в доке только
+                        // размыла бы главное — чаты и люди.
+                        NavigationLink {
+                            NearbyView().environmentObject(session)
+                        } label: {
+                            HStack(spacing: 12) {
+                                ZStack {
+                                    Circle().fill(palette.accent.opacity(0.85))
+                                    Image(systemName: "dot.radiowaves.left.and.right")
+                                        .foregroundStyle(.white)
+                                }.frame(width: 50, height: 50)
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("Рядом").font(.system(size: 17, weight: .medium))
+                                        .foregroundStyle(palette.textPrimary)
+                                    Text("Пользователи Aether поблизости")
+                                        .font(.system(size: 14)).foregroundStyle(palette.textSecondary)
+                                }
+                            }
+                        }
+                        .listRowBackground(Color.clear)
+                        .listRowSeparator(.hidden)
+                        .listRowInsets(EdgeInsets(top: 8, leading: 16, bottom: 8, trailing: 16))
                     }
 
                     if !localContacts.isEmpty {

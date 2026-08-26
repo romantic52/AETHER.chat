@@ -42,6 +42,8 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Æther использует Bluetooth, чтобы находить пользователей рядом и передавать сообщения напрямую, без сервера.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>Æther использует камеру для фото, видео-кружков и звонков.</string>
 	<key>NSFaceIDUsageDescription</key>

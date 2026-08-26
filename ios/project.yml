@@ -64,6 +64,7 @@ targets:
         # а не общее ослабление проверок.
         NSAppTransportSecurity:
           NSAllowsLocalNetworking: true
+        NSBluetoothAlwaysUsageDescription: "Æther использует Bluetooth, чтобы находить пользователей рядом и передавать сообщения напрямую, без сервера."
         NSPhotoLibraryUsageDescription: "Æther получает доступ к фото для отправки медиа."
         NSFaceIDUsageDescription: "Face ID разблокирует доступ к вашим чатам."
         UIBackgroundModes:

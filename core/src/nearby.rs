@@ -145,6 +145,46 @@ pub fn nearby_is_beacon(beacon: Vec<u8>) -> bool {
     beacon.len() == BEACON_LEN && beacon[0] == BEACON_VERSION
 }
 
+/// Пространство имён Aether в первом байте UUID-маячка.
+const UUID_NAMESPACE: u8 = 0xAE;
+
+/// Упаковать маячок в 128-битный UUID сервиса.
+///
+/// Так требует платформа: iOS разрешает объявлять в эфир только имя и список
+/// UUID сервисов — произвольные данные рекламы приложению недоступны. Значит
+/// единственное место, куда помещаются 15 байт маячка, это сам UUID.
+/// Формат живёт в ядре, чтобы Android собирал и разбирал те же байты.
+///
+/// Раскладка: [0xAE | маячок(15)] = ровно 16 байт.
+#[uniffi::export]
+pub fn nearby_beacon_to_uuid(beacon: Vec<u8>) -> Result<String, CoreError> {
+    if beacon.len() != BEACON_LEN {
+        return Err(CoreError::bad("маячок должен быть 15 байт"));
+    }
+    let mut bytes = [0u8; 16];
+    bytes[0] = UUID_NAMESPACE;
+    bytes[1..].copy_from_slice(&beacon);
+    let hex: String = bytes.iter().map(|b| format!("{b:02X}")).collect();
+    Ok(format!("{}-{}-{}-{}-{}", &hex[0..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..32]))
+}
+
+/// Достать маячок из объявленного UUID. None — это не наш UUID.
+#[uniffi::export]
+pub fn nearby_uuid_to_beacon(uuid: String) -> Option<Vec<u8>> {
+    let hex: String = uuid.chars().filter(|c| *c != '-').collect();
+    if hex.len() != 32 {
+        return None;
+    }
+    let mut bytes = Vec::with_capacity(16);
+    for i in 0..16 {
+        bytes.push(u8::from_str_radix(&hex[i * 2..i * 2 + 2], 16).ok()?);
+    }
+    if bytes[0] != UUID_NAMESPACE {
+        return None;
+    }
+    Some(bytes[1..].to_vec())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +251,26 @@ mod tests {
         let last = forged.len() - 1;
         forged[last] ^= 0xFF;
         assert!(!nearby_match_beacon(forged, dk, 1));
+    }
+
+    #[test]
+    fn beacon_survives_the_uuid_round_trip() {
+        let dk = nearby_new_discovery_key();
+        let beacon = nearby_build_beacon(dk.clone(), 3).unwrap();
+        let uuid = nearby_beacon_to_uuid(beacon.clone()).unwrap();
+        assert_eq!(uuid.len(), 36, "формат UUID с дефисами");
+        assert_eq!(nearby_uuid_to_beacon(uuid.clone()), Some(beacon));
+        // И, главное, после распаковки маячок по-прежнему опознаётся.
+        let unpacked = nearby_uuid_to_beacon(uuid).unwrap();
+        assert!(nearby_match_beacon(unpacked, dk, 3));
+    }
+
+    #[test]
+    fn foreign_uuids_are_ignored() {
+        // Чужая реклама вокруг — не наше дело, разбирать её не нужно.
+        assert_eq!(nearby_uuid_to_beacon("0000180D-0000-1000-8000-00805F9B34FB".into()), None);
+        assert_eq!(nearby_uuid_to_beacon("не-uuid".into()), None);
+        assert_eq!(nearby_uuid_to_beacon("".into()), None);
     }
 
     #[test]
