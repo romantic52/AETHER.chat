@@ -552,6 +552,37 @@ async function sendMediaFile(bytes, mimeType, kind, displayType, extra = {}) {
 
 // Глобальные переменные состояния приложения
 let myId = '';
+// Пространство хранилища: сервер + аккаунт. Пока не установлено — работаем по
+// старой схеме (только логин), чтобы ничего не сломать до первого входа.
+let storageScope = '';
+
+/// Имя ключа localStorage в текущем пространстве.
+///
+/// Раньше ключи назывались `messages_<логин>`: одинаковый логин на двух
+/// серверах писал бы поверх — переписка, ключи Olm и идентификатор устройства
+/// смешались бы. Теперь пространство включает и сервер.
+function spaceKey(prefix, suffix) {
+    const scope = storageScope || myId;
+    return suffix ? `${prefix}${scope}_${suffix}` : `${prefix}${scope}`;
+}
+
+/// Установить пространство и разово перенести в него старые данные.
+async function applyStorageScope() {
+    if (!myId) return;
+    let tag = serverUrl;
+    try {
+        // Сервер, который умеет представляться, даёт постоянный server_id.
+        // Старый инстанс отвечает 404 — тогда меткой служит адрес.
+        const res = await fetch(`${serverUrl}/server/info`, { method: 'GET' });
+        if (res.ok) {
+            const info = await res.json();
+            if (info && info.server_id) tag = info.server_id;
+        }
+    } catch (e) { /* адрес как метка — этого достаточно для разделения */ }
+    storageScope = window.aetherStorageScope(tag, myId);
+    const moved = window.aetherMigrateSpaceStorage(tag, myId);
+    if (moved && moved.migrated) console.log(`Хранилище перенесено в пространство ${moved.scope}: ${moved.migrated} ключей`);
+}
 let myPin = '';
 let serverUrl = '';
 let myKeys = null;
@@ -674,13 +705,13 @@ function deviceKey(peerId, deviceId) {
 }
 
 async function resolveMyDeviceId() {
-    const stored = localStorage.getItem(`device_id_${myId}`);
+    const stored = localStorage.getItem(spaceKey('device_id_'));
     if (stored) { myDeviceId = stored; return; }
     const devices = await getPeerDevices(myId, true);
     // Пустой список = аккаунт ещё без Olm — занимаем primary (легаси-путь).
     myDeviceId = devices.length === 0 ? 'primary'
         : 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');
-    localStorage.setItem(`device_id_${myId}`, myDeviceId);
+    localStorage.setItem(spaceKey('device_id_'), myDeviceId);
 }
 
 // Канонический вид хранилища сессий устройства (P10 / SEC MED-4):
@@ -748,7 +779,7 @@ async function saveRatchetState(updateServerBackup = false) {
         identity_ed_pins: olmEdPins,
         master_pins: olmMasterPins
     }, myPin, getSalt(myId));
-    localStorage.setItem(`ratchet_${myId}`, encrypted);
+    localStorage.setItem(spaceKey('ratchet_'), encrypted);
 
     if (updateServerBackup && myDeviceId === 'primary' && secOn('olmBackup')) {
         // Бэкап на сервере один на аккаунт — его владелец только primary,
@@ -771,16 +802,16 @@ async function prepareRatchetState(password) {
     const api = await loadRatchetApi();
 
     let localState = null;
-    const stored = localStorage.getItem(`ratchet_${myId}`);
+    const stored = localStorage.getItem(spaceKey('ratchet_'));
     if (stored) localState = await decryptPayload(stored, password, getSalt(myId));
 
     // Устройство: сохранённое → узнать себя по identity в директории →
     // primary, если аккаунт ещё без ключей → иначе новое web-устройство.
-    if (!localStorage.getItem(`device_id_${myId}`) && localState && localState.account_identity) {
+    if (!localStorage.getItem(spaceKey('device_id_')) && localState && localState.account_identity) {
         try {
             const devices = await getPeerDevices(myId, true);
             const mine = devices.find(d => d.identity_key_b64 === localState.account_identity);
-            if (mine) localStorage.setItem(`device_id_${myId}`, mine.device_id);
+            if (mine) localStorage.setItem(spaceKey('device_id_'), mine.device_id);
         } catch (_) {}
     }
     await resolveMyDeviceId();
@@ -826,7 +857,7 @@ async function ensureRatchetKeys() {
         // Чужой primary (телефон) перезаписывать нельзя — теряем его E2E.
         // Переходим в собственное web-устройство и продолжаем.
         myDeviceId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');
-        localStorage.setItem(`device_id_${myId}`, myDeviceId);
+        localStorage.setItem(spaceKey('device_id_'), myDeviceId);
     }
     const serverCount = Number(countData.count) || 0;
     // Подписанные бандлы (SEC HIGH-2): публикация всегда с ed25519 + подписями.
@@ -834,14 +865,14 @@ async function ensureRatchetKeys() {
     // неподписанные OTK, даже если их там ещё много.
     // Версия флага бумпается при КАЖДОМ изменении формата публикации, иначе
     // устройства, пережившие предыдущую версию, останутся без новых полей.
-    const signedFlagKey = `olm_published_v2_${myId}`;
+    const signedFlagKey = spaceKey('olm_published_v2_');
     const signedPublished = localStorage.getItem(signedFlagKey) === '1';
     // Fallback-ключ (P10 / SEC MED-3) — «последний рубеж», когда одноразовые
     // кончились. Он переиспользуемый, поэтому ротируем: чем дольше живёт один и
     // тот же ключ, тем больше начал переписок вскрывается разом при его
     // компрометации. Ядро держит две приватные части подряд, так что сообщения,
     // отправленные на прежний, ещё какое-то время читаются.
-    const fallbackTsKey = `olm_fallback_ts_${myId}`;
+    const fallbackTsKey = spaceKey('olm_fallback_ts_');
     const fallbackTs = Number(localStorage.getItem(fallbackTsKey)) || 0;
     const fallbackStale = Date.now() / 1000 - fallbackTs > FALLBACK_ROTATE_SECONDS;
     if (serverCount >= 20 && signedPublished && serverIdentity === olmIdentityB64 && !fallbackStale) {
@@ -1359,7 +1390,7 @@ let speakerphoneOn = false;
 function getCustomContactNames() {
     try {
         if (!myId) return Object.create(null);
-        const stored = localStorage.getItem(`contacts_custom_names_${myId}`);
+        const stored = localStorage.getItem(spaceKey('contacts_custom_names_'));
         const parsed = stored ? JSON.parse(stored) : {};
         return parsed && typeof parsed === 'object' ? Object.assign(Object.create(null), parsed) : Object.create(null);
     } catch (e) {
@@ -1376,13 +1407,13 @@ function saveCustomContactName(userId, name) {
     } else {
         delete names[userId];
     }
-    localStorage.setItem(`contacts_custom_names_${myId}`, JSON.stringify(names));
+    localStorage.setItem(spaceKey('contacts_custom_names_'), JSON.stringify(names));
 }
 
 function getCustomContactsList() {
     try {
         if (!myId) return [];
-        const stored = localStorage.getItem(`contacts_custom_list_${myId}`);
+        const stored = localStorage.getItem(spaceKey('contacts_custom_list_'));
         return stored ? JSON.parse(stored) : [];
     } catch (e) {
         return [];
@@ -1395,7 +1426,7 @@ function addCustomContact(userId, customName) {
     const list = getCustomContactsList();
     if (!list.includes(userId)) {
         list.push(userId);
-        localStorage.setItem(`contacts_custom_list_${myId}`, JSON.stringify(list));
+        localStorage.setItem(spaceKey('contacts_custom_list_'), JSON.stringify(list));
     }
     if (customName) {
         saveCustomContactName(userId, customName);
@@ -1412,7 +1443,7 @@ function removeCustomContact(userId) {
     // Remove from custom list
     let list = getCustomContactsList();
     list = list.filter(u => u !== userId);
-    localStorage.setItem(`contacts_custom_list_${myId}`, JSON.stringify(list));
+    localStorage.setItem(spaceKey('contacts_custom_list_'), JSON.stringify(list));
 }
 
 function getContactDisplayName(userId) {
@@ -1732,7 +1763,7 @@ if(saveSettingsBtn) saveSettingsBtn.addEventListener('click', saveSettingsToServ
 // хранятся открыто; вся крипта от них не зависит). Дефолт каждого — включено.
 function getSecSettings() {
     try {
-        const parsed = JSON.parse(localStorage.getItem(`sec_settings_${myId}`));
+        const parsed = JSON.parse(localStorage.getItem(spaceKey('sec_settings_')));
         return parsed && typeof parsed === 'object' ? parsed : {};
     } catch (_) { return {}; }
 }
@@ -1759,8 +1790,8 @@ function saveSecSettingsFromUI() {
         readReceipts: el('sec-read-receipts').checked,
         typing: el('sec-typing').checked
     };
-    localStorage.setItem(`sec_settings_${myId}`, JSON.stringify(s));
-    if (!s.storeHistory) localStorage.removeItem(`messages_${myId}`);
+    localStorage.setItem(spaceKey('sec_settings_'), JSON.stringify(s));
+    if (!s.storeHistory) localStorage.removeItem(spaceKey('messages_'));
 }
 // --- Сессии и устройства ---
 async function renderSessionsList() {
@@ -1879,7 +1910,10 @@ if (secNukeBtn) secNukeBtn.addEventListener('click', async () => {
         return;
     }
     // Локально тоже всё чистим (история, контакты, настройки чатов).
-    const mine = Object.keys(localStorage).filter(k => k.endsWith(`_${myId}`) && !k.startsWith('ratchet_') && !k.startsWith('device_id_'));
+    // Только текущее пространство: у того же логина на другом сервере своя
+    // переписка, и «очистить здесь» не должно стирать её там.
+    const scope = storageScope || myId;
+    const mine = Object.keys(localStorage).filter(k => k.endsWith(`_${scope}`) && !k.startsWith('ratchet_') && !k.startsWith('device_id_'));
     mine.forEach(k => localStorage.removeItem(k));
     alert('Готово: сервер очищен, группы покинуты, другие сессии завершены.');
     location.reload();
@@ -1888,7 +1922,8 @@ if (secNukeBtn) secNukeBtn.addEventListener('click', async () => {
 const secWipeBtn = document.getElementById('sec-wipe-btn');
 if (secWipeBtn) secWipeBtn.addEventListener('click', () => {
     if (!confirm('Стереть на этом устройстве историю, ключи шифрования и настройки? Аккаунт на сервере не удаляется, но этот браузер станет новым устройством.')) return;
-    const mine = Object.keys(localStorage).filter(k => k.endsWith(`_${myId}`) || k === 'token');
+    const scope = storageScope || myId;
+    const mine = Object.keys(localStorage).filter(k => k.endsWith(`_${scope}`) || k === 'token');
     mine.forEach(k => localStorage.removeItem(k));
     location.reload();
 });
@@ -2160,6 +2195,10 @@ function keysFromSecretKeyB64(secretKeyB64) {
 }
 
 async function prepareLoginState(password) {
+    // Пространство определяется ПЕРЕД первым чтением хранилища: дальше всё
+    // читается и пишется уже под ключами этого сервера и этого аккаунта.
+    await applyStorageScope();
+
     const salt = getSalt(myId);
     
     // Сохраняем пароль в глобальную переменную myPin для последующего шифрования
@@ -2181,7 +2220,7 @@ async function prepareLoginState(password) {
     await prepareRatchetState(password);
 
     // Загружаем только историю сообщений
-    const storedMsgsEnc = localStorage.getItem(`messages_${myId}`);
+    const storedMsgsEnc = localStorage.getItem(spaceKey('messages_'));
     if (storedMsgsEnc) {
         const decMsgs = await decryptPayload(storedMsgsEnc, password, salt);
         messages = decMsgs ? decMsgs.messages : [];
@@ -2194,7 +2233,7 @@ async function prepareLoginState(password) {
         }
     } else {
         messages = [];
-        localStorage.removeItem('last_sync_timestamp_' + myId);
+        localStorage.removeItem(spaceKey('last_sync_timestamp_'));
     }
 
     myIdDisplay.textContent = myId;
@@ -3224,13 +3263,13 @@ async function pollInbox() {
 
 async function saveMessagesLocally() {
     if (!secOn('storeHistory')) {
-        localStorage.removeItem(`messages_${myId}`);
+        localStorage.removeItem(spaceKey('messages_'));
         return;
     }
     const salt = getSalt(myId);
     const payload = { messages: messages };
     const encrypted = await encryptPayload(payload, myPin, salt);
-    localStorage.setItem(`messages_${myId}`, encrypted);
+    localStorage.setItem(spaceKey('messages_'), encrypted);
 }
 
 function showStatus(text, type) {
@@ -6335,7 +6374,7 @@ if (confirmDeleteChatBtn) {
 // --- CHAT SETTINGS & SWIPE ACTIONS ---
 async function fetchChatSettings() {
     try {
-        const raw = localStorage.getItem(`chat_settings_${myId}`);
+        const raw = localStorage.getItem(spaceKey('chat_settings_'));
         const parsed = raw ? JSON.parse(raw) : {};
         chatSettingsCache = parsed && typeof parsed === 'object'
             ? Object.assign(Object.create(null), parsed) : Object.create(null);
@@ -6356,7 +6395,7 @@ async function toggleChatSetting(peerId, field) {
     // Update UI immediately
     renderContactsList();
     
-    localStorage.setItem(`chat_settings_${myId}`, JSON.stringify(chatSettingsCache));
+    localStorage.setItem(spaceKey('chat_settings_'), JSON.stringify(chatSettingsCache));
 }
 
 function initSwipeGestures(wrapper, item, contactId) {
@@ -6538,7 +6577,7 @@ if (messageInput) {
 // Закреп хранится локально (per chat) и транслируется собеседнику
 // контрольным сообщением 'pin'/'unpin', чтобы у обоих был один закреп.
 // =====================================================================
-function pinStorageKey(peerId) { return `pinned_${myId}_${(peerId || '').toLowerCase()}`; }
+function pinStorageKey(peerId) { return spaceKey('pinned_', (peerId || '').toLowerCase()); }
 function getPinnedId(peerId) {
     if (!peerId) return null;
     try { return localStorage.getItem(pinStorageKey(peerId)) || null; } catch (e) { return null; }

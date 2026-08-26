@@ -265,3 +265,94 @@ if (typeof module !== 'undefined' && module.exports) {
     module.exports = { aetherNormalizeServerInput, aetherIsPrivateHost, aetherCanonicalInfo,
                        aetherLoadServers, aetherUpsertServer, aetherCheckPin };
 }
+
+// --- Разделение хранилища по пространствам ------------------------------------
+//
+// Локальные данные уже были разделены по аккаунту (`messages_<логин>`), но НЕ по
+// серверу. Одинаковый логин на двух серверах писал бы поверх: переписка,
+// ключи Olm, идентификатор устройства — всё смешалось бы. Тот же изъян был на
+// iOS в ключах Keychain и чинился там же сменой первичного ключа на пару
+// (server_id, логин).
+//
+// Ключи, которые принадлежат пространству. Порядок важен: `pinned_` проверяется
+// как префикс, остальные — как точное начало до логина.
+const AETHER_SPACE_KEY_PREFIXES = [
+    'messages_', 'ratchet_', 'device_id_', 'sec_settings_', 'chat_settings_',
+    'contacts_custom_list_', 'contacts_custom_names_', 'olm_published_v2_',
+    'olm_fallback_ts_', 'last_sync_timestamp_', 'salt_', 'pinned_'
+];
+
+/// Короткая метка сервера для имён ключей.
+///
+/// Для сервера, который умеет представляться, это начало его server_id. Для
+/// старого инстанса (боевой ещё не обновлён) — отпечаток адреса: он тоже
+/// постоянен и различает серверы между собой, чего для разделения достаточно.
+function aetherServerTag(serverIdOrOrigin) {
+    const v = String(serverIdOrOrigin || '');
+    const looksLikeUuid = /^[0-9a-f]{8}-[0-9a-f]{4}-/i.test(v);
+    if (looksLikeUuid) return v.replace(/-/g, '').slice(0, 8).toLowerCase();
+    // Простой стабильный хеш адреса: FNV-1a. Криптостойкость здесь не нужна —
+    // это имя ключа в localStorage, а не секрет.
+    let h = 0x811c9dc5;
+    for (let i = 0; i < v.length; i++) {
+        h ^= v.charCodeAt(i);
+        h = (h * 0x01000193) >>> 0;
+    }
+    return ('0000000' + h.toString(16)).slice(-8);
+}
+
+/// Пространство имён: сервер + аккаунт.
+function aetherStorageScope(serverIdOrOrigin, userId) {
+    return `${aetherServerTag(serverIdOrOrigin)}_${String(userId || '').toLowerCase()}`;
+}
+
+/// Перенести данные, лежащие под старым именем (только логин), в пространство.
+///
+/// Выполняется один раз на пространство. Существующий пользователь не должен
+/// заметить перехода: переписка, ключи и идентификатор устройства обязаны
+/// остаться на месте. Старые ключи не удаляются сразу — остаются ещё на одну
+/// версию на случай отката сборки.
+function aetherMigrateSpaceStorage(serverIdOrOrigin, userId) {
+    const uid = String(userId || '').toLowerCase();
+    if (!uid) return { migrated: 0, skipped: 'нет пользователя' };
+    const scope = aetherStorageScope(serverIdOrOrigin, uid);
+    const flag = `aether.spacemigrated.${scope}`;
+    if (localStorage.getItem(flag) === '1') return { migrated: 0, skipped: 'уже перенесено' };
+
+    let migrated = 0;
+    for (const prefix of AETHER_SPACE_KEY_PREFIXES) {
+        if (prefix === 'pinned_') {
+            // pinned_<логин>_<собеседник>: перенос по префиксу.
+            const oldStart = `pinned_${uid}_`;
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                if (!key || !key.startsWith(oldStart)) continue;
+                const target = `pinned_${scope}_${key.slice(oldStart.length)}`;
+                if (localStorage.getItem(target) === null) {
+                    localStorage.setItem(target, localStorage.getItem(key));
+                    migrated++;
+                }
+            }
+            continue;
+        }
+        const oldKey = `${prefix}${uid}`;
+        const newKey = `${prefix}${scope}`;
+        const value = localStorage.getItem(oldKey);
+        if (value !== null && localStorage.getItem(newKey) === null) {
+            localStorage.setItem(newKey, value);
+            migrated++;
+        }
+    }
+    localStorage.setItem(flag, '1');
+    return { migrated, scope };
+}
+
+if (typeof window !== 'undefined') {
+    window.aetherServerTag = aetherServerTag;
+    window.aetherStorageScope = aetherStorageScope;
+    window.aetherMigrateSpaceStorage = aetherMigrateSpaceStorage;
+}
+
+if (typeof module !== 'undefined' && module.exports) {
+    Object.assign(module.exports, { aetherServerTag, aetherStorageScope, aetherMigrateSpaceStorage });
+}
