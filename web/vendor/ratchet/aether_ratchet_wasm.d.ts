@@ -28,6 +28,14 @@ export function create_outbound(account_pickle: string, their_identity_b64: stri
 
 export function decrypt(session_pickle: string, message_type: number, body_b64: string): string;
 
+/**
+ * Проверка подписи Ed25519 — для документа /server/info.
+ *
+ * Возвращает true/false, а не бросает: «подпись не сошлась» это ожидаемый
+ * ответ при подмене сервера, а не сбой программы.
+ */
+export function ed25519_verify(public_key_b64: string, message: string, sig_b64: string): boolean;
+
 export function encrypt(session_pickle: string, plaintext: string): string;
 
 export function master_public(account_secret_b64: string): string;
@@ -68,6 +76,7 @@ export interface InitOutput {
     readonly create_inbound: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly create_outbound: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
     readonly decrypt: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+    readonly ed25519_verify: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
     readonly encrypt: (a: number, b: number, c: number, d: number) => [number, number, number, number];
     readonly master_public: (a: number, b: number) => [number, number, number, number];
     readonly prekey_session_id: (a: number, b: number) => [number, number, number, number];

@@ -292,6 +292,27 @@ export function decrypt(session_pickle, message_type, body_b64) {
 }
 
 /**
+ * Проверка подписи Ed25519 — для документа /server/info.
+ *
+ * Возвращает true/false, а не бросает: «подпись не сошлась» это ожидаемый
+ * ответ при подмене сервера, а не сбой программы.
+ * @param {string} public_key_b64
+ * @param {string} message
+ * @param {string} sig_b64
+ * @returns {boolean}
+ */
+export function ed25519_verify(public_key_b64, message, sig_b64) {
+    const ptr0 = passStringToWasm0(public_key_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ptr1 = passStringToWasm0(message, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len1 = WASM_VECTOR_LEN;
+    const ptr2 = passStringToWasm0(sig_b64, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len2 = WASM_VECTOR_LEN;
+    const ret = wasm.ed25519_verify(ptr0, len0, ptr1, len1, ptr2, len2);
+    return ret !== 0;
+}
+
+/**
  * @param {string} session_pickle
  * @param {string} plaintext
  * @returns {string}

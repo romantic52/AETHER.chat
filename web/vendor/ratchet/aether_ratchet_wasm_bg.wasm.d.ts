@@ -12,6 +12,7 @@ export const argon2id_key: (a: number, b: number, c: number, d: number, e: numbe
 export const create_inbound: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const create_outbound: (a: number, b: number, c: number, d: number, e: number, f: number) => [number, number, number, number];
 export const decrypt: (a: number, b: number, c: number, d: number, e: number) => [number, number, number, number];
+export const ed25519_verify: (a: number, b: number, c: number, d: number, e: number, f: number) => number;
 export const encrypt: (a: number, b: number, c: number, d: number) => [number, number, number, number];
 export const master_public: (a: number, b: number) => [number, number, number, number];
 export const prekey_session_id: (a: number, b: number) => [number, number, number, number];

@@ -236,3 +236,12 @@ pub fn argon2id_key(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Resu
         .map_err(|e| JsValue::from_str(&format!("Argon2: {e}")))?;
     Ok(key)
 }
+
+/// Проверка подписи Ed25519 — для документа /server/info.
+///
+/// Возвращает true/false, а не бросает: «подпись не сошлась» это ожидаемый
+/// ответ при подмене сервера, а не сбой программы.
+#[wasm_bindgen]
+pub fn ed25519_verify(public_key_b64: &str, message: &str, sig_b64: &str) -> bool {
+    aether_ratchet_core::verify_ed25519_signature(public_key_b64, message, sig_b64).is_ok()
+}
