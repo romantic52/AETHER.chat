@@ -552,6 +552,13 @@ class MainActivity : FragmentActivity() {
                         }
                     }
 
+                    composable("nearby") {
+                        org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
+                            org.groktest.securemessenger.ui.screens.NearbyScreen(
+                                onBack = { navController.popBackStack() },
+                            )
+                        }
+                    }
                     composable("servers") {
                         org.groktest.securemessenger.utils.SwipeToBackWrapper(onBack = { navController.popBackStack() }) {
                             org.groktest.securemessenger.ui.screens.ServersScreen(
@@ -581,6 +588,7 @@ class MainActivity : FragmentActivity() {
                                 onNavigateToPrivacy = { navController.navigateSingle("privacy_settings") },
                                 onNavigateToSecurity = { navController.navigateSingle("security_settings") },
                                 onNavigateToServers = { navController.navigateSingle("servers") },
+                                onNavigateToNearby = { navController.navigateSingle("nearby") },
                                 onNavigateToAbout = { navController.navigateSingle("about_app") },
                                 onNavigateToCustomization = { navController.navigateSingle("customization") },
                                 onNavigateToExperiments = { navController.navigateSingle("secret_settings") }

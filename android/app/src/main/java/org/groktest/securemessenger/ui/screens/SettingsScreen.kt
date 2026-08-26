@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.AddReaction
+import androidx.compose.material.icons.filled.BluetoothSearching
 import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
@@ -57,6 +58,7 @@ fun SettingsScreen(
     onNavigateToPrivacy: () -> Unit,
     onNavigateToSecurity: () -> Unit = {},
     onNavigateToServers: () -> Unit = {},
+    onNavigateToNearby: () -> Unit = {},
     onNavigateToAbout: () -> Unit,
     onNavigateToCustomization: () -> Unit,
     onNavigateToExperiments: () -> Unit,
@@ -233,6 +235,12 @@ fun SettingsScreen(
                 subtitle = "Свои серверы, отпечатки, аккаунты",
                 icon = { Icon(Icons.Default.Dns, contentDescription = null) },
                 onClick = onNavigateToServers
+            )
+            AetherSettingsRow(
+                title = "Рядом",
+                subtitle = "Поиск людей поблизости по Bluetooth",
+                icon = { Icon(Icons.Default.BluetoothSearching, contentDescription = null) },
+                onClick = onNavigateToNearby
             )
             AetherSettingsRow(
                 title = "Данные и память",
