@@ -158,6 +158,19 @@ class ServerRegistry(context: Context) {
         }
     }
 
+    /**
+     * Официальный сервер не удаляется: после выхода из своего сервера
+     * должно остаться куда вернуться.
+     */
+    @Synchronized
+    fun remove(serverId: String): Boolean {
+        val record = server(serverId) ?: return false
+        if (record.isOfficial) return false
+        records.removeAll { it.id == serverId }
+        save()
+        return true
+    }
+
     @Synchronized
     fun addAccount(serverId: String, userId: String, displayName: String = "") {
         val record = server(serverId) ?: return

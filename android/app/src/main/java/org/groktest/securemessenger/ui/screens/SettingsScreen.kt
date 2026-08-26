@@ -11,6 +11,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Build
 import androidx.compose.material.icons.filled.AddReaction
+import androidx.compose.material.icons.filled.Dns
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Notifications
@@ -55,6 +56,7 @@ fun SettingsScreen(
     onNavigateToNotifications: () -> Unit,
     onNavigateToPrivacy: () -> Unit,
     onNavigateToSecurity: () -> Unit = {},
+    onNavigateToServers: () -> Unit = {},
     onNavigateToAbout: () -> Unit,
     onNavigateToCustomization: () -> Unit,
     onNavigateToExperiments: () -> Unit,
@@ -225,6 +227,12 @@ fun SettingsScreen(
                 subtitle = "Устройства, 2FA, удаление данных",
                 icon = { Icon(Icons.Default.Shield, contentDescription = null) },
                 onClick = onNavigateToSecurity
+            )
+            AetherSettingsRow(
+                title = "Серверы",
+                subtitle = "Свои серверы, отпечатки, аккаунты",
+                icon = { Icon(Icons.Default.Dns, contentDescription = null) },
+                onClick = onNavigateToServers
             )
             AetherSettingsRow(
                 title = "Данные и память",
