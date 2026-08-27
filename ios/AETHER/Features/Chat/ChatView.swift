@@ -69,6 +69,10 @@ struct ChatView: View {
     /// Сообщение, для которого открыт экран «О сообщении».
     @State private var infoMessage: ChatMessage?
     @State private var showEphemeralPicker = false
+    @State private var showSendMenu = false
+    /// Кнопку режима можно убрать из строки ввода: режим остаётся доступен
+    /// долгим нажатием на отправку, функция не пропадает.
+    @AppStorage("chat.showEphemeralButton") private var showEphemeralButton = true
     /// Отложенная отправка — долгое нажатие на кнопке отправки.
     @State private var showSchedule = false
     @State private var scheduleAt = Date().addingTimeInterval(3600)
@@ -319,6 +323,14 @@ struct ChatView: View {
                     pendingKeyKind = await messaging.pendingOlmAlertKind(for: peerId)
                 }
             }
+        }
+        .confirmationDialog("Как отправить", isPresented: $showSendMenu, titleVisibility: .visible) {
+            Button("Исчезающее сообщение") { showEphemeralPicker = true }
+            Button("Отправить позже") {
+                scheduleAt = Date().addingTimeInterval(3600)
+                showSchedule = true
+            }
+            Button("Отмена", role: .cancel) { }
         }
         .sheet(isPresented: $showEphemeralPicker) {
             EphemeralPickerSheet().environmentObject(messaging)
@@ -870,6 +882,9 @@ struct ChatView: View {
                     // Режим сообщения: обычное, исчезающее, «один раз».
                     // Подсвечен, когда выбран не обычный — иначе человек не
                     // заметит, что следующее сообщение исчезнет.
+                    // Если режим уже выбран, кнопку показываем всегда: иначе
+                    // не видно, что следующее сообщение уйдёт исчезающим.
+                    if showEphemeralButton || messaging.pendingEphemeral != nil {
                     Button { showEphemeralPicker = true } label: {
                         Image(systemName: ephemeralIcon)
                             .font(.system(size: 18, weight: .regular))
@@ -881,6 +896,7 @@ struct ChatView: View {
                     }
                     .buttonStyle(.squish)
                     .transition(.scale.combined(with: .opacity))
+                    }
                 } else {
                     // Во время записи/предпросмотра — корзина (отмена).
                     Button { cancelRecording() } label: {
@@ -1053,12 +1069,12 @@ struct ChatView: View {
                             .contentShape(Circle())
                     }
                     .buttonStyle(.squish)
-                    // Зажатие на отправке — «отправить позже», как в Android.
+                    // Зажатие на отправке открывает меню. Раньше сразу вело в
+                    // «отправить позже»; исчезающие добавлены рядом, а не вместо.
                     .simultaneousGesture(
                         LongPressGesture(minimumDuration: 0.4).onEnded { _ in
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
-                            scheduleAt = Date().addingTimeInterval(3600)
-                            showSchedule = true
+                            showSendMenu = true
                         }
                     )
                     .transition(.scale.combined(with: .opacity))

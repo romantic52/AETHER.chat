@@ -233,6 +233,15 @@ struct SettingsView: View {
 
     private var privacySection: some View {
         Section {
+            Toggle(isOn: $showEphemeralButton) {
+                SettingsLabel("Кнопка исчезающих в чате", icon: "hourglass", color: .indigo)
+            }
+            Text(showEphemeralButton
+                 ? "Показана рядом с полем ввода."
+                 : "Скрыта. Режим доступен долгим нажатием на отправку.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             Toggle(isOn: Binding(
                 get: { lockEnabled },
                 set: { on in
@@ -282,6 +291,7 @@ struct SettingsView: View {
         .listRowBackground(palette.surface)
     }
 
+    @AppStorage("chat.showEphemeralButton") private var showEphemeralButton = true
     @AppStorage(NotificationsManager.notifyKey) private var notifyMessages = false
     @AppStorage(NotificationsManager.islandKey) private var islandCounter = false
 
