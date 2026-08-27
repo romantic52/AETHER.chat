@@ -693,6 +693,15 @@ final class Messaging: ObservableObject {
             await core.markOutgoingStatus(peer: senderId, status: 3)
             return .processed(changed: true)
 
+        case "ephemeral_viewed":
+            // Ставим отметку у себя и ничего не сжигаем: отсчёт идёт в копии
+            // получателя. Нам нужно лишь показать «просмотрено» под письмом.
+            if let target = payload.target {
+                await core.markEphemeralViewedByPeer(target)
+                ephemeralViewedIds.insert(target)
+            }
+            return .processed(changed: true)
+
         default:
             return .processed(changed: false)   // неизвестные/web-native типы — игнор (канон), но ack безопасен
         }
@@ -741,6 +750,33 @@ final class Messaging: ObservableObject {
     /// а подтверждение о его прочтении — попадало. Само содержимое не утекало,
     /// но сервер узнавал, что этот чат читают и когда. Для режима, весь смысл
     /// которого в отсутствии сервера, это дыра.
+    /// Отметки «получатель открыл» для наших исчезающих.
+    ///
+    /// Держим в памяти: интерфейс спрашивает синхронно, а хранилище живёт в
+    /// акторе. Наполняется при открытии чата и при приходе уведомления.
+    @Published private(set) var ephemeralViewedIds: Set<String> = []
+
+    /// Открыл ли получатель наше исчезающее.
+    func ephemeralViewedByPeer(_ messageId: String) -> Bool {
+        ephemeralViewedIds.contains(messageId)
+    }
+
+    /// Подтянуть отметки: после перезапуска память пуста, а база помнит.
+    /// Идентификаторы даёт экран чата — сообщения живут в его модели.
+    func refreshEphemeralViewed(messageIds: [String]) async {
+        guard let core = session?.core, !messageIds.isEmpty else { return }
+        var found: Set<String> = []
+        for id in messageIds where !ephemeralViewedIds.contains(id) {
+            if await core.ephemeralViewedByPeer(id) { found.insert(id) }
+        }
+        if !found.isEmpty { ephemeralViewedIds.formUnion(found) }
+    }
+
+    /// Сообщить отправителю, что его исчезающее открыли.
+    func notifyEphemeralViewed(peer: String, messageId: String) async {
+        await sendControl(to: peer, payload: Wire.ephemeralViewed(target: messageId))
+    }
+
     private func sendControl(to peer: String, payload: String) async {
         if router == nil { rebuildRouter() }
         guard let router else { return }

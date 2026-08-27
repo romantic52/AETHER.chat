@@ -32,6 +32,8 @@ struct MessageBubble: View {
     var onCloseEphemeral: (() -> Void)? = nil
     /// Показать «О сообщении». Необязательный: у каналов и превью его нет.
     var onInfo: (() -> Void)? = nil
+    /// Открыл ли получатель наше исчезающее. Отметка, а не отсчёт.
+    var ephemeralViewedByPeer: Bool = false
 
     @Environment(\.palette) private var palette
     @State private var dragX: CGFloat = 0
@@ -81,12 +83,26 @@ struct MessageBubble: View {
     /// устройстве. Смысл в том, чтобы оно не показывалось само — через плечо,
     /// в списке чатов, на разблокированном экране.
     @ViewBuilder private var gatedBody: some View {
-        if let spec = ephemeralSpec, !revealed, payload?.type != "expired" {
+        // Заслонка — только для ПОЛУЧАТЕЛЯ. Отправитель, открывая собственное
+        // письмо, тратил чужой просмотр и запускал отсчёт: сообщение сгорало
+        // у него на глазах и приходило к собеседнику израсходованным.
+        // Здесь именно message.outgoing, а не outgoing: стиль канала меняет
+        // выравнивание, но не то, чьё это сообщение.
+        if let spec = ephemeralSpec, !message.outgoing, !revealed, payload?.type != "expired" {
             ephemeralPlaceholder(spec)
         } else {
             bubbleBody
-                .onDisappear { if ephemeralSpec != nil { onCloseEphemeral?() } }
+                .onDisappear {
+                    if ephemeralSpec != nil, !message.outgoing { onCloseEphemeral?() }
+                }
         }
+    }
+
+    /// Пометка отправителю: у собеседника письмо временное, и открыл ли он его.
+    private var ephemeralOutLabel: String? {
+        guard message.outgoing, let spec = ephemeralSpec else { return nil }
+        let kind = spec.kind == "VIEW_ONCE" ? "Просмотр один раз" : "Исчезающее"
+        return ephemeralViewedByPeer ? "\(kind) · просмотрено" : "\(kind) · ещё не открыто"
     }
 
     private var ephemeralSpec: EphemeralSpec? {
@@ -288,6 +304,10 @@ struct MessageBubble: View {
             if channelStyle, let views = viewCount {
                 Image(systemName: "eye.fill").font(.system(size: 9)).foregroundStyle(tint)
                 Text(Self.compactCount(views)).font(.system(size: 10)).foregroundStyle(tint)
+            }
+            if let label = ephemeralOutLabel {
+                Image(systemName: "timer").font(.system(size: 9)).foregroundStyle(tint)
+                Text(label).font(.system(size: 10)).foregroundStyle(tint)
             }
             Text(timeString).font(.system(size: 10)).foregroundStyle(tint)
             if outgoing { statusIcon(secondary: tint) }

@@ -629,14 +629,23 @@ struct ChatView: View {
                                 onDelete: { vm.delete(msg) },
                                 onRetry: { vm.retry(msg) },
                                 onOpenEphemeral: {
-                                    Task { await messaging.ephemeral?.open(messageId: msg.id,
-                                                                           payloadJson: msg.payloadJson) }
+                                    Task {
+                                        await messaging.ephemeral?.open(messageId: msg.id,
+                                                                        payloadJson: msg.payloadJson)
+                                        // Сообщаем отправителю, что прочитали.
+                                        // Только для входящих: своё открывать нечего.
+                                        if !msg.outgoing {
+                                            await messaging.notifyEphemeralViewed(peer: peerId,
+                                                                                  messageId: msg.id)
+                                        }
+                                    }
                                 },
                                 onCloseEphemeral: {
                                     Task { await messaging.ephemeral?.closeView(messageId: msg.id,
                                                                                 payloadJson: msg.payloadJson) }
                                 },
-                                onInfo: { infoMessage = msg }
+                                onInfo: { infoMessage = msg },
+                                ephemeralViewedByPeer: messaging.ephemeralViewedByPeer(msg.id)
                             )
                             // Комментарии: у канала с обсуждением — лёгкая кнопка под
                             // постом (БЕЗ стекла: 40 glassEffect на экран = лаги).

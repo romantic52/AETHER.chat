@@ -1345,6 +1345,26 @@ actor CoreClient {
     // MARK: - Исчезающие сообщения
 
     func ephemeralSet(_ state: EphemeralState) { try? store.ephemeralSet(e: state) }
+
+    /// Отметка «получатель открыл» на стороне отправителя.
+    ///
+    /// Отсчёт не запускает и ничего не удаляет: срок жизни принадлежит копии
+    /// получателя. Здесь только факт для интерфейса.
+    func markEphemeralViewedByPeer(_ messageId: String) {
+        let current = ephemeralGet(messageId)
+        try? store.ephemeralSet(e: EphemeralState(
+            messageId: messageId,
+            state: "VIEWED_BY_PEER",
+            openedTs: current?.openedTs ?? Int64(Date().timeIntervalSince1970 * 1000),
+            expiresTs: current?.expiresTs,
+            views: max(current?.views ?? 0, 1)
+        ))
+    }
+
+    /// Открывал ли получатель наше исчезающее.
+    func ephemeralViewedByPeer(_ messageId: String) -> Bool {
+        ephemeralGet(messageId)?.state == "VIEWED_BY_PEER"
+    }
     func ephemeralGet(_ messageId: String) -> EphemeralState? {
         (try? store.ephemeralGet(messageId: messageId)) ?? nil
     }

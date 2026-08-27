@@ -54,6 +54,11 @@ enum Wire {
 
     static func read() -> String { json(["type": "read"]) }
     static func delivered() -> String { json(["type": "delivered"]) }
+    /// Получатель открыл исчезающее. Отметка отправителю, не команда на удаление:
+    /// срок жизни принадлежит копии получателя.
+    static func ephemeralViewed(target: String) -> String {
+        json(["type": "ephemeral_viewed", "target": target])
+    }
 
     private static func json(_ obj: [String: Any]) -> String {
         guard let data = try? JSONSerialization.data(withJSONObject: obj, options: [.sortedKeys]),
