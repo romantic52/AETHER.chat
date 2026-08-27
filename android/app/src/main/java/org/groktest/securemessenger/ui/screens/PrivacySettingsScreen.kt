@@ -64,6 +64,18 @@ fun PrivacySettingsScreen(
                     )
             ) {
                 Spacer(Modifier.height(AetherStyle.EdgeBarHeight + AetherStyle.ScreenVertical))
+                val appearance = LocalThemeSettings.current
+                AetherSwitchRow(
+                    title = "Кнопка исчезающих в чате",
+                    subtitle = if (appearance.showEphemeralButton.value) {
+                        "Показана рядом с полем ввода"
+                    } else {
+                        "Скрыта · режим доступен долгим нажатием на отправку"
+                    },
+                    checked = appearance.showEphemeralButton.value,
+                    onCheckedChange = { appearance.setShowEphemeralButton(it) },
+                )
+                Spacer(Modifier.height(8.dp))
                 AetherSwitchRow(
                     title = "Код-пароль",
                     subtitle = if (lockEnabled) "Включён · запрашивается при входе" else "Запрашивать пароль при входе",

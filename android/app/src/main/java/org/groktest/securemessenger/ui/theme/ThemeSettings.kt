@@ -48,6 +48,9 @@ class ThemeSettings(context: Context) {
     var fontFamilyStyle = mutableStateOf(prefs.getString("font_family", "Default") ?: "Default")
     // Быстрая реакция по двойному тапу (по умолчанию сердечко)
     var quickReaction = mutableStateOf(prefs.getString("quick_reaction", "❤️") ?: "❤️")
+    // Отдельная кнопка исчезающих в поле ввода. Выключена — режим остаётся
+    // доступен долгим нажатием на отправку, функция не пропадает.
+    var showEphemeralButton = mutableStateOf(prefs.getBoolean("show_ephemeral_button", true))
     // Настоящий backdrop-blur доступен вручную, но выключен по умолчанию ради плавности.
     var liquidGlassEnabled = mutableStateOf(initialLiquidGlass)
     var glassClarity = mutableStateOf(initialGlassClarity) // 0=матовое, 1=чистое
@@ -120,6 +123,11 @@ class ThemeSettings(context: Context) {
     fun setQuickReaction(emoji: String) {
         quickReaction.value = emoji
         prefs.edit().putString("quick_reaction", emoji).apply()
+    }
+
+    fun setShowEphemeralButton(on: Boolean) {
+        showEphemeralButton.value = on
+        prefs.edit().putBoolean("show_ephemeral_button", on).apply()
     }
 
     fun setLiquidGlassEnabled(on: Boolean) {

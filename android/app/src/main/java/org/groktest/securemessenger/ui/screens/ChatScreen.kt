@@ -115,6 +115,7 @@ import org.groktest.securemessenger.ui.theme.aetherField
 import org.groktest.securemessenger.ui.theme.aetherIsland
 import org.groktest.securemessenger.ui.theme.aetherSurface
 import org.groktest.securemessenger.ui.theme.aetherTextFieldColors
+import org.groktest.securemessenger.ui.components.AetherSettingsRow
 import org.groktest.securemessenger.ui.components.GlassBackground
 import org.groktest.securemessenger.ui.components.AetherPrimaryButton
 import org.groktest.securemessenger.ui.glass.glassSource
@@ -186,6 +187,7 @@ fun ChatScreen(
     val appearance = LocalThemeSettings.current
     var showDeliveryPolicy by remember(peerId) { mutableStateOf(false) }
     var showEphemeralPicker by remember(peerId) { mutableStateOf(false) }
+    var showSendMenu by remember(peerId) { mutableStateOf(false) }
     var pendingEphemeral by remember(peerId) {
         mutableStateOf<org.groktest.securemessenger.data.EphemeralDraft?>(null)
     }
@@ -213,6 +215,43 @@ fun ChatScreen(
     var editingMessage by remember { mutableStateOf<MessageEntity?>(null) }
     var forwardingMessage by remember { mutableStateOf<MessageEntity?>(null) }
     var showScheduleDialog by remember { mutableStateOf(false) }
+
+    if (showSendMenu) {
+        AlertDialog(
+            onDismissRequest = { showSendMenu = false },
+            title = { Text("Как отправить") },
+            text = {
+                Column {
+                    AetherSettingsRow(
+                        title = "Исчезающее сообщение",
+                        subtitle = if (pendingEphemeral == null) {
+                            "Удалится у собеседника"
+                        } else {
+                            "Режим выбран"
+                        },
+                        icon = { Icon(Icons.Default.Lock, contentDescription = null) },
+                        onClick = {
+                            showSendMenu = false
+                            showEphemeralPicker = true
+                        },
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    AetherSettingsRow(
+                        title = "Отправить позже",
+                        subtitle = "В выбранное время",
+                        icon = { Icon(Icons.Default.Schedule, contentDescription = null) },
+                        onClick = {
+                            showSendMenu = false
+                            showScheduleDialog = true
+                        },
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showSendMenu = false }) { Text("Закрыть") }
+            },
+        )
+    }
     val forwardChats by forwardChatsFlow.collectAsState()
     var typingFromPeer by remember { mutableStateOf(false) }
     var lastTypingSent by remember { mutableStateOf(0L) }
@@ -1162,21 +1201,27 @@ fun ChatScreen(
                                 }
                             }
                         } else {
-                            IconButton(
-                                onClick = { showEphemeralPicker = true },
-                                enabled = !isSending,
-                                modifier = Modifier.size(40.dp),
-                            ) {
-                                Icon(
-                                    Icons.Default.Lock,
-                                    contentDescription = "Режим исчезающего сообщения",
-                                    tint = if (pendingEphemeral == null) {
-                                        MaterialTheme.colorScheme.onSurfaceVariant
-                                    } else {
-                                        MaterialTheme.colorScheme.primary
-                                    },
-                                    modifier = Modifier.size(19.dp),
-                                )
+                            // Кнопку можно убрать из поля ввода — режим остаётся
+                            // доступен долгим нажатием на отправку. Если режим
+                            // уже выбран, показываем всегда: иначе человек не
+                            // увидит, что письмо уйдёт исчезающим.
+                            if (appearance.showEphemeralButton.value || pendingEphemeral != null) {
+                                IconButton(
+                                    onClick = { showEphemeralPicker = true },
+                                    enabled = !isSending,
+                                    modifier = Modifier.size(40.dp),
+                                ) {
+                                    Icon(
+                                        Icons.Default.Lock,
+                                        contentDescription = "Режим исчезающего сообщения",
+                                        tint = if (pendingEphemeral == null) {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        } else {
+                                            MaterialTheme.colorScheme.primary
+                                        },
+                                        modifier = Modifier.size(19.dp),
+                                    )
+                                }
                             }
                             BasicTextField(
                                 value = inputText,
@@ -1295,7 +1340,9 @@ fun ChatScreen(
                                         .clip(sendShape)
                                         .combinedClickable(
                                             onClick = { submitText() },
-                                            onLongClick = { if (editingMessage == null) showScheduleDialog = true }
+                                            // Долгий тап раньше сразу открывал «отправить позже».
+                                            // Теперь меню: отложить или сделать исчезающим.
+                                            onLongClick = { if (editingMessage == null) showSendMenu = true }
                                         ),
                                     contentAlignment = Alignment.Center
                                 ) {
