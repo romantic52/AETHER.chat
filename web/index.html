@@ -319,6 +319,15 @@
                         <button id="cam-btn" class="tg-btn-icon" title="Записать видеосообщение">
                             <i class="fas fa-video"></i>
                         </button>
+                        <button id="ephemeral-btn" class="tg-btn-icon tg-ephemeral-btn hidden" title="Исчезающее сообщение">
+                            <i class="fas fa-hourglass-half"></i>
+                        </button>
+                        <div id="send-mode-menu" class="tg-send-menu hidden">
+                            <div class="tg-send-menu-title">Как отправить</div>
+                            <button data-mode="once"><i class="fas fa-eye"></i> Просмотр один раз</button>
+                            <button data-mode="hour"><i class="fas fa-hourglass-half"></i> Исчезнет через час</button>
+                            <button data-mode="none"><i class="fas fa-comment"></i> Обычное сообщение</button>
+                        </div>
                         <button id="send-btn" class="tg-btn-icon tg-send-btn hidden">
                             <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>
                         </button>

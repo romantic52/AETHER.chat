@@ -70,6 +70,8 @@ struct ChatView: View {
     @State private var infoMessage: ChatMessage?
     @State private var showEphemeralPicker = false
     @State private var showSendMenu = false
+    /// Зажатие уже обработано: гасим отправку, которую иначе вызовет отпускание.
+    @State private var longPressHandled = false
     /// Кнопку режима можно убрать из строки ввода: режим остаётся доступен
     /// долгим нажатием на отправку, функция не пропадает.
     @AppStorage("chat.showEphemeralButton") private var showEphemeralButton = true
@@ -1060,7 +1062,16 @@ struct ChatView: View {
                 }
             default:
                 if hasText {
-                    Button(action: submit) {
+                    Button {
+                        // Зажатие уже открыло меню — отпускание не должно
+                        // отправлять само. simultaneousGesture пропускал оба
+                        // события: сообщение уходило раньше выбора сценария.
+                        if longPressHandled {
+                            longPressHandled = false
+                        } else {
+                            submit()
+                        }
+                    } label: {
                         Image(systemName: "arrow.up")
                             .font(.system(size: 20, weight: .bold))
                             .foregroundStyle(palette.onAccent)
@@ -1074,6 +1085,7 @@ struct ChatView: View {
                     .simultaneousGesture(
                         LongPressGesture(minimumDuration: 0.4).onEnded { _ in
                             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+                            longPressHandled = true
                             showSendMenu = true
                         }
                     )

@@ -1766,7 +1766,89 @@ if(peerInput) {
         }, 300);
     });
 }
-if(sendBtn) sendBtn.addEventListener('click', sendMessage);
+// Отправка. Долгое нажатие открывает меню режимов; отпускание после него
+// НЕ отправляет — иначе сообщение уходило бы раньше, чем выбран сценарий.
+let sendLongPressTimer = null;
+let sendLongPressFired = false;
+let pendingEphemeralSpec = null;
+
+function updateEphemeralIndicator() {
+    const btn = document.getElementById('ephemeral-btn');
+    if (btn) btn.classList.toggle('active', !!pendingEphemeralSpec);
+}
+
+function chooseEphemeral(mode) {
+    // VIEW_ONCE — ровно один просмотр; EPHEMERAL — час после открытия.
+    pendingEphemeralSpec = mode === 'once'
+        ? { mt: 'VIEW_ONCE' }
+        : mode === 'hour'
+            ? { mt: 'EPHEMERAL', eph: { ttl: 3600, trg: 'FIRST_OPEN' } }
+            : null;
+    updateEphemeralIndicator();
+    if (typeof applyEphemeralButtonVisibility === 'function') applyEphemeralButtonVisibility();
+    closeSendMenu();
+}
+
+function openSendMenu() {
+    sendLongPressFired = true;
+    const menu = document.getElementById('send-mode-menu');
+    if (menu) menu.classList.remove('hidden');
+}
+
+function closeSendMenu() {
+    const menu = document.getElementById('send-mode-menu');
+    if (menu) menu.classList.add('hidden');
+}
+
+function startSendLongPress() {
+    sendLongPressFired = false;
+    clearTimeout(sendLongPressTimer);
+    sendLongPressTimer = setTimeout(openSendMenu, 400);
+}
+
+function cancelSendLongPress() {
+    clearTimeout(sendLongPressTimer);
+    sendLongPressTimer = null;
+}
+
+if (sendBtn) {
+    sendBtn.addEventListener('click', () => {
+        // Зажатие уже открыло меню — отпускание гасим.
+        if (sendLongPressFired) { sendLongPressFired = false; return; }
+        sendMessage();
+    });
+    sendBtn.addEventListener('pointerdown', startSendLongPress);
+    sendBtn.addEventListener('pointerup', cancelSendLongPress);
+    sendBtn.addEventListener('pointerleave', cancelSendLongPress);
+    sendBtn.addEventListener('pointercancel', cancelSendLongPress);
+    // Долгий тап на сенсорном не должен звать системное меню выделения.
+    sendBtn.addEventListener('contextmenu', e => e.preventDefault());
+}
+
+// Пункты меню режимов.
+document.querySelectorAll('#send-mode-menu button').forEach(btn => {
+    btn.addEventListener('click', () => chooseEphemeral(btn.dataset.mode));
+});
+// Клик мимо меню закрывает его.
+document.addEventListener('click', e => {
+    const menu = document.getElementById('send-mode-menu');
+    if (!menu || menu.classList.contains('hidden')) return;
+    if (menu.contains(e.target) || (sendBtn && sendBtn.contains(e.target))) return;
+    closeSendMenu();
+});
+// Кнопка режима рядом с полем ввода: показывается по настройке, но если
+// режим уже выбран — всегда, иначе не видно, что письмо уйдёт исчезающим.
+const ephemeralBtn = document.getElementById('ephemeral-btn');
+if (ephemeralBtn) {
+    ephemeralBtn.addEventListener('click', openSendMenu);
+}
+function applyEphemeralButtonVisibility() {
+    if (!ephemeralBtn) return;
+    const show = localStorage.getItem('show_ephemeral_button') !== '0';
+    ephemeralBtn.classList.toggle('hidden', !show && !pendingEphemeralSpec);
+}
+window.applyEphemeralButtonVisibility = applyEphemeralButtonVisibility;
+applyEphemeralButtonVisibility();
 if(messageInput) {
     messageInput.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
@@ -2759,6 +2841,15 @@ async function sendMessage() {
         }
     } else {
         let payloadObj = { type: 'text', content: text };
+        // Режим исчезающего, выбранный в меню. Формат тот же, что у native:
+        // mt — режим, eph — параметры. Сбрасываем после отправки, чтобы
+        // следующее сообщение случайно не ушло временным.
+        if (pendingEphemeralSpec) {
+            payloadObj.mt = pendingEphemeralSpec.mt;
+            if (pendingEphemeralSpec.eph) payloadObj.eph = pendingEphemeralSpec.eph;
+            pendingEphemeralSpec = null;
+            updateEphemeralIndicator();
+        }
         if (replyToMsgId) {
             const origMsg = messages.find(m => m.message_id === replyToMsgId);
             if (origMsg) {
