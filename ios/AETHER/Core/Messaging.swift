@@ -573,6 +573,16 @@ final class Messaging: ObservableObject {
             await groups.load()   // гонка загрузки ключей, а не «ядовитое» сообщение
             return false
         }
+        // RB-1: сообщение зашифровано ключом своей эпохи. Если она новее нашей,
+        // ключ у нас устарел (в группе провели ротацию) — это гонка ключей, а
+        // не испорченный конверт: карантинить нельзя, надо сходить за новым.
+        if isGroup {
+            let gid = item.recipientId.lowercased()
+            if CoreClient.envelopeEpoch(item.envelope) > (await core.groupEpoch(gid)) {
+                await groups.load()
+                return false
+            }
+        }
         if await core.pendingKeyChange(for: item.senderId.lowercased()) != nil { return false }
 
         let key = retriesKey(item.id)

@@ -439,6 +439,14 @@ class RelayApi(baseUrl: String) {
         val linkedGroupId: String? = null,
         val ownerId: String = "",
         val description: String = "",
+        // RB-1: ключ группы больше не вечен. keyEpoch — актуальное поколение,
+        // myKeyEpoch — то, для которого выдана НАША копия. Расхождение значит,
+        // что копия устарела и её надо перечитать. rekeyRequired — из группы
+        // кто-то вышел, и до смены ключа группа не пишет.
+        val keyEpoch: Int = 1,
+        val myKeyEpoch: Int = 1,
+        val rekeyRequired: Boolean = false,
+        val publicJoin: Boolean = false,
     )
 
     fun getMyGroups(): List<GroupInfo> {
@@ -459,6 +467,10 @@ class RelayApi(baseUrl: String) {
                         linkedGroupId = group.optString("linked_group_id").takeIf(String::isNotBlank),
                         ownerId = group.optString("owner_id", group.optString("owner")),
                         description = group.optString("description"),
+                        keyEpoch = group.optInt("key_epoch", 1),
+                        myKeyEpoch = group.optInt("my_key_epoch", group.optInt("key_epoch", 1)),
+                        rekeyRequired = jsonBoolean(group, "rekey_required"),
+                        publicJoin = jsonBoolean(group, "public_join"),
                     )
                 )
             }
@@ -471,6 +483,10 @@ class RelayApi(baseUrl: String) {
         val displayName: String,
         val avatarFileId: String?,
         val role: String,
+        // RB-1: публичный ключ участника — им админ заворачивает новый групповой
+        // ключ при ротации. Ключ и так публичен (GET /users/{id}), здесь он
+        // избавляет от отдельного запроса на каждого участника.
+        val publicKeyB64: String? = null,
     )
 
     fun getGroupMembers(groupId: String): List<GroupMember> = try {
@@ -490,6 +506,7 @@ class RelayApi(baseUrl: String) {
                         displayName = jsonString(member, "display_name") ?: username.ifBlank { userId },
                         avatarFileId = jsonString(member, "avatar_file_id"),
                         role = jsonString(member, "role") ?: "member",
+                        publicKeyB64 = jsonString(member, "public_key_b64"),
                     )
                 )
             }
@@ -698,6 +715,38 @@ class RelayApi(baseUrl: String) {
         val body = JSONObject().put("status_emoji", emoji).toString()
             .toRequestBody("application/json".toMediaType())
         requestJson(authorizedRequest("$base/users/me/profile").put(body).build())
+    }
+
+    /**
+     * RB-1: сменить групповой ключ и раздать его всем оставшимся участникам.
+     *
+     * Ключ считает клиент — сервер группового ключа не знает и знать не должен
+     * (кроме публичных). Сервер отвечает за атомарность, полноту покрытия и
+     * монотонность эпохи: неполный набор или эпоха не «текущая + 1» → 409, и
+     * тогда состав изменился, пока мы считали. Затирать чужую ротацию нельзя,
+     * поэтому 409 здесь не ошибка сети, а сигнал перечитать и повторить.
+     *
+     * joinKeyB64 обязателен для публичной группы: сервер сам заворачивает ключ
+     * вступающим, и без новой копии новичок получил бы мёртвый ключ.
+     */
+    fun rotateGroupKey(
+        groupId: String,
+        epoch: Int,
+        shares: List<Pair<String, String>>,
+        joinKeyB64: String? = null,
+    ): Int {
+        val keys = JSONArray()
+        for ((userId, wrapped) in shares) {
+            keys.put(JSONObject().put("user_id", userId).put("encrypted_key_b64", wrapped))
+        }
+        val payload = JSONObject().put("epoch", epoch).put("keys", keys)
+        if (joinKeyB64 != null) payload.put("join_key_b64", joinKeyB64)
+        val body = payload.toString().toRequestBody("application/json".toMediaType())
+        val out = requestJson(
+            authorizedRequest("$base/groups/${java.net.URLEncoder.encode(groupId, "UTF-8")}/key")
+                .put(body).build()
+        )
+        return out.optInt("epoch", epoch)
     }
 
     fun uploadFile(fileBytes: ByteArray): String = try {

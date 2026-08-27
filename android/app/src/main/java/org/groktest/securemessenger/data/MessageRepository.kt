@@ -82,6 +82,9 @@ class MessageRepository(
         val role: String = "member",
         val linkedGroupId: String? = null,
         val isChannel: Boolean = false,
+        // RB-1: поколение ключа. Держать копию молча нельзя: после ротации
+        // сервер отвергнет отправку, а входящие новой эпохи не расшифруются.
+        val epoch: Int = 1,
     )
 
     /**
@@ -117,44 +120,114 @@ class MessageRepository(
         try {
             groupKeys[id]?.let { return it }
             if (System.currentTimeMillis() - groupKeysFetchedAt < 15_000) return null
-            val groups = try { api.getMyGroups() } catch (e: Exception) { return null }
-            groupKeysFetchedAt = System.currentTimeMillis()
-            for (g in groups) {
-                val raw = g.encryptedKeyB64
-                if (raw.isBlank()) continue
-                val parsed: GroupKey? = try {
-                    if (raw.trimStart().startsWith("{")) {
-                        // Новый формат: box-конверт {sender_pubkey_b64, nonce_b64, ciphertext_b64}
-                        val o = JSONObject(raw)
-                        val env = E2ECrypto.Envelope(
-                            o.getString("sender_pubkey_b64"),
-                            o.getString("nonce_b64"),
-                            o.getString("ciphertext_b64"),
-                        )
-                        GroupKey(
-                            E2ECrypto.SymmetricKey(crypto.decrypt(env, keys)),
-                            isE2E = true,
-                            role = g.role,
-                            linkedGroupId = g.linkedGroupId,
-                            isChannel = g.isChannel,
-                        )
-                    } else {
-                        // Легаси: raw base64-ключ, известный серверу → НЕ E2E
-                        GroupKey(
-                            E2ECrypto.SymmetricKey(raw),
-                            isE2E = false,
-                            role = g.role,
-                            linkedGroupId = g.linkedGroupId,
-                            isChannel = g.isChannel,
-                        )
-                    }
-                } catch (e: Exception) { null }
-                if (parsed != null) groupKeys[g.id.lowercase()] = parsed
-            }
+            refreshGroupKeysLocked()
             return groupKeys[id]
         } finally {
             groupKeysMutex.unlock()
         }
+    }
+
+    /**
+     * RB-1: перечитать ключ группы, даже если он уже лежит в кэше.
+     *
+     * Обычный groupKeyFor возвращает кэш и на сервер не ходит — после ротации
+     * это означало бы вечно устаревший ключ: отправка ловила бы stale_key_epoch,
+     * а входящие новой эпохи не расшифровывались бы.
+     */
+    private suspend fun refreshGroupKey(groupId: String): GroupKey? {
+        groupKeysMutex.lock()
+        try {
+            groupKeysFetchedAt = 0L   // сбрасываем троттлинг: ключ реально сменился
+            refreshGroupKeysLocked()
+            return groupKeys[groupId.lowercase()]
+        } finally {
+            groupKeysMutex.unlock()
+        }
+    }
+
+    /** Тело обновления ключей. Вызывать ТОЛЬКО под groupKeysMutex. */
+    private suspend fun refreshGroupKeysLocked() {
+        val groups = try { api.getMyGroups() } catch (e: Exception) { return }
+        groupKeysFetchedAt = System.currentTimeMillis()
+        val needRekey = mutableListOf<RelayApi.GroupInfo>()
+        for (g in groups) {
+            val raw = g.encryptedKeyB64
+            if (raw.isBlank()) continue
+            val parsed: GroupKey? = try {
+                if (raw.trimStart().startsWith("{")) {
+                    // Новый формат: box-конверт {sender_pubkey_b64, nonce_b64, ciphertext_b64}
+                    val o = JSONObject(raw)
+                    val env = E2ECrypto.Envelope(
+                        o.getString("sender_pubkey_b64"),
+                        o.getString("nonce_b64"),
+                        o.getString("ciphertext_b64"),
+                    )
+                    GroupKey(
+                        E2ECrypto.SymmetricKey(crypto.decrypt(env, keys)),
+                        isE2E = true,
+                        role = g.role,
+                        linkedGroupId = g.linkedGroupId,
+                        isChannel = g.isChannel,
+                        epoch = g.myKeyEpoch,
+                    )
+                } else {
+                    // Легаси: raw base64-ключ, известный серверу → НЕ E2E
+                    GroupKey(
+                        E2ECrypto.SymmetricKey(raw),
+                        isE2E = false,
+                        role = g.role,
+                        linkedGroupId = g.linkedGroupId,
+                        isChannel = g.isChannel,
+                        epoch = g.myKeyEpoch,
+                    )
+                }
+            } catch (e: Exception) { null }
+            if (parsed != null) groupKeys[g.id.lowercase()] = parsed
+            // RB-1: кто-то вышел — до смены ключа он читает всё новое, и группа
+            // не пишет вовсе. Провернуть ротацию может только админ.
+            if (g.rekeyRequired && (g.role == "admin" || g.role == "owner")) needRekey.add(g)
+        }
+        // Ротация ходит в сеть и снова дёргает /groups/me — делаем её ПОСЛЕ
+        // разбора списка, но всё ещё под мьютексом, чтобы два потока не начали
+        // считать новый ключ одновременно.
+        for (g in needRekey) {
+            try { rotateGroupKeyLocked(g) } catch (_: Exception) {
+                // 409 — состав или эпоха изменились, пока мы считали.
+                // Не затираем чужую ротацию: попробуем на следующем круге.
+            }
+        }
+    }
+
+    /**
+     * RB-1: сгенерировать новый групповой ключ и раздать его всем оставшимся.
+     * Вызывать ТОЛЬКО под groupKeysMutex.
+     */
+    private suspend fun rotateGroupKeyLocked(g: RelayApi.GroupInfo) {
+        val id = g.id.lowercase()
+        val roster = api.getGroupMembers(id)
+        if (roster.isEmpty()) return
+
+        val newKeyB64 = crypto.generateSymmetricKey().keyB64
+        val shares = ArrayList<Pair<String, String>>(roster.size)
+        for (m in roster) {
+            // Ключ берём из TOFU-хранилища, а НЕ из public_key_b64 в ответе
+            // сервера. Иначе сервер, подставив свой ключ в список участников,
+            // получил бы новый групповой ключ в подарок — ровно то, от чего
+            // ротация и защищает. Хотя бы один участник без доверенного ключа —
+            // ротация не идёт: сервер всё равно отвергнет неполное покрытие, а
+            // раздать ключ части группы значит расколоть её молча.
+            shares.add(m.userId to wrapGroupKeyFor(m.userId, newKeyB64))
+        }
+        val joinKey = if (g.publicJoin) newKeyB64 else null
+        val epoch = api.rotateGroupKey(id, g.keyEpoch + 1, shares, joinKey)
+        groupKeys[id] = GroupKey(
+            E2ECrypto.SymmetricKey(newKeyB64),
+            isE2E = !g.publicJoin,
+            role = g.role,
+            linkedGroupId = g.linkedGroupId,
+            isChannel = g.isChannel,
+            epoch = epoch,
+        )
     }
 
     /**
@@ -308,6 +381,11 @@ class MessageRepository(
             "is_group" to "1",
             "nonce_b64" to env.nonceB64,
             "ciphertext_b64" to env.ciphertextB64,
+            // RB-1: поколение ключа, которым зашифровано. Сервер по нему
+            // отвергает отправку на ключе, копия которого осталась у удалённого
+            // участника; получатель понимает, что его ключ устарел, вместо
+            // молчаливого провала расшифровки.
+            "epoch" to gk.epoch,
         )
     }
 
@@ -879,7 +957,16 @@ class MessageRepository(
         val plain = when {
             m.isRatchetEnvelope -> decryptRatchet(m)
             m.isGroupEnvelope -> {
-                val gk = groupKeyFor(msgPeerId) ?: throw GroupKeyUnavailableException(msgPeerId)
+                var gk = groupKeyFor(msgPeerId) ?: throw GroupKeyUnavailableException(msgPeerId)
+                // RB-1: сообщение зашифровано ключом СВОЕЙ эпохи. Если она
+                // новее нашей, в группе провели ротацию, а у нас ещё старый
+                // ключ — расшифровка гарантированно провалится. Идём за новым,
+                // минуя 15-секундный троттлинг: это не «ядовитый» конверт, а
+                // гонка ключей. Конверт без epoch — старый клиент, эпоха 1.
+                val msgEpoch = runCatching { JSONObject(m.envelopeJson).optInt("epoch", 1) }.getOrDefault(1)
+                if (msgEpoch > gk.epoch) {
+                    gk = refreshGroupKey(msgPeerId) ?: throw GroupKeyUnavailableException(msgPeerId)
+                }
                 String(crypto.decryptFile(E2ECrypto.Envelope("SYM", m.nonceB64, m.ciphertextB64), gk.key), Charsets.UTF_8)
             }
             else -> {
@@ -1211,7 +1298,21 @@ class MessageRepository(
                     store.updateStatus(msg.msgId, -1) // до явного решения пользователя
                 } catch (e: RelayApi.HttpError) {
                     android.util.Log.w("Outbox", "HttpError ${e.code} sending to ${msg.peerId}: ${e.message}", e)
-                    if (e.code in 400..499) {
+                    // RB-1: 409 по групповому сообщению — не постоянная ошибка.
+                    // Либо ключ уже сменили (stale_key_epoch), либо ещё обязаны
+                    // сменить (rekey_required). Считать это смертью сообщения
+                    // значило бы терять текст всякий раз, когда кто-то вышел из
+                    // группы. Перечитываем ключ и повторяем: на следующем круге
+                    // сообщение перешифруется актуальным.
+                    val groupRekey = e.code == 409 &&
+                        (e.message?.contains("key_epoch") == true ||
+                         e.message?.contains("rekey_required") == true)
+                    if (groupRekey) {
+                        runCatching { refreshGroupKey(msg.peerId) }
+                        transientFailure = true
+                        blockedPeers.add(msg.peerId.lowercase())
+                        if (bumpAttempts(attempts, msg.msgId)) store.updateStatus(msg.msgId, -1)
+                    } else if (e.code in 400..499) {
                         store.updateStatus(msg.msgId, -1) // постоянная ошибка
                     } else {
                         transientFailure = true

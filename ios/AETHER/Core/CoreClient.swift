@@ -949,7 +949,37 @@ actor CoreClient {
     func sendGroup(groupId: String, groupKey: String, wirePayload: String,
                    clientId: String? = nil) throws -> String {
         let envelope = try sealGroup(plaintextJson: wirePayload, groupKeyB64: groupKey)
-        return try api.sendMessage(recipientId: groupId, envelopeJson: envelope, clientId: clientId)
+        // RB-1: эпоха дописывается поверх конверта, который собрало ядро.
+        // Ядро её не знает и знать не обязано: поле нужно серверу (отвергнуть
+        // отправку на ключе, копия которого осталась у удалённого участника) и
+        // получателю (понять, что его ключ устарел, вместо молчаливого провала
+        // расшифровки). Подделка поля ничего не даёт: расшифровку определяет
+        // сам ключ, а не заявленный номер.
+        let stamped = Self.stampEpoch(envelope, epoch: groupEpoch(groupId))
+        return try api.sendMessage(recipientId: groupId, envelopeJson: stamped, clientId: clientId)
+    }
+
+    /// Дописать epoch в готовый JSON группового конверта.
+    nonisolated static func stampEpoch(_ envelopeJson: String, epoch: Int) -> String {
+        guard let data = envelopeJson.data(using: .utf8),
+              var obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return envelopeJson
+        }
+        obj["epoch"] = epoch
+        guard let out = try? JSONSerialization.data(withJSONObject: obj),
+              let text = String(data: out, encoding: .utf8) else { return envelopeJson }
+        return text
+    }
+
+    /// Эпоха входящего конверта. Конверт без поля — старый клиент, эпоха 1.
+    nonisolated static func envelopeEpoch(_ envelopeJson: String) -> Int {
+        guard let data = envelopeJson.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return 1
+        }
+        if let n = obj["epoch"] as? NSNumber { return n.intValue }
+        if let s = obj["epoch"] as? String { return Int(s) ?? 1 }
+        return 1
     }
 
     // MARK: - Приём
@@ -1450,4 +1480,23 @@ actor CoreClient {
 
     func groupKey(_ groupId: String) -> String? { (try? store.getGroupKey(groupId: groupId)) ?? nil }
     func setGroupKey(_ groupId: String, _ keyB64: String) { try? store.setGroupKey(groupId: groupId, keyB64: keyB64) }
+
+    // MARK: - RB-1: эпоха группового ключа
+    //
+    // Ключ группы перестал быть вечным: при удалении участника админ меняет
+    // его, иначе ушедший расшифровывает всё последующее своей копией. Эпоха
+    // говорит, какому поколению ключа принадлежит наш экземпляр.
+    //
+    // Живёт в meta, а не в отдельной колонке: схема стораджа лежит в Rust-ядре,
+    // и ради одного числа пересобирать .xcframework и .so для всех платформ
+    // не стоит.
+
+    func groupEpoch(_ groupId: String) -> Int {
+        let raw = ((try? store.metaGet(key: "group_epoch::" + groupId.lowercased())) ?? nil) ?? ""
+        return Int(raw) ?? 1
+    }
+
+    func setGroupEpoch(_ groupId: String, _ epoch: Int) {
+        try? store.metaSet(key: "group_epoch::" + groupId.lowercased(), value: String(epoch))
+    }
 }

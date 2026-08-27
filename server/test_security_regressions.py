@@ -17,6 +17,9 @@
   IDEMPOTENCY-001    тот же client_id ДРУГОМУ адресату → 409, а не «ok»;
                      ретрай с перешифрованным конвертом → duplicate (NEW-3).
   GROUP-MEMBER-001   в группу нельзя добавить несуществующего пользователя.
+  GROUP-REKEY-001..009  удаление/уход участника меняет групповой ключ (RB-1):
+                     отправка на старой эпохе заперта, ротация атомарна и
+                     обязана покрыть весь состав.
   KEYSHAPE-001       публичный ключ аккаунта обязан быть 32 байта.
   WS-TICKET-001      билет на WebSocket одноразовый.
 """
@@ -135,6 +138,20 @@ def ratchet_envelope(marker: str) -> dict:
         "type": 0,
         "body_b64": b64(marker.encode() + secrets.token_bytes(16)),
     }
+
+
+def group_envelope(marker: str, epoch=None) -> dict:
+    """Минимальный валидный групповой конверт (AES-GCM, nonce ровно 12 байт).
+
+    epoch=None — конверт СТАРОГО клиента, который про эпохи не знает."""
+    env = {
+        "is_group": "1",
+        "nonce_b64": b64(secrets.token_bytes(12)),
+        "ciphertext_b64": b64(marker.encode() + secrets.token_bytes(16)),
+    }
+    if epoch is not None:
+        env["epoch"] = epoch
+    return env
 
 
 def totp_at(secret_b32: str) -> str:
@@ -307,6 +324,113 @@ def test_group_member_must_exist():
     print("GROUP-MEMBER-001: ok")
 
 
+def test_group_key_rotation():
+    """GROUP-REKEY-001..009: удаление участника обязано менять групповой ключ.
+
+    Ранее remove_group_member и leave_group делали ровно один DELETE: ключ K1
+    жил дальше, и ушедший расшифровывал всё, что группа отправит потом (RB-1).
+    """
+    owner, opw, _, _ = register("regrk")
+    bob, bpw, _, _ = register("regrkb")
+    carol, cpw, _, _ = register("regrkc")
+    token = login(owner, opw)
+
+    gid = "g" + secrets.token_hex(8)
+    status, data = call("POST", "/groups", token, {
+        "id": gid, "name": "rekey", "encrypted_key_b64": b64(secrets.token_bytes(48))})
+    assert status == 200, f"create group: {status} {data}"
+    for who in (bob, carol):
+        status, data = call("POST", f"/groups/{gid}/members", token, {
+            "user_id": who, "encrypted_key_b64": b64(secrets.token_bytes(48))})
+        assert status == 200, f"add {who}: {status} {data}"
+
+    # 009: пока никого не удаляли — поведение ровно прежнее. Конверт СТАРОГО
+    # клиента, без поля epoch, обязан проходить: иначе правка ломает
+    # установленные сборки на ровном месте.
+    status, data = call("POST", "/messages", token, {
+        "sender_id": owner, "recipient_id": gid,
+        "envelope": group_envelope("BEFORE"), "client_id": str(uuid.uuid4())})
+    assert status == 200, f"старый клиент до удаления: {status} {data}"
+
+    # 001: удаление сообщает, что нужна ротация, и запирает отправку.
+    status, data = call("DELETE", f"/groups/{gid}/members/{carol}", token)
+    assert status == 200 and data.get("rekey_required") is True, \
+        f"remove не потребовал ротацию: {status} {data}"
+
+    status, data = call("POST", "/messages", token, {
+        "sender_id": owner, "recipient_id": gid,
+        "envelope": group_envelope("AFTER"), "client_id": str(uuid.uuid4())})
+    assert status == 409, f"отправка на старом ключе прошла: {status} {data}"
+
+    # 002: неполное покрытие отвергается — группа не должна расколоться на
+    # тех, кто уже на K2, и тех, кто ещё на K1.
+    status, data = call("PUT", f"/groups/{gid}/key", token, {
+        "epoch": 2, "keys": [{"user_id": owner, "encrypted_key_b64": b64(secrets.token_bytes(48))}]})
+    assert status == 409, f"неполное покрытие принято: {status} {data}"
+
+    # 003: эпоха обязана быть ровно текущая + 1 (гонка двух админов).
+    status, data = call("PUT", f"/groups/{gid}/key", token, {
+        "epoch": 7, "keys": [
+            {"user_id": owner, "encrypted_key_b64": b64(secrets.token_bytes(48))},
+            {"user_id": bob, "encrypted_key_b64": b64(secrets.token_bytes(48))}]})
+    assert status == 409, f"эпоха из будущего принята: {status} {data}"
+
+    # 008: удалённого нельзя снабдить новым ключом — его нет в составе.
+    status, data = call("PUT", f"/groups/{gid}/key", token, {
+        "epoch": 2, "keys": [
+            {"user_id": owner, "encrypted_key_b64": b64(secrets.token_bytes(48))},
+            {"user_id": bob, "encrypted_key_b64": b64(secrets.token_bytes(48))},
+            {"user_id": carol, "encrypted_key_b64": b64(secrets.token_bytes(48))}]})
+    assert status == 409, f"удалённому выдали новый ключ: {status} {data}"
+
+    # 006: не-админ ротацию не проворачивает.
+    bob_token = login(bob, bpw)
+    status, data = call("PUT", f"/groups/{gid}/key", bob_token, {
+        "epoch": 2, "keys": [
+            {"user_id": owner, "encrypted_key_b64": b64(secrets.token_bytes(48))},
+            {"user_id": bob, "encrypted_key_b64": b64(secrets.token_bytes(48))}]})
+    assert status == 403, f"не-админ провернул ротацию: {status} {data}"
+
+    # 004: честная ротация проходит и отпирает группу.
+    status, data = call("PUT", f"/groups/{gid}/key", token, {
+        "epoch": 2, "keys": [
+            {"user_id": owner, "encrypted_key_b64": b64(secrets.token_bytes(48))},
+            {"user_id": bob, "encrypted_key_b64": b64(secrets.token_bytes(48))}]})
+    assert status == 200 and data.get("epoch") == 2, f"ротация: {status} {data}"
+
+    status, data = call("POST", "/messages", token, {
+        "sender_id": owner, "recipient_id": gid,
+        "envelope": group_envelope("NEW", epoch=2), "client_id": str(uuid.uuid4())})
+    assert status == 200, f"отправка на новом ключе: {status} {data}"
+
+    # 005: после ротации старая эпоха отвергается — в том числе конверт без
+    # поля epoch, то есть клиент, не заметивший ротацию.
+    status, data = call("POST", "/messages", token, {
+        "sender_id": owner, "recipient_id": gid,
+        "envelope": group_envelope("STALE", epoch=1), "client_id": str(uuid.uuid4())})
+    assert status == 409, f"эпоха 1 после ротации принята: {status} {data}"
+    status, data = call("POST", "/messages", token, {
+        "sender_id": owner, "recipient_id": gid,
+        "envelope": group_envelope("NOEPOCH"), "client_id": str(uuid.uuid4())})
+    assert status == 409, f"конверт без эпохи после ротации принят: {status} {data}"
+
+    # Клиент видит эпоху и может понять, что его копия устарела.
+    status, data = call("GET", "/groups/me", token)
+    mine = [g for g in data.get("groups", []) if g["id"] == gid]
+    assert mine and mine[0]["key_epoch"] == 2 and mine[0]["rekey_required"] is False, \
+        f"/groups/me не отдаёт эпоху: {mine}"
+
+    # 007: добровольный уход требует ротации так же, как удаление.
+    status, data = call("POST", f"/groups/{gid}/leave", bob_token)
+    assert status == 200 and data.get("rekey_required") is True, \
+        f"leave не потребовал ротацию: {status} {data}"
+    status, data = call("POST", "/messages", token, {
+        "sender_id": owner, "recipient_id": gid,
+        "envelope": group_envelope("AFTERLEAVE", epoch=2), "client_id": str(uuid.uuid4())})
+    assert status == 409, f"после ухода отправка не заперта: {status} {data}"
+    print("GROUP-REKEY-001..009: ok")
+
+
 def test_public_key_shape():
     """KEYSHAPE-001: ключ аккаунта — ровно 32 байта Curve25519."""
     # Пустая строка отсекается ещё pydantic-ом (min_length=16) — это 422,
@@ -359,6 +483,7 @@ def main():
     test_target_device_validation()
     test_idempotency()
     test_group_member_must_exist()
+    test_group_key_rotation()
     test_public_key_shape()
     test_ws_ticket_single_use()
     print("\nВсе регрессии пройдены.")

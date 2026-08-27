@@ -621,6 +621,10 @@ let serverUrl = '';
 let myKeys = null;
 let serverPublicKeyB64 = '';
 let groupKeys = Object.create(null); // group_id -> Uint8Array (32 bytes)
+// RB-1: эпоха, для которой получен ключ в groupKeys. Ключ группы больше не
+// вечен — при удалении участника админ его меняет, и держать старый молча
+// нельзя: сервер отвергнет отправку, а входящие новой эпохи не расшифруются.
+let groupKeyEpochs = Object.create(null); // group_id -> number
 let messages = []; // [{ direction: 'in'|'out', peer: 'id', plaintext: '...', message_id: '...' }]
 let chatSettingsCache = Object.create(null); // { peerId: { is_pinned, is_muted, is_archived } }
 let isArchiveViewOpen = false;
@@ -2972,7 +2976,13 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
                 envelope = {
                     is_group: "1",
                     nonce_b64: enc.nonce_b64,
-                    ciphertext_b64: enc.ciphertext_b64
+                    ciphertext_b64: enc.ciphertext_b64,
+                    // RB-1: эпоха ключа, которым зашифровано. Получатель по ней
+                    // выбирает ключ, а сервер отвергает отправку на устаревшем —
+                    // иначе после удаления участника группа продолжила бы слать
+                    // на ключ, копия которого у ушедшего осталась.
+                    epoch: groupKeyEpochs[targetPeer.toLowerCase()] ||
+                           (myGroupsCache[targetPeer.toLowerCase()] || {}).key_epoch || 1
                 };
             } else {
                 // Direct message: Olm/X3DH + Double Ratchet, копия каждому
@@ -3029,17 +3039,50 @@ async function sendPayloadMessage(payloadObj, targetPeer = selectedPeer) {
 
             let res = null;
             if (envelope) {
-                res = await fetch(`${serverUrl}/messages`, {
+                const postEnvelope = (env) => fetch(`${serverUrl}/messages`, {
                     method: 'POST',
                     headers: authHeaders({ 'Content-Type': 'application/json' }),
                     body: JSON.stringify({
                         sender_id: myId,
                         recipient_id: targetPeer,
-                        envelope: envelope,
+                        envelope: env,
                         client_id: clientId
                     })
                 });
-                if (!res.ok) throw new Error('Ошибка отправки');
+                res = await postEnvelope(envelope);
+                // RB-1: 409 по групповому конверту означает, что ключ сменился
+                // (или обязан смениться) с тех пор, как мы его взяли. Это не
+                // ошибка пользователя: подтягиваем актуальную эпоху, перешифровываем
+                // и пробуем ОДИН раз. Тот же client_id — сервер посчитает это
+                // ретраем, а не вторым сообщением.
+                if (res.status === 409 && envelope.is_group === "1") {
+                    const info = await res.json().catch(() => ({}));
+                    const reason = (info.detail || {}).error;
+                    if (reason === 'stale_key_epoch' || reason === 'rekey_required') {
+                        await fetchMyGroups();
+                        const gid = targetPeer.toLowerCase();
+                        const freshKey = groupKeys[gid];
+                        if (freshKey) {
+                            const again = await aesGcmEncrypt(freshKey, textBytes);
+                            envelope = {
+                                is_group: "1",
+                                nonce_b64: again.nonce_b64,
+                                ciphertext_b64: again.ciphertext_b64,
+                                epoch: groupKeyEpochs[gid] ||
+                                       (myGroupsCache[gid] || {}).key_epoch || 1
+                            };
+                            res = await postEnvelope(envelope);
+                        }
+                    }
+                }
+                if (!res.ok) {
+                    if (res.status === 409 && envelope.is_group === "1") {
+                        // Ротация ещё не проведена — писать в группу нельзя,
+                        // и молчать об этом хуже всего: сообщение не ушло.
+                        throw new Error('Из группы вышел участник — ключ ещё не сменён. Отправка станет возможна после смены ключа администратором.');
+                    }
+                    throw new Error('Ошибка отправки');
+                }
             }
 
             const data = envelope ? await res.json() : directData;
@@ -3176,6 +3219,14 @@ async function pollInbox() {
                     const nonceBytes = base64UrlDecode(env.nonce_b64);
                     const cipherBytes = base64UrlDecode(env.ciphertext_b64);
                     const groupId = item.recipient_id.toLowerCase();
+                    // RB-1: сообщение зашифровано ключом своей эпохи. Если она
+                    // новее нашей, ключ у нас устарел — сходим за новым, иначе
+                    // расшифровка гарантированно провалится и сообщение молча
+                    // пропадёт. Конверт без epoch — старый клиент, эпоха 1.
+                    const msgEpoch = parseInt(env.epoch, 10) || 1;
+                    if (msgEpoch > (groupKeyEpochs[groupId] || 1)) {
+                        await fetchMyGroups();
+                    }
                     const gKey = groupKeys[groupId];
                     if (!gKey) {
                         console.error('No group key for', groupId);
@@ -6407,20 +6458,33 @@ async function fetchMyGroups() {
             const data = await res.json();
             for (let g of data.groups) {
                 myGroupsCache[g.id] = g;
-                
-                // Расшифровываем групповой ключ (формат с sender_pubkey_b64 внутри,
-                // как в Android — отправитель обёртки указан в самом конверте).
-                if (!groupKeys[g.id] && g.encrypted_key_b64) {
+
+                // RB-1: ключ группы меняется при ротации, поэтому «уже есть в
+                // памяти» больше не значит «актуальный». Разворачиваем заново,
+                // если сервер отдал эпоху новее той, для которой мы держим ключ.
+                const serverEpoch = g.my_key_epoch || g.key_epoch || 1;
+                const staleKey = (groupKeyEpochs[g.id] || 0) < serverEpoch;
+                if ((!groupKeys[g.id] || staleKey) && g.encrypted_key_b64) {
                     try {
                         const key = unwrapGroupKey(g.encrypted_key_b64);
                         if (key) {
                             groupKeys[g.id] = key;
+                            groupKeyEpochs[g.id] = serverEpoch;
                         } else {
                             console.error("Failed to decrypt group key for", g.id);
                         }
                     } catch (e) {
                         console.error("Error decrypting group key", e);
                     }
+                }
+            }
+            // Кто-то вышел из группы — до смены ключа он читает всё новое.
+            // Ротацию может провернуть только админ, поэтому пробуем её здесь:
+            // на каком клиенте админ окажется первым, тот её и сделает.
+            for (let g of data.groups) {
+                if (g.rekey_required && g.role === 'admin') {
+                    rotateGroupKey(g.id).catch(e =>
+                        console.error("Автоматическая ротация ключа не удалась", g.id, e));
                 }
             }
         }
@@ -6433,6 +6497,7 @@ async function createGroup(id, name, desc, isChannel, linkedGroupId) {
     // Симметричный ключ группы (32 байта для AES-GCM)
     const symKey = nacl.randomBytes(32);
     groupKeys[id.toLowerCase()] = symKey;
+    groupKeyEpochs[id.toLowerCase()] = 1; // RB-1: новая группа — первая эпоха
 
     // Заворачиваем ключ для себя (box на собственный публичный ключ)
     const encryptedKeyB64 = wrapGroupKey(symKey, base64UrlDecode(myKeys.publicB64));
@@ -6460,6 +6525,70 @@ async function createGroup(id, name, desc, isChannel, linkedGroupId) {
     
     await fetchMyGroups();
     renderContactsList();
+}
+
+// RB-1: сменить групповой ключ и раздать его всем оставшимся участникам.
+//
+// Зовётся, когда сервер сообщил rekey_required (кого-то удалили или он вышел),
+// и только у админа — остальным сервер откажет 403. До ротации группа не пишет:
+// у ушедшего осталась рабочая копия старого ключа, и продолжать шифровать им
+// значило бы, что удаление из группы не значит ничего.
+async function rotateGroupKey(groupId) {
+    const gid = groupId.toLowerCase();
+    const info = myGroupsCache[gid];
+    if (!info) throw new Error('Группа неизвестна');
+
+    const res = await fetch(`${serverUrl}/groups/${pathSegment(gid)}/members`, {
+        headers: { 'Authorization': `Bearer ${sessionToken}` }
+    });
+    if (!res.ok) throw new Error('Не удалось получить состав группы');
+    const members = (await res.json()).members || [];
+    if (!members.length) throw new Error('Пустой состав группы');
+
+    // Новый ключ — свежие 32 байта. Старый не переиспользуется ни в каком виде.
+    const newKey = nacl.randomBytes(32);
+    const keys = [];
+    for (const m of members) {
+        if (!m.public_key_b64) {
+            // Один участник без ключа обрушит всю ротацию, и это правильно:
+            // сервер всё равно отвергнет неполное покрытие, а раздать ключ
+            // части группы значит расколоть её молча.
+            throw new Error(`У участника ${m.user_id} нет публичного ключа`);
+        }
+        keys.push({
+            user_id: m.user_id,
+            encrypted_key_b64: wrapGroupKey(newKey, base64UrlDecode(m.public_key_b64))
+        });
+    }
+
+    const body = { epoch: (info.key_epoch || 1) + 1, keys };
+    // Публичная группа/канал: сервер сам заворачивает ключ новым подписчикам,
+    // поэтому ему нужна новая копия — иначе вступившие получат мёртвый ключ.
+    if (info.public_join) body.join_key_b64 = base64UrlEncode(newKey);
+
+    const put = await fetch(`${serverUrl}/groups/${pathSegment(gid)}/key`, {
+        method: 'PUT',
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${sessionToken}`
+        },
+        body: JSON.stringify(body)
+    });
+    if (!put.ok) {
+        // 409 — состав или эпоха изменились, пока мы считали. Перечитаем и
+        // попробуем на следующем круге, а не затрём чужую ротацию.
+        const err = await put.json().catch(() => ({}));
+        throw new Error(err.detail ? JSON.stringify(err.detail) : 'Ротация ключа отклонена');
+    }
+    const out = await put.json();
+    groupKeys[gid] = newKey;
+    groupKeyEpochs[gid] = out.epoch;
+    if (myGroupsCache[gid]) {
+        myGroupsCache[gid].key_epoch = out.epoch;
+        myGroupsCache[gid].my_key_epoch = out.epoch;
+        myGroupsCache[gid].rekey_required = false;
+    }
+    return out.epoch;
 }
 
 async function addMemberToGroup(groupId, userId) {
@@ -6713,6 +6842,7 @@ if (confirmDeleteChatBtn) {
                 }
                 delete myGroupsCache[peer];
                 delete groupKeys[peer];
+                delete groupKeyEpochs[peer];
             } else {
                 const res = await fetch(`${serverUrl}/messages/history/${pathSegment(peer)}`, {
                     method: 'DELETE',
@@ -6909,6 +7039,11 @@ function handleRealtimeMessage(m) {
         clearTypingIndicator((m.sender_id || '').toLowerCase());
     } else if (t === 'new_message') {
         pollInbox(); // мгновенная доставка
+    } else if (t === 'group_key_rotated') {
+        // RB-1: админ сменил ключ группы. Перечитываем сразу, не дожидаясь
+        // следующего круга: до этого наша отправка получала бы stale_key_epoch,
+        // а входящие новой эпохи не расшифровывались бы.
+        fetchMyGroups().catch(e => console.error('refetch после ротации ключа', e));
     } else if (t === 'webrtc_offer' || t === 'webrtc_answer' || t === 'webrtc_ice' || t === 'webrtc_hangup' || t === 'webrtc_busy') {
         // Мгновенный сигналинг звонков через WS (дубль через сообщения отсеется по sig_id)
         const subtypeMap = { webrtc_offer: 'offer', webrtc_answer: 'answer', webrtc_ice: 'candidate', webrtc_hangup: 'hangup', webrtc_busy: 'busy' };

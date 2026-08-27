@@ -19,7 +19,7 @@ import secrets
 from contextlib import contextmanager
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Depends, Header, Request, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.responses import FileResponse
@@ -442,16 +442,33 @@ def _init_schema() -> None:
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE users ADD COLUMN olm_identity_key TEXT")
 
+        # key_epoch / rekey_required — ротация группового ключа (RB-1).
+        # Удаление участника само по себе ключа не меняет: у ушедшего остаётся
+        # его копия K1, и он читает всё последующее. Сервер ключа не знает,
+        # поэтому ротацию делает клиент-админ (PUT /groups/{id}/key), а сервер
+        # считает эпохи и не пускает отправку на устаревшем ключе.
+        # DEFAULT 1 — существующие группы стартуют с первой эпохи, поведение
+        # для них не меняется, пока из группы никого не удалили.
         for col, ddl in [("public_join", "INTEGER NOT NULL DEFAULT 0"),
                          ("join_key_b64", "TEXT"),
                          ("username", "TEXT"),
-                         ("avatar_file_id", "TEXT")]:
+                         ("avatar_file_id", "TEXT"),
+                         ("key_epoch", "INTEGER NOT NULL DEFAULT 1"),
+                         ("rekey_required", "INTEGER NOT NULL DEFAULT 0")]:
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
                    WHERE table_schema = current_schema() AND table_name='groups' AND column_name=%s)""", (col,))
             if not cur.fetchone()[0]:
                 cur.execute(f"ALTER TABLE groups ADD COLUMN {col} {ddl}")
         cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_groups_username ON groups(LOWER(username))")
+
+        # Эпоха, для которой выдана ИМЕННО ЭТА копия ключа участника.
+        cur.execute(
+            """SELECT EXISTS (SELECT 1 FROM information_schema.columns
+               WHERE table_schema = current_schema() AND table_name='group_members'
+                 AND column_name='key_epoch')""")
+        if not cur.fetchone()[0]:
+            cur.execute("ALTER TABLE group_members ADD COLUMN key_epoch INTEGER NOT NULL DEFAULT 1")
 
         # Migrations — must use SAVEPOINTs in PostgreSQL
         # because a failed statement aborts the whole transaction.
@@ -895,6 +912,31 @@ class AddGroupMemberRequest(BaseModel):
     user_id: str = Field(min_length=2, max_length=64)
     encrypted_key_b64: str = Field(min_length=16, max_length=10_000)
     role: str = Field(default="member", pattern=r"^(member|admin)$")
+
+
+class GroupKeyShare(BaseModel):
+    """Копия НОВОГО группового ключа для одного участника."""
+    user_id: str = Field(min_length=2, max_length=64)
+    encrypted_key_b64: str = Field(min_length=16, max_length=10_000)
+
+
+class RotateGroupKeyRequest(BaseModel):
+    """Ротация группового ключа (RB-1).
+
+    epoch — номер НОВОЙ эпохи, обязан быть ровно текущий + 1. Это защита от
+    гонки двух админов: второй, посчитавший ключ от той же исходной эпохи,
+    получит 409 и пересчитает, вместо того чтобы затереть чужую ротацию.
+
+    keys — копии нового ключа для ВСЕХ участников, оставшихся в группе.
+    Неполное покрытие отвергается целиком: группа, где часть участников
+    осталась на старом ключе, — это молча расколотая группа.
+    """
+    epoch: int = Field(ge=2)
+    keys: List[GroupKeyShare] = Field(min_length=1, max_length=1_000)
+    # Публичная группа/канал: сервер сам заворачивает ключ новым подписчикам,
+    # поэтому при ротации ему нужен новый join_key_b64 — иначе вступившие
+    # после ротации получили бы мёртвый ключ прошлой эпохи.
+    join_key_b64: Optional[str] = Field(default=None, max_length=10_000)
 
 # (#12) Edit group request
 class UpdateGroupRequest(BaseModel):
@@ -2096,7 +2138,7 @@ def join_public_group(group_id: str, current_user: str = Depends(get_current_use
     """Самостоятельное вступление в публичную группу/канал: сервер заворачивает
     ключ в конверт для нового участника."""
     with db_conn() as cur:
-        cur.execute("""SELECT is_channel, public_join, join_key_b64 FROM groups
+        cur.execute("""SELECT is_channel, public_join, join_key_b64, key_epoch FROM groups
                        WHERE LOWER(id) = LOWER(%s)""", (group_id,))
         g = cur.fetchone()
         if not g:
@@ -2108,11 +2150,13 @@ def join_public_group(group_id: str, current_user: str = Depends(get_current_use
         if not u or not u["public_key_b64"]:
             raise HTTPException(400, "No public key on file")
         wrapped = _wrap_key_for(u["public_key_b64"], g["join_key_b64"])
+        # RB-1: join_key_b64 — ключ текущей эпохи, значит и копия новичка
+        # относится к ней же.
         cur.execute(
-            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role)
-               VALUES (%s, %s, %s, 'member')
+            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role, key_epoch)
+               VALUES (%s, %s, %s, 'member', %s)
                ON CONFLICT (group_id, user_id) DO NOTHING""",
-            (group_id.lower(), current_user.lower(), wrapped),
+            (group_id.lower(), current_user.lower(), wrapped, (g["key_epoch"] or 1)),
         )
     return {"ok": True}
 
@@ -2380,6 +2424,45 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 raise HTTPException(400, "Group messages must use the group envelope")
             if is_group and not _is_group_envelope(body.envelope):
                 raise HTTPException(400, "Invalid group envelope")
+
+            # RB-1: не пускаем отправку на устаревшем групповом ключе.
+            #
+            # Совместимость со старыми сборками сохранена ровно там, где она
+            # ничего не стоит: пока группу никто не покидал, key_epoch = 1,
+            # конверт без поля epoch считается первой эпохой, и поведение
+            # не отличается от прежнего ни на байт. Требования появляются
+            # только после удаления или ухода участника — то есть ровно тогда,
+            # когда продолжать шифровать старым ключом небезопасно.
+            if is_group:
+                cur.execute(
+                    "SELECT key_epoch, rekey_required FROM groups WHERE LOWER(id) = LOWER(%s)",
+                    (body.recipient_id,))
+                grp = cur.fetchone()
+                group_epoch = (grp["key_epoch"] if grp else 1) or 1
+                if grp and grp["rekey_required"]:
+                    # Участник ушёл, ключ ещё не сменили: у ушедшего осталась
+                    # рабочая копия. Пока админ не провернёт ротацию, группа
+                    # не пишет — иначе удаление членства ничего не значит.
+                    raise HTTPException(409, {
+                        "error": "rekey_required",
+                        "group_id": body.recipient_id.lower(),
+                        "current_epoch": group_epoch,
+                    })
+                sent_epoch = body.envelope.get("epoch", 1)
+                try:
+                    sent_epoch = int(sent_epoch)
+                except (TypeError, ValueError):
+                    raise HTTPException(400, "Invalid group epoch")
+                if sent_epoch != group_epoch:
+                    # Меньше — клиент шифровал старым ключом (не перечитал
+                    # ротацию). Больше — шифровал ключом, которого на сервере
+                    # ещё нет, и часть группы его не расшифрует.
+                    raise HTTPException(409, {
+                        "error": "stale_key_epoch",
+                        "group_id": body.recipient_id.lower(),
+                        "current_epoch": group_epoch,
+                        "sent_epoch": sent_epoch,
+                    })
 
             # Адресация копии конкретному устройству получателя. Раньше поле
             # принималось как есть: сообщение с чужим или несуществующим
@@ -2805,12 +2888,134 @@ def add_group_member(group_id: str, body: AddGroupMemberRequest, current_user: s
         if cur.fetchone():
             raise HTTPException(400, "User is already a member")
 
+        # RB-1: новичок получает копию ключа ТЕКУЩЕЙ эпохи. Если админ считал
+        # её от устаревшего состояния, он узнает об этом при первой отправке
+        # (stale_key_epoch), а не тихо посадит нового участника на мёртвый ключ.
+        cur.execute("SELECT key_epoch FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+        grp = cur.fetchone()
+        epoch = (grp["key_epoch"] if grp else 1) or 1
         cur.execute(
-            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role)
-               VALUES (%s, %s, %s, %s)""",
-            (group_id.lower(), body.user_id.lower(), body.encrypted_key_b64, body.role)
+            """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role, key_epoch)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (group_id.lower(), body.user_id.lower(), body.encrypted_key_b64, body.role, epoch)
         )
-    return {"ok": True}
+    return {"ok": True, "key_epoch": epoch}
+
+
+# --- RB-1: ротация группового ключа ---
+
+def _group_is_public(cur, group_id: str) -> bool:
+    """Публичная группа/канал: ключ и так лежит у сервера (join_key_b64), любой
+    желающий получает его через POST /groups/{id}/join.
+
+    Поэтому требовать от неё ротацию при уходе участника бессмысленно — отзывать
+    там нечего, а блокировка отправки просто заморозила бы публичный канал после
+    первой же отписки. Ротация публичной группы возможна (и обновляет
+    join_key_b64), но обязательной не становится."""
+    cur.execute("SELECT public_join, join_key_b64 FROM groups WHERE LOWER(id) = LOWER(%s)",
+                (group_id,))
+    row = cur.fetchone()
+    return bool(row and row["public_join"] and row["join_key_b64"])
+
+
+@app.put("/groups/{group_id}/key")
+async def rotate_group_key(group_id: str, body: RotateGroupKeyRequest,
+                           current_user: str = Depends(get_current_user)) -> dict:
+    """Админ кладёт новый групповой ключ всем оставшимся участникам.
+
+    Сервер группового ключа не знает и знать не должен, поэтому ротацию
+    считает клиент: генерирует K2, шифрует его каждому оставшемуся участнику
+    и присылает готовые копии. Сервер отвечает за три вещи, которые клиенту
+    не гарантировать: атомарность, полноту покрытия и монотонность эпохи.
+
+    Атомарность — всё в одной транзакции: либо новую эпоху получают все, либо
+    никто. Наполовину провёрнутая ротация расколола бы группу на тех, кто уже
+    шифрует K2, и тех, кто ещё умеет только K1.
+
+    Полнота — набор user_id обязан совпасть с текущим составом РОВНО. Лишний
+    участник означает, что клиент считал состав до чьего-то удаления;
+    недостающий — что кто-то останется без ключа и молча перестанет читать
+    группу. Оба случая отвергаются целиком.
+    """
+    with db_conn() as cur:
+        cur.execute(
+            "SELECT role FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)",
+            (group_id, current_user))
+        admin = cur.fetchone()
+        if not admin or admin["role"] != "admin":
+            raise HTTPException(403, "Only admins can rotate the group key")
+
+        cur.execute(
+            "SELECT key_epoch, public_join, join_key_b64 FROM groups WHERE LOWER(id) = LOWER(%s)",
+            (group_id,))
+        group = cur.fetchone()
+        if not group:
+            raise HTTPException(404, "Group not found")
+
+        is_public = bool(group["public_join"] and group["join_key_b64"])
+        if is_public and not body.join_key_b64:
+            # Иначе следующий вступивший получил бы от сервера ключ прошлой
+            # эпохи и не прочитал бы ни одного нового сообщения.
+            raise HTTPException(400, "join_key_b64 is required when rotating a public group")
+        if body.join_key_b64 and not is_public:
+            raise HTTPException(400, "join_key_b64 is only accepted for public groups")
+        if body.join_key_b64 and len(_b64u_decode(body.join_key_b64)) != 32:
+            # Та же проверка, что в set_group_public: кривой ключ здесь означал бы
+            # публичную группу, в которую никто новый не может прочитать ни слова.
+            raise HTTPException(400, "join_key_b64 (32 bytes, b64url) is required")
+
+        current_epoch = group["key_epoch"] or 1
+        if body.epoch != current_epoch + 1:
+            # Гонка двух админов либо повтор уже применённой ротации.
+            raise HTTPException(409, {
+                "error": "stale_epoch",
+                "current_epoch": current_epoch,
+                "expected_epoch": current_epoch + 1,
+            })
+
+        cur.execute(
+            "SELECT LOWER(user_id) AS user_id FROM group_members WHERE LOWER(group_id) = LOWER(%s)",
+            (group_id,))
+        members = {r["user_id"] for r in cur.fetchall()}
+        provided = {k.user_id.lower() for k in body.keys}
+        if len(provided) != len(body.keys):
+            raise HTTPException(400, "Duplicate user_id in keys")
+        if provided != members:
+            raise HTTPException(409, {
+                "error": "incomplete_coverage",
+                "missing": sorted(members - provided),
+                "unknown": sorted(provided - members),
+            })
+
+        for share in body.keys:
+            cur.execute(
+                """UPDATE group_members SET encrypted_key_b64 = %s, key_epoch = %s
+                   WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)""",
+                (share.encrypted_key_b64, body.epoch, group_id, share.user_id))
+        if is_public:
+            cur.execute(
+                """UPDATE groups SET key_epoch = %s, rekey_required = 0, join_key_b64 = %s
+                   WHERE LOWER(id) = LOWER(%s)""",
+                (body.epoch, body.join_key_b64, group_id))
+        else:
+            cur.execute(
+                "UPDATE groups SET key_epoch = %s, rekey_required = 0 WHERE LOWER(id) = LOWER(%s)",
+                (body.epoch, group_id))
+
+    # Оставшиеся должны узнать о новой эпохе, не дожидаясь следующего запуска:
+    # до перечитывания ключа их отправка будет отвергаться как устаревшая.
+    event = {"type": "group_key_rotated", "group_id": group_id.lower(), "epoch": body.epoch}
+    for member in members:
+        try:
+            asyncio.create_task(manager.send_personal_message(event, member))
+        except Exception:
+            # Уведомление — удобство, а не корректность: ротация уже в базе,
+            # и клиент подхватит новую эпоху при следующем GET /groups/me.
+            pass
+
+    logger.info("rotate_group_key: %s → эпоха %s, участников %s",
+                group_id.lower(), body.epoch, len(body.keys))
+    return {"ok": True, "epoch": body.epoch, "members": len(body.keys)}
 
 
 # --- (#11) Remove member from group ---
@@ -2833,7 +3038,16 @@ def remove_group_member(group_id: str, user_id: str, current_user: str = Depends
             "DELETE FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)",
             (group_id, user_id)
         )
-    return {"ok": True}
+        # RB-1: у удалённого осталась его копия K1 — до ротации он расшифрует
+        # всё, что группа отправит дальше. Помечаем группу и блокируем отправку
+        # на старой эпохе, иначе честный клиент продолжит слать на K1 «по
+        # инерции» и удаление членства не будет означать ничего.
+        removed = cur.rowcount > 0
+        needs_rekey = removed and not _group_is_public(cur, group_id)
+        if needs_rekey:
+            cur.execute("UPDATE groups SET rekey_required = 1 WHERE LOWER(id) = LOWER(%s)",
+                        (group_id,))
+    return {"ok": True, "rekey_required": needs_rekey}
 
 
 # --- (#12) Edit group ---
@@ -2888,7 +3102,13 @@ def leave_group(group_id: str, current_user: str = Depends(get_current_user)) ->
             "DELETE FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)",
             (group_id, current_user)
         )
-    return {"ok": True}
+        # RB-1: добровольный уход ничем не отличается от удаления — копия
+        # ключа осталась у ушедшего. Ротацию сделает админ.
+        needs_rekey = not _group_is_public(cur, group_id)
+        if needs_rekey:
+            cur.execute("UPDATE groups SET rekey_required = 1 WHERE LOWER(id) = LOWER(%s)",
+                        (group_id,))
+    return {"ok": True, "rekey_required": needs_rekey}
 
 
 @app.get("/groups/me")
@@ -2896,6 +3116,7 @@ def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
         cur.execute(
             """SELECT g.id, g.name, g.description, g.owner_id, g.is_channel, g.public_join, g.username, g.avatar_file_id, g.linked_group_id, g.created_at, gm.encrypted_key_b64, gm.role,
+                      g.key_epoch, g.rekey_required, gm.key_epoch AS my_key_epoch,
                       (SELECT COUNT(*) FROM group_members gm2 WHERE LOWER(gm2.group_id) = LOWER(g.id)) AS member_count
                FROM groups g
                JOIN group_members gm ON LOWER(g.id) = LOWER(gm.group_id)
@@ -2918,7 +3139,15 @@ def get_my_groups(current_user: str = Depends(get_current_user)) -> dict:
                 "created_at": r["created_at"],
                 "encrypted_key_b64": r["encrypted_key_b64"],
                 "role": r["role"],
-                "member_count": r["member_count"]
+                "member_count": r["member_count"],
+                # RB-1: эпоха группового ключа. my_key_epoch < key_epoch
+                # означает, что копия у клиента устарела — надо перечитать
+                # ключ, иначе отправка получит stale_key_epoch.
+                "key_epoch": (r["key_epoch"] or 1),
+                "my_key_epoch": (r["my_key_epoch"] or 1),
+                # Из группы кто-то вышел, ключ ещё не сменили. До ротации
+                # группа не пишет; провернуть её может админ.
+                "rekey_required": bool(r["rekey_required"]),
             })
     return {"groups": groups}
 
@@ -2931,7 +3160,8 @@ def get_group_members(group_id: str, current_user: str = Depends(get_current_use
             raise HTTPException(403, "Not a member of this group")
             
         cur.execute(
-            """SELECT u.user_id, u.username, u.display_name, u.avatar_file_id, gm.role
+            """SELECT u.user_id, u.username, u.display_name, u.avatar_file_id,
+                      u.public_key_b64, gm.role, gm.key_epoch
                FROM group_members gm
                JOIN users u ON LOWER(gm.user_id) = LOWER(u.user_id)
                WHERE LOWER(gm.group_id) = LOWER(%s)""",
@@ -2945,7 +3175,13 @@ def get_group_members(group_id: str, current_user: str = Depends(get_current_use
                 "username": r["username"],
                 "display_name": r["display_name"],
                 "avatar_file_id": r["avatar_file_id"],
-                "role": r["role"]
+                "role": r["role"],
+                # RB-1: админу нужны публичные ключи, чтобы завернуть новый
+                # групповой ключ каждому за один заход. Ключ и так публичен
+                # (GET /users/{id}), здесь он просто избавляет от N запросов
+                # ровно в тот момент, когда группа заперта до ротации.
+                "public_key_b64": r["public_key_b64"],
+                "key_epoch": (r["key_epoch"] or 1),
             })
     return {"members": members, "count": len(members)}
 
