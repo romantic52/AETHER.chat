@@ -786,6 +786,10 @@ if (typeof window !== 'undefined' && window.aetherServerUiInit) {
     });
 }
 
+// Греем ядро сразу: отрисовка чата синхронна, и чем короче окно без
+// разбора, тем меньше сообщений успеет показаться в строгом режиме.
+window.addEventListener('DOMContentLoaded', () => { try { loadRatchetApi(); } catch (_) {} });
+
 function loadRatchetApi() {
     if (!ratchetModulePromise) {
         ratchetModulePromise = import('./vendor/ratchet/aether_ratchet_wasm.js')

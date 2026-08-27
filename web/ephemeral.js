@@ -61,14 +61,38 @@
         saveState(state);
     }
 
+    /// Заявляет ли конверт себя исчезающим. Читается без ядра: поле `mt`
+    /// лежит в открытом JSON и нужно ровно для того, чтобы не показать
+    /// секрет, пока разбор недоступен.
+    function looksEphemeral(payloadObj) {
+        const mt = payloadObj && payloadObj.mt;
+        return mt === 'EPHEMERAL' || mt === 'VIEW_ONCE';
+    }
+
     /// Описание из нагрузки. null — сообщение обычное.
+    ///
+    /// Если ядро ещё не подключено, а конверт заявляет себя исчезающим,
+    /// возвращаем самый строгий разбор, а не null. Отрисовка синхронна, а
+    /// загрузка ядра асинхронна: не сделай мы так, при медленной загрузке
+    /// секрет показался бы обычным текстом — тихо и без отсчёта.
     function specOf(payloadObj) {
-        if (!payloadObj || !ratchetApi || !ratchetApi.ephemeral_from_payload) return null;
+        if (!payloadObj) return null;
+        if (!ratchetApi || !ratchetApi.ephemeral_from_payload) {
+            return looksEphemeral(payloadObj)
+                ? { kind: payloadObj.mt, ttl_seconds: 0, trigger: 'FIRST_OPEN',
+                    absolute_ms: null, view_limit: 1, degraded: true }
+                : null;
+        }
         try {
             const raw = ratchetApi.ephemeral_from_payload(JSON.stringify(payloadObj));
             return raw ? JSON.parse(raw) : null;
         } catch (_) {
-            return null;
+            // Разбор сорвался — не показываем содержимое, если конверт
+            // заявляет себя временным.
+            return looksEphemeral(payloadObj)
+                ? { kind: payloadObj.mt, ttl_seconds: 0, trigger: 'FIRST_OPEN',
+                    absolute_ms: null, view_limit: 1, degraded: true }
+                : null;
         }
     }
 
@@ -180,6 +204,7 @@
 
     global.aetherEphemeral = {
         attachRatchet,
+        looksEphemeral,
         specOf,
         open,
         closeView,
