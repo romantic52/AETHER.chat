@@ -266,34 +266,17 @@ pub fn payload_with_ephemeral(payload_json: String, spec: EphemeralSpec) -> Resu
 /// когда режим не выбран.
 #[uniffi::export]
 pub fn ephemeral_from_payload(payload_json: String) -> Option<EphemeralSpec> {
-    let v: serde_json::Value = serde_json::from_str(&payload_json).ok()?;
-    let kind = v.get("mt")?.as_str()?.to_string();
-    if kind != "EPHEMERAL" && kind != "VIEW_ONCE" {
-        return None;
-    }
-    let eph = v.get("eph");
-    // Данным из конверта доверия не больше, чем данным с сервера: срок
-    // зажимаем в разумные пределы, чтобы «ttl = 10 лет» не превращало
-    // исчезающее сообщение в обычное, а отрицательный не ломал арифметику.
-    let ttl = eph
-        .and_then(|e| e.get("ttl"))
-        .and_then(|t| t.as_i64())
-        .unwrap_or(0)
-        .clamp(0, 365 * 24 * 3600);
-    let trigger = eph
-        .and_then(|e| e.get("trg"))
-        .and_then(|t| t.as_str())
-        .map(trigger_from)
-        .unwrap_or(EphemeralTrigger::FirstOpen);
-    let absolute_ms = eph.and_then(|e| e.get("at")).and_then(|t| t.as_i64());
-    let view_limit = eph
-        .and_then(|e| e.get("vl"))
-        .and_then(|t| t.as_i64())
-        .map(|n| n.clamp(1, 1000) as i32)
-        // «Просмотр один раз» без явного лимита — это ровно один просмотр.
-        .or(if kind == "VIEW_ONCE" { Some(1) } else { None });
-
-    Some(EphemeralSpec { kind, ttl_seconds: ttl, trigger, absolute_ms, view_limit })
+    // Правила зажима живут в ratchet-core: из него же собирается веб, и обе
+    // стороны обязаны понимать конверт одинаково. Здесь только перевод в
+    // тип, который умеет пересекать границу UniFFI.
+    let plain = aether_ratchet_core::ephemeral::ephemeral_spec(&payload_json)?;
+    Some(EphemeralSpec {
+        kind: plain.kind,
+        ttl_seconds: plain.ttl_seconds,
+        trigger: trigger_from(&plain.trigger),
+        absolute_ms: plain.absolute_ms,
+        view_limit: plain.view_limit,
+    })
 }
 
 #[cfg(test)]

@@ -245,3 +245,13 @@ pub fn argon2id_key(password: &str, salt: &[u8], m: u32, t: u32, p: u32) -> Resu
 pub fn ed25519_verify(public_key_b64: &str, message: &str, sig_b64: &str) -> bool {
     aether_ratchet_core::verify_ed25519_signature(public_key_b64, message, sig_b64).is_ok()
 }
+
+/// Описание исчезающего сообщения из нагрузки. `null` — сообщение обычное.
+///
+/// Разбор общий с native: правила зажима враждебных значений лежат в
+/// ratchet-core, чтобы веб не оказался единственным клиентом, у которого
+/// «исчезающее» тихо остаётся навсегда.
+#[wasm_bindgen]
+pub fn ephemeral_from_payload(payload_json: &str) -> Option<String> {
+    aether_ratchet_core::ephemeral::ephemeral_spec_json(payload_json)
+}

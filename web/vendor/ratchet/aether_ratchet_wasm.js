@@ -1,5 +1,3 @@
-/* @ts-self-types="./aether_ratchet_wasm.d.ts" */
-
 /**
  * @param {string} account_pickle
  * @returns {string}
@@ -338,6 +336,27 @@ export function encrypt(session_pickle, plaintext) {
     } finally {
         wasm.__wbindgen_free(deferred4_0, deferred4_1, 1);
     }
+}
+
+/**
+ * Описание исчезающего сообщения из нагрузки. `null` — сообщение обычное.
+ *
+ * Разбор общий с native: правила зажима враждебных значений лежат в
+ * ratchet-core, чтобы веб не оказался единственным клиентом, у которого
+ * «исчезающее» тихо остаётся навсегда.
+ * @param {string} payload_json
+ * @returns {string | undefined}
+ */
+export function ephemeral_from_payload(payload_json) {
+    const ptr0 = passStringToWasm0(payload_json, wasm.__wbindgen_malloc, wasm.__wbindgen_realloc);
+    const len0 = WASM_VECTOR_LEN;
+    const ret = wasm.ephemeral_from_payload(ptr0, len0);
+    let v2;
+    if (ret[0] !== 0) {
+        v2 = getStringFromWasm0(ret[0], ret[1]).slice();
+        wasm.__wbindgen_free(ret[0], ret[1] * 1, 1);
+    }
+    return v2;
 }
 
 /**

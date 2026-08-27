@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 use vodozemac::olm::{Account, AccountPickle, OlmMessage, Session, SessionConfig, SessionPickle};
 use vodozemac::{Curve25519PublicKey, Ed25519PublicKey, Ed25519Signature};
 
+pub mod ephemeral;
+
 pub type Result<T> = std::result::Result<T, String>;
 
 /// Версионные префиксы канона подписей prekey-бандла. Менять только с bump'ом версии.
