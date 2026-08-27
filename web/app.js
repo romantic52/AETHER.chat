@@ -791,6 +791,12 @@ function loadRatchetApi() {
         ratchetModulePromise = import('./vendor/ratchet/aether_ratchet_wasm.js')
             .then(async module => {
                 await module.default();
+                // Модуль исчезающих разбирает конверт тем же ядром, что и
+                // native: свой парсер разошёлся бы с ним молча.
+                if (window.aetherEphemeral) {
+                    window.aetherEphemeral.attachRatchet(module);
+                    window.aetherEphemeral.startSweeping();
+                }
                 return module;
             })
             .catch(error => {
@@ -3191,6 +3197,17 @@ async function pollInbox() {
                 }
 
                 // Обработка Control Messages
+                if (payloadObj.type === 'ephemeral_viewed') {
+                    // Отметка у себя: отсчёт идёт в копии получателя, здесь
+                    // только факт для интерфейса.
+                    if (payloadObj.target_id && window.aetherEphemeral) {
+                        window.aetherEphemeral.markViewedByPeer(payloadObj.target_id);
+                        const el = findMessageElement(payloadObj.target_id);
+                        const label = el && el.querySelector('.tg-msg-ephemeral');
+                        if (label) label.innerHTML = '<i class="fas fa-hourglass-half"></i> Исчезающее · просмотрено';
+                    }
+                    continue;
+                }
                 if (payloadObj.type === 'read_receipt') {
                     const targetId = payloadObj.target_id;
                     const target = messages.find(m => m.message_id === targetId);
@@ -3684,6 +3701,32 @@ function appendMessage(msg, animate = false) {
         contentHtml = renderPollHtml(msg);
     }
 
+    // Исчезающее: у получателя — заслонка вместо содержимого, у отправителя
+    // собственный текст с пометкой. Открывает и тратит просмотр ТОЛЬКО
+    // получатель: иначе автор сжигал бы своё же письмо.
+    const ephSpec = window.aetherEphemeral ? window.aetherEphemeral.specOf(msg.payload) : null;
+    let ephemeralLabelHtml = '';
+    if (ephSpec) {
+        const id = msg.message_id;
+        if (window.aetherEphemeral.isPurged(id)) {
+            contentHtml = '<span class="tg-msg-expired">Сообщение исчезло</span>';
+        } else if (msg.direction === 'out') {
+            const kind = ephSpec.kind === 'VIEW_ONCE' ? 'Просмотр один раз' : 'Исчезающее';
+            const seen = window.aetherEphemeral.viewedByPeer(id) ? 'просмотрено' : 'ещё не открыто';
+            ephemeralLabelHtml = `<span class="tg-msg-ephemeral"><i class="fas fa-hourglass-half"></i> ${escapeHtmlSafe(kind)} · ${seen}</span>`;
+        } else {
+            const opened = window.aetherEphemeral.entry(id);
+            const alreadySeen = opened && (opened.views || 0) > 0 && ephSpec.kind === 'VIEW_ONCE';
+            contentHtml = alreadySeen
+                ? '<span class="tg-msg-expired">Сообщение уже просмотрено</span>'
+                : `<button class="tg-ephemeral-gate" data-eph-id="${escapeHtmlSafe(String(id))}">`
+                  + `<i class="fas fa-eye"></i> `
+                  + (ephSpec.kind === 'VIEW_ONCE' ? 'Просмотр один раз · нажмите, чтобы открыть'
+                                                  : 'Исчезающее · нажмите, чтобы открыть')
+                  + '</button>';
+        }
+    }
+
     const timeStr = new Date(msg.timestamp || Date.now()).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
     const editedHtml = msg.edited ? '<span class="tg-msg-edited">изменено</span>' : '';
     
@@ -3726,9 +3769,31 @@ function appendMessage(msg, animate = false) {
             ${forwardHtml}
             ${replyQuoteHtml}
             ${contentHtml}
-            <div class="tg-msg-time">${editedHtml} ${timeStr} ${statusIconHtml}</div>
+            <div class="tg-msg-time">${ephemeralLabelHtml} ${editedHtml} ${timeStr} ${statusIconHtml}</div>
         </div>
     `;
+
+    // Открытие исчезающего: засчитываем просмотр, показываем текст и сообщаем
+    // отправителю. Своё письмо сюда не попадает — заслонка только у получателя.
+    const ephGate = wrapper.querySelector('.tg-ephemeral-gate');
+    if (ephGate && ephSpec) {
+        ephGate.addEventListener('click', async () => {
+            const id = msg.message_id;
+            if (!window.aetherEphemeral.open(id, ephSpec)) {
+                ephGate.outerHTML = '<span class="tg-msg-expired">Сообщение уже просмотрено</span>';
+                return;
+            }
+            const revealed = document.createElement('span');
+            revealed.textContent = String(msg.payload ? (msg.payload.content || '') : (msg.plaintext || ''));
+            ephGate.replaceWith(revealed);
+            try {
+                await sendPayloadMessage({ type: 'ephemeral_viewed', target_id: id }, msg.peer);
+            } catch (_) { /* уведомление не критично для показа */ }
+            if (ephSpec.kind === 'VIEW_ONCE') {
+                window.aetherEphemeral.closeView(id, ephSpec);
+            }
+        });
+    }
 
     // Never put an untrusted media URL in an HTML attribute. Assign it through
     // the DOM only after the element exists and only for an allow-listed scheme.
