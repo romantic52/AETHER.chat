@@ -41,7 +41,9 @@ fun Modifier.glassSource(): Modifier {
     val hazeState = LocalHazeState.current ?: return this
     if (!supportsRealGlass) return this
     val settings = LocalThemeSettings.current
-    val tintAlpha = lerpF(0.5f, 0.14f, settings.glassClarity.value)
+    // Прозрачность выключена — тинт сплошной, фон сквозь панель не читается.
+    val tintAlpha = if (settings.opaqueSurfaces.value) 1f
+                    else lerpF(0.5f, 0.14f, settings.glassClarity.value)
     return this.haze(
         state = hazeState,
         backgroundColor = MaterialTheme.colorScheme.background,

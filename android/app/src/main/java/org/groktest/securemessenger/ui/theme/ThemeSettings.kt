@@ -54,6 +54,12 @@ class ThemeSettings(context: Context) {
     // Настоящий backdrop-blur доступен вручную, но выключен по умолчанию ради плавности.
     var liquidGlassEnabled = mutableStateOf(initialLiquidGlass)
     var glassClarity = mutableStateOf(initialGlassClarity) // 0=матовое, 1=чистое
+    /**
+     * Сплошные панели: прозрачность выключена, размытие остаётся отдельной
+     * настройкой. Нужно тем, кому текст поверх просвечивающего фона мешает
+     * читать, и тем, у кого полупрозрачность заметно ест батарею.
+     */
+    var opaqueSurfaces = mutableStateOf(prefs.getBoolean("opaque_surfaces", false))
     var glassBlurRadius = mutableStateOf(
         floatPref("glass_blur_radius", 8f + 10f * initialGlassClarity, 0f..MAX_GLASS_BLUR_RADIUS)
     )
@@ -128,6 +134,11 @@ class ThemeSettings(context: Context) {
     fun setShowEphemeralButton(on: Boolean) {
         showEphemeralButton.value = on
         prefs.edit().putBoolean("show_ephemeral_button", on).apply()
+    }
+
+    fun setOpaqueSurfaces(on: Boolean) {
+        opaqueSurfaces.value = on
+        prefs.edit().putBoolean("opaque_surfaces", on).apply()
     }
 
     fun setLiquidGlassEnabled(on: Boolean) {

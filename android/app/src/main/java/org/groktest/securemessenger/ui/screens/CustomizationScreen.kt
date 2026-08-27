@@ -639,6 +639,17 @@ private fun BubbleControls(settings: ThemeSettings) {
 
 @Composable
 private fun GeneralControls(settings: ThemeSettings) {
+    SettingSwitch(
+        title = "Сплошные панели",
+        subtitle = if (settings.opaqueSurfaces.value) {
+            "Прозрачность выключена · фон сквозь панели не просвечивает"
+        } else {
+            "Выключить прозрачность целиком, не трогая ползунки"
+        },
+        checked = settings.opaqueSurfaces.value,
+        onCheckedChange = settings::setOpaqueSurfaces,
+    )
+    if (!settings.opaqueSurfaces.value) {
     SettingSlider(
         title = "Общая прозрачность",
         subtitle = "Панели, кнопки, поля и сообщения",
@@ -647,6 +658,7 @@ private fun GeneralControls(settings: ThemeSettings) {
         range = 0f..MAX_SURFACE_TRANSPARENCY,
         onChange = settings::setSurfaceTransparency,
     )
+    }
     SettingSlider(
         title = "Общий контур",
         subtitle = "Базовая сила для всех элементов",

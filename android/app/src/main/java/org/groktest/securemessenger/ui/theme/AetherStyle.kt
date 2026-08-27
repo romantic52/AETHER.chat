@@ -150,6 +150,10 @@ private fun aetherAvatarSurface(alpha: Float): Color =
     aetherElementSurface(alpha, 0f, 1f)
 
 private fun surfaceVisibility(settings: ThemeSettings): Float {
+    // Сплошные панели: ползунок прозрачности не действует, поверхность
+    // непрозрачна целиком. Размытие при этом остаётся своей настройкой —
+    // просто за непрозрачной панелью его не видно, и это ожидаемо.
+    if (settings.opaqueSurfaces.value) return 1f
     val fraction = (settings.surfaceTransparency.value / MAX_SURFACE_TRANSPARENCY).coerceIn(0f, 1f)
     return 1f - 0.38f * fraction
 }
