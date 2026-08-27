@@ -14,7 +14,8 @@
   DEVICE-ACK-001     ACK нельзя выдать от имени чужого устройства.
   DEVICE-INBOX-002   inbox нельзя вычитать за чужое устройство.
   DEVICE-TARGET-003  сообщение несуществующему устройству получателя отвергается.
-  IDEMPOTENCY-001    тот же client_id с другим содержимым → 409, а не «ok».
+  IDEMPOTENCY-001    тот же client_id ДРУГОМУ адресату → 409, а не «ok»;
+                     ретрай с перешифрованным конвертом → duplicate (NEW-3).
   GROUP-MEMBER-001   в группу нельзя добавить несуществующего пользователя.
   KEYSHAPE-001       публичный ключ аккаунта обязан быть 32 байта.
   WS-TICKET-001      билет на WebSocket одноразовый.
@@ -244,7 +245,11 @@ def test_target_device_validation():
 
 
 def test_idempotency():
-    """IDEMPOTENCY-001: повтор client_id — только для побайтно того же запроса."""
+    """IDEMPOTENCY-001: повтор client_id — только для того же адресного набора.
+
+    Сравнивается sender + recipient + recipient_device_id. Содержимое конверта
+    НЕ сравнивается намеренно: см. NEW-3 в SECURITY_AUDIT_2026-08.md.
+    """
     sender, sp, _, _ = register("regidm")
     bob, bpw, _, _ = register("regidmb")
     carol, cpw, _, _ = register("regidmc")
@@ -267,10 +272,17 @@ def test_idempotency():
         "envelope": ratchet_envelope("TWO"), "client_id": cid})
     assert status == 409, f"тот же id другому получателю: {status}, ожидался 409"
 
-    status, _ = call("POST", "/messages", s_token, {
+    # NEW-3: честный ретрай ПЕРЕСОБИРАЕТ конверт — Ratchet недетерминирован, и
+    # Android перед повторной отправкой шифрует заново (retryPendingCopies →
+    # encryptDirectForDeviceLocked). Шифротекст другой, адресат тот же. Это
+    # ретрай, а не новое сообщение, и он обязан получить duplicate: true.
+    # Раньше сюда входил отпечаток конверта, и такой ретрай ловил 409, после
+    # чего клиент выбрасывал уже доставленное сообщение.
+    status, data = call("POST", "/messages", s_token, {
         "sender_id": sender, "recipient_id": bob,
         "envelope": ratchet_envelope("THREE"), "client_id": cid})
-    assert status == 409, f"тот же id с другим телом: {status}, ожидался 409"
+    assert status == 200 and data.get("duplicate") is True, (
+        f"ретрай с перешифрованным конвертом: {status} {data}, ожидался duplicate")
     print("IDEMPOTENCY-001: ok")
 
 

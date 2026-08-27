@@ -277,6 +277,17 @@ def _session_device(authorization: Optional[str], requested: str) -> str:
     Сессия, ещё не объявившая устройство (iOS и Android не зовут
     PUT /sessions/me/device), пиннится к первому переданному значению — так
     ограничение работает и для них, не требуя изменений в клиентах.
+
+    ЭТО ГИГИЕНА, А НЕ ГРАНИЦА БЕЗОПАСНОСТИ — осознанное решение, не недосмотр.
+    Пин перезаписывается через PUT /sessions/me/device без доказательства
+    владения, поэтому держатель токена доходит до инбокса любого СВОЕГО
+    устройства за один лишний запрос. Здесь закрыт случайный путь (клиент по
+    ошибке подтверждает чужие сообщения), а не злонамеренный. Ужесточить без
+    новой крипто-поверхности нельзя: публичный identity_key_b64
+    доказательством владения не является (он виден в GET /users/{id}/devices),
+    а запрет перепривязки ломает переустановленный iOS — он приходит со старым
+    токеном из Keychain и новым device_id и получил бы 403 навсегда.
+    Разбор — NEW-2 и NEW-1 в SECURITY_AUDIT_2026-08.md.
     """
     if not _DEVICE_ID_RE.match(requested or ""):
         raise HTTPException(400, "Invalid device_id")
@@ -1061,7 +1072,12 @@ def bind_session_device(body: BindDeviceRequest, authorization: str = Header(Non
     в GET /users/{id}/devices), поэтому доказательством владения быть не может.
     Настоящая защита от вора токена — в kick_device: он смотрит, как давно ИМЕННО
     ЭТА сессия привязана к устройству (device_bound_at), а не на возраст самого
-    устройства, который вор наследовал бы вместе с чужим слотом."""
+    устройства, который вор наследовал бы вместе с чужим слотом.
+
+    Перепривязка НАМЕРЕННО остаётся безусловной: она и есть то, чем живут
+    переустановленный iOS и Android (см. NEW-1). Цена решения — пин устройства
+    не является границей безопасности, см. развёрнутый комментарий в
+    _session_device() и NEW-2 в SECURITY_AUDIT_2026-08.md."""
     token = authorization.split(" ", 1)[1].strip()
     with db_conn() as cur:
         cur.execute(
@@ -1357,13 +1373,6 @@ ALLOW_LEGACY_DIRECT = os.environ.get("AETHER_ALLOW_LEGACY_DIRECT", "0").lower() 
 
 def _envelope_size(envelope: dict) -> int:
     return len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
-
-
-def _envelope_fingerprint(envelope: dict) -> str:
-    """Каноничный отпечаток конверта: порядок ключей в JSON не должен решать,
-    считается ли повтор честным ретраем."""
-    canon = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 def _is_group_envelope(envelope: dict) -> bool:
@@ -2416,13 +2425,24 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 ),
             )
             if cur.rowcount == 0:
-                # id уже существует. Честный ретрай — это ПОБАЙТНО тот же
-                # запрос. Совпадения одного лишь отправителя мало: с тем же
-                # client_id можно было отправить другому получателю или с
-                # другим текстом, и сервер отвечал «duplicate: ok», молча
-                # выбросив новое сообщение. Сверяем весь неизменяемый набор.
+                # id уже существует. Совпадения одного лишь отправителя мало: с
+                # тем же client_id можно было отправить ДРУГОМУ получателю, и
+                # сервер отвечал «duplicate: ok», молча выбросив новое
+                # сообщение. Сверяем неизменяемый адресный набор.
+                #
+                # Отпечаток конверта в сравнение НЕ входит намеренно. Ретрай
+                # честного клиента пересобирает конверт заново
+                # (Android, retryPendingCopies → encryptDirectForDeviceLocked),
+                # поэтому отпечаток не совпал бы и ретрай после неоднозначного
+                # сбоя — «записали, ответ не доехал» — получал бы 409 вместо
+                # duplicate: true, а клиент выбрасывал бы уже доставленное
+                # сообщение. Поймать «тот же id, другой текст» отпечаток всё
+                # равно не может: и Ratchet, и AES-GCM недетерминированы, так
+                # что «другой текст» и «тот же текст, перешифрованный» дают
+                # одинаково несовпадающие отпечатки. Единственным наблюдаемым
+                # эффектом оставались ложные 409. См. NEW-3 в отчёте аудита.
                 cur.execute(
-                    "SELECT sender_id, recipient_id, recipient_device_id, envelope_json "
+                    "SELECT sender_id, recipient_id, recipient_device_id "
                     "FROM messages WHERE id = %s", (msg_id,))
                 existing = cur.fetchone()
                 same = (
@@ -2431,8 +2451,6 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                     and existing["recipient_id"].lower() == body.recipient_id.lower()
                     and (existing["recipient_device_id"] or None)
                         == ((body.target_device_id or None) if is_user else None)
-                    and _envelope_fingerprint(json.loads(existing["envelope_json"]))
-                        == _envelope_fingerprint(body.envelope)
                 )
                 if not same:
                     raise HTTPException(409, "Message id already in use")
