@@ -1,0 +1,104 @@
+# Регрессионный CI: ядро, веб и сервер.
+#
+# До этого в CI была только сборка iOS. Ни один protocol/security-тест из
+# репозитория не запускался автоматически: правка в одном клиенте могла
+# незаметно разойтись с остальными, а серверные смоук-тесты жили в README.
+# Здесь поднимается одноразовый PostgreSQL и прогоняется то, что уже
+# написано, плюс регрессии из server/test_security_regressions.py.
+#
+# iOS собирается отдельным workflow (ios.yml): для него нужен macOS-раннер.
+
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  core:
+    name: Rust core + protocol vectors
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: core
+      - name: Тесты ядра (включая ratchet-core)
+        run: cargo test --manifest-path core/Cargo.toml --all-features
+      - name: Golden protocol vectors
+        run: cargo test --manifest-path core/Cargo.toml --test protocol_vectors
+
+  web:
+    name: Web (wire + security)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Синтаксис клиента
+        run: node --check web/app.js
+      - name: Wire-совместимость
+        run: node web/test_wire.js
+      - name: Security-тесты клиента
+        run: node web/test_security.js
+
+  server:
+    name: Server API + security regressions
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: aether_ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      DB_NAME: aether_ci
+      DB_USER: postgres
+      DB_PASS: postgres
+      DB_HOST: 127.0.0.1
+      AETHER_URL: http://127.0.0.1:8099
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Зависимости
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt uvicorn python-multipart
+      - name: Синтаксис сервера
+        run: python -m compileall -q server
+      - name: Поднять сервер
+        run: |
+          uvicorn server.main:app --host 127.0.0.1 --port 8099 &
+          for i in $(seq 1 60); do
+            curl -sf "$AETHER_URL/health" && break
+            sleep 1
+          done
+          curl -sf "$AETHER_URL/health"
+      # Свежий инстанс стартует в APPROVAL: прямая регистрация закрыта, и все
+      # тесты, которые заводят аккаунты, получают 403 approval_required. Режим
+      # живёт в server_meta, которую создаёт ensure_identity на старте, — потому
+      # шаг идёт ПОСЛЕ подъёма сервера, а не до него.
+      - name: Открыть регистрацию
+        env:
+          PGPASSWORD: postgres
+        run: |
+          psql -h 127.0.0.1 -U postgres -d aether_ci \
+            -c "UPDATE server_meta SET value='OPEN' WHERE key='aether.registration_mode'"
+      - name: Обнаружение сервера
+        run: python3 server/test_server_info.py
+      - name: Отзыв сессии
+        run: python3 server/test_logout.py
+      - name: Prekey-директория (подписи, cross-signing, анти-даунгрейд)
+        run: python3 server/test_prekeys.py
+      - name: Регрессии безопасности (2FA, device scoping, идемпотентность)
+        run: python3 server/test_security_regressions.py

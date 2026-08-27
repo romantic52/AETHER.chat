@@ -254,6 +254,50 @@ def get_current_user(authorization: str = Header(None)) -> str:
     return row["user_id"].lower()
 
 
+import re as _re_dev
+
+_DEVICE_ID_RE = _re_dev.compile(r"^[A-Za-z0-9_-]{1,64}$")
+
+
+def _bearer_token(authorization: Optional[str]) -> str:
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(401, "Missing or invalid authorization header")
+    return token.strip()
+
+
+def _session_device(authorization: Optional[str], requested: str) -> str:
+    """Устройство сессии — единственный источник истины для inbox и ack.
+
+    device_id приезжал параметром запроса и никак не сверялся с сессией:
+    сессия устройства A1 могла подтвердить (и тем самым навсегда спрятать)
+    сообщения, адресованные A2, и вычитать его inbox. Теперь значение обязано
+    совпадать с устройством, к которому привязана ЭТА сессия.
+
+    Сессия, ещё не объявившая устройство (iOS и Android не зовут
+    PUT /sessions/me/device), пиннится к первому переданному значению — так
+    ограничение работает и для них, не требуя изменений в клиентах.
+    """
+    if not _DEVICE_ID_RE.match(requested or ""):
+        raise HTTPException(400, "Invalid device_id")
+    token = _bearer_token(authorization)
+    with db_conn() as cur:
+        cur.execute("SELECT device_id FROM sessions WHERE token = %s", (token,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(401, "Session expired or invalid")
+        bound = row["device_id"]
+        if bound:
+            if requested != bound:
+                raise HTTPException(403, "device_id does not belong to this session")
+            return bound
+        cur.execute(
+            "UPDATE sessions SET device_id = %s, device_bound_at = COALESCE(device_bound_at, %s) "
+            "WHERE token = %s",
+            (requested, _utc_now(), token))
+    return requested
+
+
 def init_db() -> None:
     _init_schema()
     # Роли, заявки, инвайты, аудит, refresh-токены, импорт данных.
@@ -597,6 +641,34 @@ def _init_schema() -> None:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_history_backups_user ON history_backups(user_id, seq)")
 
+        # Владелец и возраст загруженного файла. Refcount по сообщениям
+        # невозможен в принципе: конверт — шифротекст, сервер не знает, какой
+        # файл в нём упомянут. Поэтому политика хранения строится на владельце
+        # (квота, удаление при wipe) и TTL, а не на подсчёте ссылок.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS uploads (
+                file_id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                kind TEXT NOT NULL DEFAULT 'media',
+                size_bytes BIGINT NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            )"""
+        )
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_uploads_user ON uploads(user_id)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_uploads_created ON uploads(created_at)")
+
+        # Одноразовый билет на WebSocket: живёт минуту и гасится при
+        # предъявлении. Нужен, чтобы долгоживущий bearer-токен не уезжал
+        # в query-строку, которую пишут в лог nginx/uvicorn и все прокси.
+        cur.execute(
+            """CREATE TABLE IF NOT EXISTS ws_tickets (
+                ticket_hash TEXT PRIMARY KEY,
+                token TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )"""
+        )
+
         # Контроль сессий: сессия привязывается к крипто-устройству (клиент
         # сообщает device_id после логина) — чтобы можно было выкинуть
         # конкретное устройство. 2FA: TOTP-секрет на аккаунт.
@@ -611,7 +683,11 @@ def _init_schema() -> None:
                        WHERE table_schema = current_schema() AND table_name='sessions' AND column_name='device_bound_at')""")
         if not cur.fetchone()[0]:
             cur.execute("ALTER TABLE sessions ADD COLUMN device_bound_at TEXT")
+        # totp_pending_secret: секрет-кандидат при замене фактора. Активный
+        # totp_secret живёт до подтверждения кодом — иначе один только POST
+        # /2fa/setup угнанной сессией снимал бы 2FA с аккаунта.
         for col, ddl in [("totp_secret", "TEXT"),
+                         ("totp_pending_secret", "TEXT"),
                          ("totp_enabled", "INTEGER NOT NULL DEFAULT 0")]:
             cur.execute(
                 """SELECT EXISTS (SELECT 1 FROM information_schema.columns
@@ -830,6 +906,10 @@ def register_user(body: RegisterRequest, request: Request) -> dict:
     ok, reason = password_policy.check_strength(body.password, body.user_id)
     if not ok:
         raise HTTPException(400, reason)
+    # Ключ аккаунта — Curve25519 (NaCl Box). Ограничения длины СТРОКИ мало:
+    # 20 «байт ключа» проходили Field(min_length=16) и падали позже 500-й
+    # ошибкой в _wrap_key_for при первом же вступлении в публичную группу.
+    _validate_key_b64(body.public_key_b64, "public_key_b64")
     hashed = hash_password(body.password)
     with db_conn() as cur:
         # Check if user already exists
@@ -943,6 +1023,8 @@ async def logout(authorization: str = Header(None), current_user: str = Depends(
             cur.execute("UPDATE refresh_tokens SET revoked = 1 WHERE family_id = %s",
                         (row["family_id"],))
         cur.execute("DELETE FROM sessions WHERE token = %s", (token,))
+        # Невыбранный WS-билет пережил бы logout и открыл бы канал уже после выхода.
+        cur.execute("DELETE FROM ws_tickets WHERE token = %s", (token,))
     await manager.close_for_token(token)
     return {"ok": True}
 
@@ -958,6 +1040,11 @@ class BindDeviceRequest(BaseModel):
 
 class TotpCodeRequest(BaseModel):
     code: str = Field(min_length=6, max_length=10)
+
+
+class TotpSetupRequest(BaseModel):
+    # Текущий код — обязателен ТОЛЬКО когда 2FA уже включена (замена фактора).
+    code: Optional[str] = Field(default=None, max_length=10)
 
 
 class WipeRequest(BaseModel):
@@ -1126,12 +1213,29 @@ def totp_status(current_user: str = Depends(get_current_user)) -> dict:
 
 
 @app.post("/2fa/setup")
-def totp_setup(current_user: str = Depends(get_current_user)) -> dict:
-    """Выдать новый секрет (2FA ещё не включена — до подтверждения кодом)."""
-    secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
+def totp_setup(body: Optional[TotpSetupRequest] = None,
+               current_user: str = Depends(get_current_user)) -> dict:
+    """Выдать секрет-КАНДИДАТ. Активный фактор не трогаем.
+
+    Раньше эта ручка писала новый секрет прямо в totp_secret и сбрасывала
+    totp_enabled в 0 — то есть любая авторизованная сессия (в том числе
+    угнанная) снимала с аккаунта уже включённую 2FA одним запросом без пароля
+    и без текущего кода. Теперь замена активного фактора требует текущего
+    TOTP, а новый секрет живёт отдельно (totp_pending_secret) до подтверждения
+    в POST /2fa/enable.
+    """
     with db_conn() as cur:
+        cur.execute("SELECT totp_secret, totp_enabled FROM users WHERE LOWER(user_id) = LOWER(%s)",
+                    (current_user,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(404, "User not found")
+        if row["totp_enabled"] and row["totp_secret"]:
+            if not _totp_valid(row["totp_secret"], body.code if body else None):
+                raise HTTPException(403, "totp_required")
+        secret = base64.b32encode(secrets.token_bytes(20)).decode().rstrip("=")
         cur.execute(
-            "UPDATE users SET totp_secret = %s, totp_enabled = 0 WHERE LOWER(user_id) = LOWER(%s)",
+            "UPDATE users SET totp_pending_secret = %s WHERE LOWER(user_id) = LOWER(%s)",
             (secret, current_user))
     uri = f"otpauth://totp/AETHER:{current_user}?secret={secret}&issuer=AETHER"
     return {"secret": secret, "otpauth_uri": uri}
@@ -1140,13 +1244,23 @@ def totp_setup(current_user: str = Depends(get_current_user)) -> dict:
 @app.post("/2fa/enable")
 def totp_enable(body: TotpCodeRequest, current_user: str = Depends(get_current_user)) -> dict:
     with db_conn() as cur:
-        cur.execute("SELECT totp_secret FROM users WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        cur.execute(
+            "SELECT totp_secret, totp_pending_secret, totp_enabled FROM users "
+            "WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
         row = cur.fetchone()
-        if not row or not row["totp_secret"]:
-            raise HTTPException(400, "Сначала запросите секрет: POST /2fa/setup")
-        if not _totp_valid(row["totp_secret"], body.code):
+        pending = row["totp_pending_secret"] if row else None
+        if not pending:
+            # Клиент, успевший получить секрет старой версией /2fa/setup: он
+            # лежит в totp_secret при выключенной 2FA. Подтверждаем и его,
+            # иначе апдейт сервера обрывал незаконченную настройку.
+            if not row or row["totp_enabled"] or not row["totp_secret"]:
+                raise HTTPException(400, "Сначала запросите секрет: POST /2fa/setup")
+            pending = row["totp_secret"]
+        if not _totp_valid(pending, body.code):
             raise HTTPException(400, "Неверный код")
-        cur.execute("UPDATE users SET totp_enabled = 1 WHERE LOWER(user_id) = LOWER(%s)", (current_user,))
+        cur.execute(
+            "UPDATE users SET totp_secret = %s, totp_enabled = 1, totp_pending_secret = NULL "
+            "WHERE LOWER(user_id) = LOWER(%s)", (pending, current_user))
     return {"ok": True}
 
 
@@ -1161,7 +1275,8 @@ def totp_disable(body: TotpCodeRequest, current_user: str = Depends(get_current_
         if not _totp_valid(row["totp_secret"], body.code):
             raise HTTPException(400, "Неверный код")
         cur.execute(
-            "UPDATE users SET totp_enabled = 0, totp_secret = NULL WHERE LOWER(user_id) = LOWER(%s)",
+            "UPDATE users SET totp_enabled = 0, totp_secret = NULL, totp_pending_secret = NULL "
+            "WHERE LOWER(user_id) = LOWER(%s)",
             (current_user,))
     return {"ok": True}
 
@@ -1191,14 +1306,22 @@ async def wipe_account(body: WipeRequest, authorization: str = Header(None),
         # ...и счётчики claim'ов: это след «кто кому писал» в обе стороны.
         cur.execute("DELETE FROM otk_claims WHERE claimer_id = LOWER(%s) OR user_id = LOWER(%s)",
                     (current_user, current_user))
+        # «Удалить всё» обязано забирать и загруженные медиа: до появления
+        # таблицы uploads связи «файл → владелец» не существовало, и они
+        # оставались на диске сервера навсегда.
+        cur.execute(
+            "DELETE FROM uploads WHERE user_id = LOWER(%s) AND kind = 'media' "
+            "RETURNING file_id, kind", (current_user,))
+        media_rows = cur.fetchall()
         cur.execute(
             "DELETE FROM sessions WHERE LOWER(user_id) = LOWER(%s) AND token != %s RETURNING token",
             (current_user, token))
         revoked = [r["token"] for r in cur.fetchall()]
+    purged_files = _delete_upload_files(media_rows)
     for t in revoked:
         await manager.close_for_token(t)
     return {"ok": True, "purged_messages": purged, "left_groups": left_groups,
-            "revoked_sessions": len(revoked)}
+            "purged_files": purged_files, "revoked_sessions": len(revoked)}
 
 
 # (#A4) Только с авторизацией: иначе перечисление пользователей без токена
@@ -1216,6 +1339,7 @@ def get_public_key(user_id: str, current_user: str = Depends(get_current_user)) 
 
 @app.put("/users/me/public-key")
 def update_public_key(body: UpdateKeyRequest, current_user: str = Depends(get_current_user)) -> dict:
+    _validate_key_b64(body.public_key_b64, "public_key_b64")
     with db_conn() as cur:
         cur.execute("UPDATE users SET public_key_b64 = %s WHERE LOWER(user_id) = LOWER(%s)", (body.public_key_b64, current_user))
     return {"ok": True, "user_id": current_user}
@@ -1233,6 +1357,13 @@ ALLOW_LEGACY_DIRECT = os.environ.get("AETHER_ALLOW_LEGACY_DIRECT", "0").lower() 
 
 def _envelope_size(envelope: dict) -> int:
     return len(json.dumps(envelope, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _envelope_fingerprint(envelope: dict) -> str:
+    """Каноничный отпечаток конверта: порядок ключей в JSON не должен решать,
+    считается ли повтор честным ретраем."""
+    canon = json.dumps(envelope, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return hashlib.sha256(canon.encode("utf-8")).hexdigest()
 
 
 def _is_group_envelope(envelope: dict) -> bool:
@@ -2240,7 +2371,20 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 raise HTTPException(400, "Group messages must use the group envelope")
             if is_group and not _is_group_envelope(body.envelope):
                 raise HTTPException(400, "Invalid group envelope")
-                
+
+            # Адресация копии конкретному устройству получателя. Раньше поле
+            # принималось как есть: сообщение с чужим или несуществующим
+            # device_id принималось со статусом ok и не доходило НИКОМУ —
+            # отправитель считал его отправленным, получатель не видел его
+            # никогда. Такой конверт не должен создаваться вовсе.
+            if is_user and body.target_device_id:
+                cur.execute(
+                    "SELECT 1 FROM crypto_devices WHERE user_id = LOWER(%s) AND device_id = %s",
+                    (body.recipient_id, body.target_device_id))
+                if not cur.fetchone():
+                    raise HTTPException(400, "Unknown target device for this recipient")
+
+
             # If it's a group, ensure sender is a member
             if is_group:
                 cur.execute("SELECT role FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (body.recipient_id, current_user))
@@ -2272,11 +2416,25 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
                 ),
             )
             if cur.rowcount == 0:
-                # id уже существует: либо честный ретрай отправителя (ok),
-                # либо попытка занять чужой UUID (409).
-                cur.execute("SELECT sender_id FROM messages WHERE id = %s", (msg_id,))
+                # id уже существует. Честный ретрай — это ПОБАЙТНО тот же
+                # запрос. Совпадения одного лишь отправителя мало: с тем же
+                # client_id можно было отправить другому получателю или с
+                # другим текстом, и сервер отвечал «duplicate: ok», молча
+                # выбросив новое сообщение. Сверяем весь неизменяемый набор.
+                cur.execute(
+                    "SELECT sender_id, recipient_id, recipient_device_id, envelope_json "
+                    "FROM messages WHERE id = %s", (msg_id,))
                 existing = cur.fetchone()
-                if not existing or existing["sender_id"].lower() != current_user.lower():
+                same = (
+                    existing is not None
+                    and existing["sender_id"].lower() == current_user.lower()
+                    and existing["recipient_id"].lower() == body.recipient_id.lower()
+                    and (existing["recipient_device_id"] or None)
+                        == ((body.target_device_id or None) if is_user else None)
+                    and _envelope_fingerprint(json.loads(existing["envelope_json"]))
+                        == _envelope_fingerprint(body.envelope)
+                )
+                if not same:
                     raise HTTPException(409, "Message id already in use")
                 logger.info(f"send_message: duplicate retry for {msg_id}, treated as success")
                 return {"ok": True, "message_id": msg_id, "duplicate": True}
@@ -2324,13 +2482,55 @@ async def send_message(body: SendMessageRequest, current_user: str = Depends(get
     return {"ok": True, "message_id": msg_id}
 
 
+WS_TICKET_TTL_SECONDS = 60
+
+
+@app.post("/ws/ticket")
+@limiter.limit("60/minute")
+def ws_ticket(request: Request, authorization: str = Header(None),
+              current_user: str = Depends(get_current_user)) -> dict:
+    """Одноразовый билет на /ws.
+
+    Bearer-токен живёт 30 дней, а в WebSocket он уезжал query-параметром —
+    то есть в access-логи nginx/uvicorn, в историю прокси и в панель
+    разработчика браузера. Билет живёт минуту и гасится при предъявлении;
+    внутри он ссылается на ту же сессию, поэтому /logout и kick рвут
+    соединение ровно как раньше."""
+    token = _bearer_token(authorization)
+    ticket = secrets.token_urlsafe(32)
+    expires = (datetime.now(timezone.utc) + timedelta(seconds=WS_TICKET_TTL_SECONDS)).isoformat()
+    with db_conn() as cur:
+        cur.execute("DELETE FROM ws_tickets WHERE expires_at < %s", (_utc_now(),))
+        cur.execute(
+            """INSERT INTO ws_tickets (ticket_hash, token, user_id, expires_at)
+               VALUES (%s, %s, LOWER(%s), %s)""",
+            (_hash_token(ticket), token, current_user, expires))
+    return {"ticket": ticket, "expires_in": WS_TICKET_TTL_SECONDS}
+
+
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket, token: str):
+async def websocket_endpoint(websocket: WebSocket, token: str = "", ticket: str = ""):
+    # ticket — предпочтительный путь; token оставлен для уже установленных
+    # сборок iOS/Android, которые обновятся не одномоментно.
+    if ticket:
+        with db_conn() as cur:
+            cur.execute(
+                "DELETE FROM ws_tickets WHERE ticket_hash = %s RETURNING token, expires_at",
+                (_hash_token(ticket),))
+            t = cur.fetchone()
+        if not t or t["expires_at"] < _utc_now():
+            await websocket.close(code=1008)
+            return
+        token = t["token"]
+    if not token:
+        await websocket.close(code=1008)
+        return
+
     # Validate token
     with db_conn() as cur:
         cur.execute("SELECT user_id, expires_at FROM sessions WHERE token = %s", (token,))
         row = cur.fetchone()
-    
+
     if not row:
         await websocket.close(code=1008)
         return
@@ -2389,6 +2589,11 @@ async def websocket_endpoint(websocket: WebSocket, token: str):
             except Exception:
                 pass
     except WebSocketDisconnect:
+        pass
+    finally:
+        # Раньше снятие регистрации висело только на WebSocketDisconnect:
+        # любое другое исключение из receive_text оставляло мёртвый сокет
+        # в active_connections навсегда — утечка памяти и рассылка в никуда.
         manager.disconnect(websocket, user_id, token)
 
 
@@ -2398,36 +2603,51 @@ class AckMessagesRequest(BaseModel):
 
 
 @app.post("/messages/ack")
-def ack_messages(body: AckMessagesRequest, current_user: str = Depends(get_current_user)) -> dict:
+def ack_messages(body: AckMessagesRequest, authorization: str = Header(None),
+                 current_user: str = Depends(get_current_user)) -> dict:
     """(#A1) Клиент подтверждает: сообщения сохранены локально.
     Только после этого они исчезают из inbox. Это исключает потерю
     сообщений при краше клиента между fetch и записью в локальную БД."""
+    device_id = _session_device(authorization, body.device_id)
     now = _utc_now()
     with db_conn() as cur:
         cur.executemany(
             """INSERT INTO message_receipts (message_id, user_id, device_id, acked_at)
                VALUES (%s, %s, %s, %s) ON CONFLICT (message_id, user_id, device_id) DO NOTHING""",
-            [(mid, current_user.lower(), body.device_id, now) for mid in body.message_ids],
+            [(mid, current_user.lower(), device_id, now) for mid in body.message_ids],
         )
     return {"ok": True, "acked": len(body.message_ids)}
 
 
 @app.get("/messages/inbox/{user_id}")
 def inbox(user_id: str, since: str = None, device_id: str = "primary",
+          authorization: str = Header(None),
           current_user: str = Depends(get_current_user)) -> dict:
     if user_id.lower() != current_user.lower():
         raise HTTPException(403, "Cannot read another user's inbox")
+    device_id = _session_device(authorization, device_id)
 
     # Multi-device: NULL recipient_device_id = всему аккаунту (группы, legacy).
     # Копии для чужих устройств в этот inbox не попадают.
     with db_conn() as cur:
         if since:
             cur.execute(
+                # Своё групповое сообщение обратно не отдаём — ровно как в
+                # ветке без since. Расхождение между ветками приводило к тому,
+                # что автор получал собственный пост канала/группы обратно, и
+                # дедупликация оставалась целиком на совести клиента.
                 """SELECT m.id, m.sender_id, m.recipient_id, m.envelope_json, m.created_at
                    FROM messages m
-                   WHERE (LOWER(m.recipient_id) = LOWER(%s) OR LOWER(m.recipient_id) IN (
-                       SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
-                   )) AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
+                   WHERE (
+                       LOWER(m.recipient_id) = LOWER(%s)
+                       OR (
+                           LOWER(m.recipient_id) IN (
+                               SELECT LOWER(group_id) FROM group_members WHERE LOWER(user_id) = LOWER(%s)
+                           )
+                           AND LOWER(m.sender_id) != LOWER(%s)
+                       )
+                   )
+                   AND (m.recipient_device_id IS NULL OR m.recipient_device_id = %s)
                    AND m.created_at > %s
                    AND NOT EXISTS (
                        SELECT 1 FROM message_receipts r
@@ -2436,7 +2656,7 @@ def inbox(user_id: str, since: str = None, device_id: str = "primary",
                    )
                    ORDER BY m.created_at ASC
                    LIMIT 200""",
-                (user_id, user_id, device_id, since, user_id, device_id),
+                (user_id, user_id, user_id, device_id, since, user_id, device_id),
             )
             rows = cur.fetchall()
         else:
@@ -2554,11 +2774,19 @@ def add_group_member(group_id: str, body: AddGroupMemberRequest, current_user: s
         if not admin or admin["role"] != "admin":
             raise HTTPException(403, "Only admins can add members")
             
+        # Адресат обязан существовать. Без этой проверки в group_members
+        # оседала произвольная строка: «участник» не виден в списке (JOIN users
+        # его отбрасывает), но считается в member_count и получает свою копию
+        # группового ключа.
+        cur.execute("SELECT 1 FROM users WHERE LOWER(user_id) = LOWER(%s)", (body.user_id,))
+        if not cur.fetchone():
+            raise HTTPException(404, "User not found")
+
         # Check if member exists
         cur.execute("SELECT 1 FROM group_members WHERE LOWER(group_id) = LOWER(%s) AND LOWER(user_id) = LOWER(%s)", (group_id, body.user_id))
         if cur.fetchone():
             raise HTTPException(400, "User is already a member")
-            
+
         cur.execute(
             """INSERT INTO group_members (group_id, user_id, encrypted_key_b64, role)
                VALUES (%s, %s, %s, %s)""",
@@ -2749,7 +2977,7 @@ import re as _re
 _FILE_ID_RE = _re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 
 
-async def _save_upload(file: UploadFile, dest_dir: Path, max_bytes: int) -> str:
+async def _save_upload(file: UploadFile, dest_dir: Path, max_bytes: int) -> tuple[str, int]:
     """Стримит файл на диск, обрывая запись при превышении лимита."""
     file_id = str(uuid.uuid4())
     file_path = dest_dir / file_id
@@ -2764,13 +2992,87 @@ async def _save_upload(file: UploadFile, dest_dir: Path, max_bytes: int) -> str:
     except Exception:
         file_path.unlink(missing_ok=True)
         raise
-    return file_id
+    return file_id, total
+
+
+# --- Политика хранения медиа -------------------------------------------------
+#
+# Подсчёт ссылок на файл невозможен ПО УСТРОЙСТВУ ПРОТОКОЛА: file_id лежит
+# внутри зашифрованного конверта, сервер его не видит. Поэтому хранение
+# опирается на владельца (квота + удаление вместе с аккаунтом) и на возраст.
+# TTL по умолчанию выключен: включать его — решение владельца сервера, потому
+# что клиент может выкачивать медиа при переустановке.
+UPLOAD_QUOTA_BYTES = int(os.environ.get("AETHER_UPLOAD_QUOTA_MB", "2048")) * 1024 * 1024
+MEDIA_TTL_DAYS = int(os.environ.get("AETHER_MEDIA_TTL_DAYS", "0"))
+MEDIA_GC_INTERVAL_SECONDS = 6 * 3600
+
+
+def _record_upload(file_id: str, user_id: str, kind: str, size_bytes: int) -> None:
+    with db_conn() as cur:
+        cur.execute(
+            """INSERT INTO uploads (file_id, user_id, kind, size_bytes, created_at)
+               VALUES (%s, LOWER(%s), %s, %s, %s)
+               ON CONFLICT (file_id) DO NOTHING""",
+            (file_id, user_id, kind, size_bytes, _utc_now()))
+
+
+def _used_bytes(user_id: str) -> int:
+    with db_conn() as cur:
+        cur.execute("SELECT COALESCE(SUM(size_bytes), 0) AS n FROM uploads WHERE user_id = LOWER(%s)",
+                    (user_id,))
+        return int(cur.fetchone()["n"])
+
+
+def _delete_upload_files(rows) -> int:
+    """Снести файлы с диска по списку строк uploads."""
+    removed = 0
+    for r in rows:
+        directory = AVATAR_DIR if r["kind"] == "avatar" else UPLOAD_DIR
+        (directory / r["file_id"]).unlink(missing_ok=True)
+        removed += 1
+    return removed
+
+
+def gc_expired_uploads() -> int:
+    """Удалить медиа старше TTL. Аватарки не трогаем: они не «сообщение»,
+    а часть профиля, и их удаление ломало бы поиск и списки чатов."""
+    if MEDIA_TTL_DAYS <= 0:
+        return 0
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=MEDIA_TTL_DAYS)).isoformat()
+    with db_conn() as cur:
+        cur.execute(
+            "DELETE FROM uploads WHERE kind = 'media' AND created_at < %s RETURNING file_id, kind",
+            (cutoff,))
+        rows = cur.fetchall()
+    return _delete_upload_files(rows)
+
+
+async def _media_gc_loop() -> None:
+    while True:
+        try:
+            removed = gc_expired_uploads()
+            if removed:
+                logger.info("media GC: удалено %s файлов старше %s дн.", removed, MEDIA_TTL_DAYS)
+        except Exception as exc:            # сборщик не должен ронять сервер
+            logger.warning("media GC failed: %s", exc)
+        await asyncio.sleep(MEDIA_GC_INTERVAL_SECONDS)
+
+
+@app.on_event("startup")
+async def start_media_gc() -> None:
+    if MEDIA_TTL_DAYS > 0:
+        asyncio.create_task(_media_gc_loop())
 
 
 @app.post("/upload")
 @limiter.limit("20/minute")
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)) -> dict:
-    file_id = await _save_upload(file, UPLOAD_DIR, MAX_UPLOAD_BYTES)
+    # Квота на аккаунт: 20 запросов в минуту по 50 МБ — это гигабайт в минуту
+    # с одной сессии, и раньше ничто не мешало забить диск сервера насмерть.
+    if _used_bytes(current_user) >= UPLOAD_QUOTA_BYTES:
+        raise HTTPException(413, "Storage quota exceeded")
+    file_id, size = await _save_upload(file, UPLOAD_DIR, MAX_UPLOAD_BYTES)
+    _record_upload(file_id, current_user, "media", size)
     return {"ok": True, "file_id": file_id}
 
 
@@ -2790,7 +3092,8 @@ def download_file(request: Request, file_id: str, current_user: str = Depends(ge
 @app.post("/avatars")
 @limiter.limit("10/minute")
 async def upload_avatar(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)) -> dict:
-    file_id = await _save_upload(file, AVATAR_DIR, MAX_AVATAR_BYTES)
+    file_id, size = await _save_upload(file, AVATAR_DIR, MAX_AVATAR_BYTES)
+    _record_upload(file_id, current_user, "avatar", size)
     return {"ok": True, "file_id": file_id}
 
 

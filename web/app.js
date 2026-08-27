@@ -993,6 +993,11 @@ async function ensureRatchetKeys() {
         // Переходим в собственное web-устройство и продолжаем.
         myDeviceId = 'web-' + Array.from(crypto.getRandomValues(new Uint8Array(5)), b => b.toString(16).padStart(2, '0')).join('');
         localStorage.setItem(spaceKey('device_id_'), myDeviceId);
+        // Сессия могла быть уже привязана к прежнему device_id (сюда заходят и
+        // после логина — при доборе одноразовых ключей). Сервер пиннит сессию
+        // к устройству и отвечает 403 на inbox/ack с любым другим значением,
+        // поэтому смену устройства надо объявить, а не молча продолжить.
+        bindSessionDevice();
     }
     const serverCount = Number(countData.count) || 0;
     // Подписанные бандлы (SEC HIGH-2): публикация всегда с ed25519 + подписями.
@@ -6833,18 +6838,36 @@ function initSwipeGestures(wrapper, item, contactId) {
 // доставки сообщений. Полностью аддитивно — polling продолжает работать
 // как fallback, поэтому при недоступности WS ничего не ломается.
 // =====================================================================
-function wsUrlFromServer() {
+// Билет вместо сессионного токена: query-строка попадает в access-логи
+// сервера и прокси, а bearer-токен живёт 30 дней. Билет действует минуту и
+// гасится при первом же предъявлении. Старый сервер ручки не знает — тогда
+// откатываемся на ?token=, иначе веб остался бы без realtime.
+async function wsTicket() {
     try {
-        const u = new URL(serverUrl);
-        const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
-        return `${proto}//${u.host}/ws?token=${encodeURIComponent(sessionToken)}`;
+        const res = await fetch(`${serverUrl}/ws/ticket`, {
+            method: 'POST', headers: authHeaders(),
+        });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return data.ticket || null;
     } catch (e) { return null; }
 }
 
-function connectRealtime() {
+function wsUrlFromServer(ticket) {
+    try {
+        const u = new URL(serverUrl);
+        const proto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+        const auth = ticket
+            ? `ticket=${encodeURIComponent(ticket)}`
+            : `token=${encodeURIComponent(sessionToken)}`;
+        return `${proto}//${u.host}/ws?${auth}`;
+    } catch (e) { return null; }
+}
+
+async function connectRealtime() {
     if (!sessionToken || !serverUrl) return;
     try { if (realtimeWs) { realtimeWs.onclose = null; realtimeWs.close(); } } catch (e) {}
-    const url = wsUrlFromServer();
+    const url = wsUrlFromServer(await wsTicket());
     if (!url) return;
     try {
         realtimeWs = new WebSocket(url);

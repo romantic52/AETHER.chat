@@ -112,6 +112,10 @@ final class Session: ObservableObject {
                              userId: account.userId, dbFileName: account.dbFileName)
         await core.restoreSession(token: creds.token, userId: account.userId,
                                   publicKey: creds.publicKey, privateKey: creds.privateKey)
+        // Восстановленная сессия обязана объявить своё устройство: login здесь
+        // не проходит, а сервер без привязки пиннит сессию к первому device_id,
+        // который услышит. Фоном — привязка ходит в директорию устройств.
+        Task { await core.bindCurrentDevice() }
         authToken = creds.token
         myId = account.userId
         activeServerId = server.id
@@ -132,6 +136,9 @@ final class Session: ObservableObject {
 
         await core.restoreSession(token: bundle.token, userId: userId,
                                   publicKey: bundle.publicKey, privateKey: bundle.privateKey)
+        // Связывание устройств: сессия приезжает готовой, login не вызывается —
+        // привязку к device_id делаем здесь, иначе инбокс упрётся в 403.
+        Task { await core.bindCurrentDevice() }
         authToken = bundle.token
         myId = userId
         activeServerId = target.id

@@ -1,0 +1,322 @@
+{
+  "schema_version": 1,
+  "json_comparison": "semantic",
+  "vectors": [
+    {
+      "id": "wire-text-basic",
+      "wire_type": "text",
+      "input_json": {
+        "text": "Привет, AETHER 👋",
+        "type": "text"
+      },
+      "expected_decoded": {
+        "type": "text",
+        "text": "Привет, AETHER 👋"
+      },
+      "expected_encoded_json": {
+        "type": "text",
+        "text": "Привет, AETHER 👋"
+      }
+    },
+    {
+      "id": "wire-text-reply",
+      "wire_type": "reply",
+      "input_json": {
+        "reply_to_text": "Исходное сообщение",
+        "type": "text",
+        "reply_to_id": "018f47d2-6c00-7b4f-8f18-e8f037a055d1",
+        "text": "Ответ"
+      },
+      "expected_decoded": {
+        "type": "text",
+        "text": "Ответ",
+        "reply_to_id": "018f47d2-6c00-7b4f-8f18-e8f037a055d1",
+        "reply_to_text": "Исходное сообщение"
+      },
+      "expected_encoded_json": {
+        "reply_to_id": "018f47d2-6c00-7b4f-8f18-e8f037a055d1",
+        "reply_to_text": "Исходное сообщение",
+        "text": "Ответ",
+        "type": "text"
+      }
+    },
+    {
+      "id": "wire-media-image",
+      "wire_type": "media:image",
+      "input_json": {
+        "kind": "image",
+        "nonce": "AAECAwQFBgcICQoL",
+        "type": "media",
+        "mime_type": "image/jpeg",
+        "file_id": "123e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      },
+      "expected_decoded": {
+        "type": "media",
+        "file_id": "123e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "mime_type": "image/jpeg",
+        "nonce": "AAECAwQFBgcICQoL",
+        "kind": "image"
+      },
+      "expected_encoded_json": {
+        "type": "media",
+        "file_id": "123e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "mime_type": "image/jpeg",
+        "nonce": "AAECAwQFBgcICQoL",
+        "kind": "image"
+      }
+    },
+    {
+      "id": "wire-media-voice",
+      "wire_type": "media:voice",
+      "input_json": {
+        "type": "media",
+        "file_id": "223e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+        "mime_type": "audio/webm",
+        "nonce": "DA0ODxAREhMUFRYX",
+        "kind": "voice",
+        "duration": 4.25
+      },
+      "expected_decoded": {
+        "type": "media",
+        "file_id": "223e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+        "mime_type": "audio/webm",
+        "nonce": "DA0ODxAREhMUFRYX",
+        "kind": "voice",
+        "duration": 4.25
+      },
+      "expected_encoded_json": {
+        "type": "media",
+        "file_id": "223e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+        "mime_type": "audio/webm",
+        "nonce": "DA0ODxAREhMUFRYX",
+        "kind": "voice",
+        "duration": 4.25
+      }
+    },
+    {
+      "id": "wire-media-video-message",
+      "wire_type": "media:video_msg",
+      "input_json": {
+        "duration": 7.5,
+        "kind": "video_msg",
+        "mime_type": "video/mp4",
+        "nonce": "GBkaGxwdHh8gISIj",
+        "sym_key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+        "file_id": "323e4567-e89b-12d3-a456-426614174000",
+        "type": "media"
+      },
+      "expected_decoded": {
+        "type": "media",
+        "file_id": "323e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+        "mime_type": "video/mp4",
+        "nonce": "GBkaGxwdHh8gISIj",
+        "kind": "video_msg",
+        "duration": 7.5
+      },
+      "expected_encoded_json": {
+        "type": "media",
+        "file_id": "323e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "QEFCQ0RFRkdISUpLTE1OT1BRUlNUVVZXWFlaW1xdXl8",
+        "mime_type": "video/mp4",
+        "nonce": "GBkaGxwdHh8gISIj",
+        "kind": "video_msg",
+        "duration": 7.5
+      }
+    },
+    {
+      "id": "wire-media-file",
+      "wire_type": "media:file",
+      "input_json": {
+        "type": "media",
+        "file_id": "423e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8",
+        "mime_type": "application/pdf",
+        "nonce": "JCUmJygpKissLS4v",
+        "kind": "file"
+      },
+      "expected_decoded": {
+        "type": "media",
+        "file_id": "423e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8",
+        "mime_type": "application/pdf",
+        "nonce": "JCUmJygpKissLS4v",
+        "kind": "file"
+      },
+      "expected_encoded_json": {
+        "type": "media",
+        "file_id": "423e4567-e89b-12d3-a456-426614174000",
+        "sym_key": "YGFiY2RlZmdoaWprbG1ub3BxcnN0dXZ3eHl6e3x9fn8",
+        "mime_type": "application/pdf",
+        "nonce": "JCUmJygpKissLS4v",
+        "kind": "file"
+      }
+    },
+    {
+      "id": "wire-reaction-add",
+      "wire_type": "reaction",
+      "input_json": {
+        "emoji": "👍",
+        "target": "523e4567-e89b-12d3-a456-426614174000",
+        "type": "reaction"
+      },
+      "expected_decoded": {
+        "type": "reaction",
+        "target": "523e4567-e89b-12d3-a456-426614174000",
+        "emoji": "👍"
+      },
+      "expected_encoded_json": {
+        "type": "reaction",
+        "target": "523e4567-e89b-12d3-a456-426614174000",
+        "emoji": "👍"
+      }
+    },
+    {
+      "id": "wire-edit",
+      "wire_type": "edit",
+      "input_json": {
+        "text": "Исправленный текст",
+        "target": "623e4567-e89b-12d3-a456-426614174000",
+        "type": "edit"
+      },
+      "expected_decoded": {
+        "type": "edit",
+        "target": "623e4567-e89b-12d3-a456-426614174000",
+        "text": "Исправленный текст"
+      },
+      "expected_encoded_json": {
+        "type": "edit",
+        "target": "623e4567-e89b-12d3-a456-426614174000",
+        "text": "Исправленный текст"
+      }
+    },
+    {
+      "id": "wire-delete",
+      "wire_type": "delete",
+      "input_json": {
+        "target": "723e4567-e89b-12d3-a456-426614174000",
+        "type": "delete"
+      },
+      "expected_decoded": {
+        "type": "delete",
+        "target": "723e4567-e89b-12d3-a456-426614174000"
+      },
+      "expected_encoded_json": {
+        "type": "delete",
+        "target": "723e4567-e89b-12d3-a456-426614174000"
+      }
+    },
+    {
+      "id": "wire-read",
+      "wire_type": "read",
+      "input_json": {
+        "type": "read"
+      },
+      "expected_decoded": {
+        "type": "read"
+      },
+      "expected_encoded_json": {
+        "type": "read"
+      }
+    },
+    {
+      "id": "wire-delivered",
+      "wire_type": "delivered",
+      "input_json": {
+        "type": "delivered"
+      },
+      "expected_decoded": {
+        "type": "delivered"
+      },
+      "expected_encoded_json": {
+        "type": "delivered"
+      }
+    },
+    {
+      "id": "wire-group-text-aes-gcm",
+      "wire_type": "group_payload",
+      "input_json": {
+        "type": "text",
+        "text": "group hello"
+      },
+      "expected_decoded": {
+        "type": "text",
+        "text": "group hello"
+      },
+      "expected_encoded_json": {
+        "type": "text",
+        "text": "group hello"
+      },
+      "deterministic_crypto": {
+        "algorithm": "AES-256-GCM",
+        "exact_bytes": true,
+        "key_b64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "nonce_b64url": "AAECAwQFBgcICQoL",
+        "plaintext_utf8": "{\"type\":\"text\",\"text\":\"group hello\"}",
+        "ciphertext_b64url": "PCCiYrWA4CGvNfLzxctUT_ez_0DSQX0bSgiQ9T0BZd5tf4yBUfgkw_qFmXNde50Hax02TQ",
+        "envelope_json": {
+          "is_group": "1",
+          "nonce_b64": "AAECAwQFBgcICQoL",
+          "ciphertext_b64": "PCCiYrWA4CGvNfLzxctUT_ez_0DSQX0bSgiQ9T0BZd5tf4yBUfgkw_qFmXNde50Hax02TQ"
+        }
+      }
+    },
+    {
+      "id": "wire-ratchet-envelope-metadata",
+      "wire_type": "ratchet_metadata",
+      "input_json": {
+        "body_b64": "AQIDBAUGBwgJCgsMDQ4PEA",
+        "ratchet": "1",
+        "sender_device": "823e4567-e89b-12d3-a456-426614174000",
+        "type": 0,
+        "olm_identity": "j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8"
+      },
+      "expected_decoded": {
+        "ratchet": "1",
+        "olm_identity": "j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8",
+        "sender_device": "823e4567-e89b-12d3-a456-426614174000",
+        "type": 0,
+        "body_b64": "AQIDBAUGBwgJCgsMDQ4PEA"
+      },
+      "expected_encoded_json": {
+        "ratchet": "1",
+        "olm_identity": "j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8",
+        "sender_device": "823e4567-e89b-12d3-a456-426614174000",
+        "type": 0,
+        "body_b64": "AQIDBAUGBwgJCgsMDQ4PEA"
+      }
+    },
+    {
+      "id": "wire-group-key-wrap-crypto-box",
+      "wire_type": "group_key_wrap",
+      "input_json": {
+        "group_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      },
+      "expected_decoded": {
+        "group_key_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"
+      },
+      "expected_encoded_json": {
+        "sender_pubkey_b64": "j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8",
+        "nonce_b64": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "ciphertext_b64": "AZl3suTtUwN63xvJzE2lyyKT-nM9DxnpAxTVuGf7mNpJ97AyBdHB_zjxZeqErsGcs9ddxO0bUUMpCkM"
+      },
+      "deterministic_crypto": {
+        "algorithm": "crypto_box_curve25519xsalsa20poly1305",
+        "exact_bytes": true,
+        "sender_private_b64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "sender_public_b64url": "j0DFrbaPJWJK5bIU6nZ6bslNgp09e14a0bpvPiE4KF8",
+        "recipient_private_b64url": "ICEiIyQlJicoKSorLC0uLzAxMjM0NTY3ODk6Ozw9Pj8",
+        "recipient_public_b64url": "NYBy1jZYgNGu6jKa35EhODhR7SGijjt16WXQ0s0WYlQ",
+        "nonce_b64url": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYX",
+        "plaintext_utf8": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+        "ciphertext_b64url": "AZl3suTtUwN63xvJzE2lyyKT-nM9DxnpAxTVuGf7mNpJ97AyBdHB_zjxZeqErsGcs9ddxO0bUUMpCkM"
+      }
+    }
+  ]
+}

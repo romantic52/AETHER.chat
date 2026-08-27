@@ -380,6 +380,26 @@ actor CoreClient {
     /// а конверт личной переписки адресован ровно одному из них.
     var currentDeviceId: String { myDeviceId() }
 
+    /// Объявить серверу устройство ЭТОЙ сессии.
+    ///
+    /// Зовётся не только из login. Сервер пиннит сессию к первому device_id,
+    /// который она назвала, и дальше отвечает 403 на inbox/ack с любым другим.
+    /// Сессия из Keychain переживает удаление приложения, а локальная база с
+    /// device_id — нет: после переустановки старый токен пришёл бы с новым
+    /// device_id и получил бы 403 навсегда, потому что перепривязать сессию
+    /// было некому. Android делает то же самое на каждом старте
+    /// (MessageRepository.start), здесь — на каждом входе в пространство.
+    func bindCurrentDevice() {
+        guard let device = try? requireDeviceId() else { return }
+        if let identity = try? myOlmIdentityKey(), !identity.isEmpty {
+            try? api.bindSessionDeviceProof(deviceId: device, identityKeyB64: identity)
+        } else {
+            // Olm-аккаунта ещё нет (первый запуск до публикации ключей).
+            // Привязка важнее доказательства: без неё не приедет инбокс.
+            try? api.bindSessionDevice(deviceId: device)
+        }
+    }
+
     /// device_id или ошибка: пустой означает «директория была недоступна».
     /// Работать под неизвестным устройством нельзя — повторим позже.
     private func requireDeviceId() throws -> String {
