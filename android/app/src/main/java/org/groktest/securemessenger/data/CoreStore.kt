@@ -175,6 +175,29 @@ class CoreStore private constructor(
         return true
     }
 
+    /**
+     * Отметка «получатель открыл» на стороне ОТПРАВИТЕЛЯ.
+     *
+     * Ничего не сжигает и отсчёт не запускает: срок жизни принадлежит копии
+     * получателя. Здесь только факт, который надо показать в интерфейсе.
+     */
+    fun markEphemeralViewed(messageId: String, at: Long = System.currentTimeMillis()) {
+        val current = store.ephemeralGet(messageId)
+        store.ephemeralSet(
+            uniffi.sm_core.EphemeralState(
+                messageId = messageId,
+                state = "VIEWED_BY_PEER",
+                openedTs = current?.openedTs ?: at,
+                expiresTs = current?.expiresTs,
+                views = maxOf(current?.views ?: 0, 1),
+            )
+        )
+    }
+
+    /** Открывал ли получатель наше исчезающее. */
+    fun ephemeralViewedByPeer(messageId: String): Boolean =
+        store.ephemeralGet(messageId)?.state == "VIEWED_BY_PEER"
+
     fun closeEphemeral(messageId: String, payloadJson: String) {
         val spec = uniffi.sm_core.ephemeralFromPayload(payloadJson) ?: return
         val current = store.ephemeralGet(messageId) ?: return

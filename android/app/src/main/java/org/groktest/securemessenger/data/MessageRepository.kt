@@ -918,6 +918,22 @@ class MessageRepository(
             }
             return null
         }
+        // Контрол: получатель открыл наше исчезающее сообщение.
+        //
+        // Отметку ставим у СЕБЯ и ничего не сжигаем: отсчёт принадлежит его
+        // копии. Нам нужно лишь показать «просмотрено» рядом со своим письмом.
+        if (obj != null && ptype == "ephemeral_viewed") {
+            val target = obj.optString("target")
+            if (!groupLike && target.isNotBlank()) {
+                val existing = store.getMessageByMsgId(target)
+                if (existing != null && existing.isOut &&
+                    existing.peerId.equals(m.senderId, ignoreCase = true)
+                ) {
+                    store.markEphemeralViewed(target)
+                }
+            }
+            return null
+        }
         // Контрол: собеседник дал свой ключ обнаружения.
         //
         // Ключ едет внутри Olm-конверта, а не через сервер открытым: иначе
@@ -1117,7 +1133,21 @@ class MessageRepository(
     }
 
     suspend fun openEphemeral(message: MessageEntity): Boolean = withContext(Dispatchers.IO) {
-        message.payloadJson?.let { store.openEphemeral(message.msgId, it) } ?: true
+        val opened = message.payloadJson?.let { store.openEphemeral(message.msgId, it) } ?: true
+        // Сообщаем отправителю, что его исчезающее прочитали. Только для
+        // входящих: своё открывать нечего, и отсылать себе бессмысленно.
+        if (opened && !message.isOut) {
+            scope.launch {
+                runCatching {
+                    val wire = JSONObject()
+                        .put("type", "ephemeral_viewed")
+                        .put("target", message.msgId)
+                        .toString()
+                    sendWire(message.peerId, wire)
+                }
+            }
+        }
+        opened
     }
 
     suspend fun closeEphemeral(message: MessageEntity) = withContext(Dispatchers.IO) {

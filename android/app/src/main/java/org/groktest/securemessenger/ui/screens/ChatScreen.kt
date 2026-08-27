@@ -9,6 +9,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.filled.Done
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.ErrorOutline
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -141,6 +142,7 @@ fun ChatScreen(
     // (#A2) Повторная отправка сообщения со статусом «ошибка» (-1)
     onRetryMessage: (String) -> Unit = {},
     onOpenEphemeral: suspend (MessageEntity) -> Boolean = { true },
+    ephemeralViewedByPeer: (String) -> Boolean = { false },
     onCloseEphemeral: suspend (MessageEntity) -> Unit = {},
     loadMessageDeliveryInfo: suspend (String) -> org.groktest.securemessenger.data.MessageDeliveryInfo = {
         org.groktest.securemessenger.data.MessageDeliveryInfo(null, emptyList())
@@ -1585,6 +1587,7 @@ fun ChatScreen(
                                     onRetry = onRetryMessage,
                                     loadDeliveryInfo = loadMessageDeliveryInfo,
                                     onOpenEphemeral = onOpenEphemeral,
+                                    ephemeralViewedByPeer = ephemeralViewedByPeer,
                                     onCloseEphemeral = onCloseEphemeral,
                                     onReply = {
                                         editingMessage = null
@@ -2040,6 +2043,7 @@ fun MessageBubble(
         org.groktest.securemessenger.data.MessageDeliveryInfo(null, emptyList())
     },
     onOpenEphemeral: suspend (MessageEntity) -> Boolean = { true },
+    ephemeralViewedByPeer: (String) -> Boolean = { false },
     onCloseEphemeral: suspend (MessageEntity) -> Unit = {},
     onReply: (MessageEntity) -> Unit = {},
     onEdit: (MessageEntity) -> Unit = {},
@@ -2055,15 +2059,18 @@ fun MessageBubble(
     var ephemeralUnavailable by remember(msg.msgId) { mutableStateOf(false) }
     val ephemeralScope = rememberCoroutineScope()
 
-    if (ephemeralSpec != null && ephemeralSpec.kind != "VIEW_ONCE") {
+    // Исчезающее принадлежит ПОЛУЧАТЕЛЮ: отсчёт и лимит просмотров тратит
+    // только он. Раньше отправитель открывал собственное сообщение и сжигал
+    // чужой просмотр — своё же письмо исчезало у него на глазах.
+    if (!isOut && ephemeralSpec != null && ephemeralSpec.kind != "VIEW_ONCE") {
         LaunchedEffect(msg.msgId) { onOpenEphemeral(msg) }
     }
-    if (ephemeralSpec?.kind == "VIEW_ONCE" && ephemeralRevealed) {
+    if (!isOut && ephemeralSpec?.kind == "VIEW_ONCE" && ephemeralRevealed) {
         DisposableEffect(msg.msgId) {
             onDispose { ephemeralScope.launch { onCloseEphemeral(msg) } }
         }
     }
-    if (ephemeralSpec?.kind == "VIEW_ONCE" && !ephemeralRevealed) {
+    if (!isOut && ephemeralSpec?.kind == "VIEW_ONCE" && !ephemeralRevealed) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -2087,6 +2094,14 @@ fun MessageBubble(
         }
         return
     }
+    // Отправителю — своё письмо целиком, но с честной пометкой: у собеседника
+    // оно временное. Плюс статус просмотра, иначе исчезающее уходит в пустоту
+    // и непонятно, дошло ли оно до глаз вообще.
+    val ephemeralOutLabel = if (isOut && ephemeralSpec != null) {
+        val kind = if (ephemeralSpec.kind == "VIEW_ONCE") "Просмотр один раз" else "Исчезающее"
+        if (ephemeralViewedByPeer(msg.msgId)) "$kind · просмотрено" else "$kind · ещё не открыто"
+    } else null
+
     // В канале посты выровнены одинаково (слева) — как лента, без «моих справа».
     val alignEnd = isOut && !isChannelPost
     val haptic = androidx.compose.ui.platform.LocalHapticFeedback.current
@@ -2195,6 +2210,20 @@ fun MessageBubble(
             horizontalArrangement = Arrangement.End,
             verticalAlignment = Alignment.CenterVertically
         ) {
+            if (ephemeralOutLabel != null) {
+                Icon(
+                    Icons.Filled.Timer,
+                    contentDescription = null,
+                    tint = metadataColor,
+                    modifier = Modifier.size(12.dp).padding(end = 2.dp)
+                )
+                Text(
+                    ephemeralOutLabel,
+                    fontSize = 11.sp,
+                    color = metadataColor,
+                    modifier = Modifier.padding(end = 4.dp)
+                )
+            }
             if (msg.isEdited && !isMedia) {
                 Text(
                     "изм.",

@@ -781,6 +781,7 @@ class MainActivity : FragmentActivity() {
                                 },
                                 onRetryMessage = { msgId -> repoSafe.retryMessage(msgId) },
                                 onOpenEphemeral = { message -> repoSafe.openEphemeral(message) },
+                                ephemeralViewedByPeer = { id -> store.ephemeralViewedByPeer(id) },
                                 onCloseEphemeral = { message -> repoSafe.closeEphemeral(message) },
                                 loadMessageDeliveryInfo = { msgId -> store.messageDeliveryInfo(msgId) },
                                 loadDeliveryPolicy = { targetPeer -> store.deliveryPolicy(targetPeer) },
