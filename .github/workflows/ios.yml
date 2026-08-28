@@ -29,10 +29,22 @@ jobs:
 
       - name: Установить Rust + iOS-таргеты
         run: |
-          rustup target add aarch64-apple-ios aarch64-apple-ios-sim x86_64-apple-ios
+          rustup target add aarch64-apple-ios aarch64-apple-ios-sim
 
       - name: Установить XcodeGen
         run: brew install xcodegen
+
+      # AETHER/Core/Secrets.swift держит адрес сервера и учётку TURN и лежит в
+      # .gitignore — в репозитории его нет и быть не должно. Без него сборка
+      # падает на «cannot find 'Secrets' in scope», что и происходило в каждом
+      # запуске этого workflow. Для проверки компиляции хватает шаблона:
+      # значения-заглушки никуда не ходят, а форма символов та же.
+      - name: Подставить шаблон секретов
+        working-directory: ios
+        run: |
+          if [ ! -f AETHER/Core/Secrets.swift ]; then
+            cp Secrets.example.swift AETHER/Core/Secrets.swift
+          fi
 
       - name: Собрать Rust-ядро под iOS + Swift-биндинги
         working-directory: ios
@@ -42,6 +54,12 @@ jobs:
         working-directory: ios
         run: xcodegen generate
 
+      # ARCHS=arm64 обязателен. build_core_ios.sh собирает ядро только под
+      # aarch64-apple-ios и aarch64-apple-ios-sim, поэтому в xcframework нет
+      # x86_64-слайса. Без явного ARCHS xcodebuild просит обе архитектуры,
+      # Swift компилируется целиком, а линковка падает на
+      # «symbol(s) not found for architecture x86_64». Раннеры macOS давно
+      # arm64, так что arm64-симулятор — то, что нужно.
       - name: Сборка под симулятор (без подписи)
         working-directory: ios
         run: |
@@ -51,6 +69,8 @@ jobs:
             -configuration Debug \
             -sdk iphonesimulator \
             -derivedDataPath build \
+            ARCHS=arm64 \
+            ONLY_ACTIVE_ARCH=NO \
             CODE_SIGNING_ALLOWED=NO \
             build
 

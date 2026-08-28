@@ -448,8 +448,27 @@ TTL, ни сборщика. `delete_group`, `delete_history` и `wipe_account` �
 `ARCHS=arm64`. Первая попытка со стандартным `generic/platform=iOS Simulator`
 падает на линковке, и это **не дефект правки**: в `ios/CoreFFI/SmCoreFFI.xcframework`
 лежат только слайсы `ios-arm64` и `ios-arm64-simulator`, а `generic` просит ещё
-и `x86_64`. Swift-фазы при этом проходят целиком — падает `Ld`. Для CI на
-Intel-раннерах это отдельная мина: `ios.yml` соберётся только на arm64-macOS.
+и `x86_64`. Swift-фазы при этом проходят целиком — падает `Ld`.
+
+### `iOS build` в Actions падал ДО этого аудита — две причины, обе починены
+
+Прогон в Actions показал, что мой прогноз был верен лишь наполовину.
+
+1. **Первым падает не линковка, а компиляция:** `cannot find 'Secrets' in
+   scope`. `ios/AETHER/Core/Secrets.swift` держит адрес сервера и учётку TURN,
+   лежит в `.gitignore` и в репозитории отсутствует — правильно, что
+   отсутствует. Но CI его ниоткуда не брал, поэтому **каждый** запуск `ios.yml`
+   падал, включая запуск на коммите `a8e1804`, до всех правок аудита. Локально
+   сборка проходила только потому, что на машине владельца этот файл есть.
+   Починено: шаг копирует `ios/Secrets.example.swift` в
+   `AETHER/Core/Secrets.swift`, если настоящего нет. Значения-заглушки никуда
+   не ходят, а набор символов у шаблона тот же — проверено локальной сборкой
+   именно с шаблоном (`BUILD SUCCEEDED`).
+2. **За ней шла бы линковка `x86_64`.** `build_core_ios.sh` собирает только
+   `aarch64-apple-ios` и `aarch64-apple-ios-sim`, а `ios.yml` архитектуру не
+   фиксировал. Починено: `ARCHS=arm64 ONLY_ACTIVE_ARCH=NO`. Заодно из шага
+   `rustup target add` убран `x86_64-apple-ios` — скрипт его никогда не
+   использовал.
 
 Правка `bindCurrentDevice()` и её вызовы из `Session.activate()` и
 `Session.signIn(paired:)` **компилируются**; вызываемые методы FFI
@@ -964,10 +983,10 @@ node web/test_wire.js && node web/test_security.js
 
 * **сборку и тесты Android** — Android SDK в этой сессии не поднимался.
   Гипотеза №1 закрыта чтением исходников `main`, но сборка не проверялась;
-* **CI в самом GitHub Actions** — `.github/workflows/ci.yml` локально
-  воспроизведён целиком и зелёный, но Actions его ни разу не запускал: для
-  этого нужен push, а он выходит за рамки правки кода. Единственная замеченная
-  мина — `ios.yml` на Intel-раннере не слинкуется, в xcframework нет `x86_64`;
+* — (закрыто) **CI в GitHub Actions прогнан.** Ветка запушена, `ci.yml`
+  отработал в Actions: `Rust core + protocol vectors`, `Web (wire + security)`
+  и `Server API + security regressions` — **все три зелёные**, 2m53s.
+  Шаг «Открыть регистрацию» сработал: `403 approval_required` не возникло;
 * живые сценарии клиент↔клиент; локальные хранилища Android и iOS
   (Keystore/Keychain, SQLCipher, состояние Ratchet); TOFU и смену identity на
   клиентах; offline/outbox и network chaos; WebRTC-сигналинг под нагрузкой;
