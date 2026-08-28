@@ -253,6 +253,67 @@ function wrapGroupKey(symKeyBytes, recipientPubBytes) {
     });
 }
 
+// NEW-7: TOFU для ключа аккаунта, которым заворачивается ГРУППОВОЙ ключ.
+//
+// Возвращает ключ, которому можно доверять, или бросает ошибку. Первый контакт
+// пинится молча (иначе доверять было бы не с чего). Смена пина означает одно из
+// двух: собеседник переустановил приложение — или сервер подставил свой ключ,
+// чтобы получить групповой. Различить их изнутри нельзя, поэтому решает
+// человек, сверив цифры безопасности по другому каналу.
+//
+// interactive=false — вызов не от действия пользователя (автоматическая ротация
+// ключа группы). Там модалка была бы засадой посреди загрузки, поэтому просто
+// отказываем: группа останется помеченной на ротацию, и попытка повторится.
+function trustedAccountKey(peerId, serverKeyB64, interactive) {
+    const peer = (peerId || '').toLowerCase();
+    // Себе — свой собственный ключ, не спрашивая сервер и ничего не пиня.
+    // Иначе смена своего же ключа заблокировала бы собственную ротацию, а
+    // сверять сервер на предмет нас самих бессмысленно: ключ у нас в руках.
+    if (peer && peer === myId && myKeys && myKeys.publicB64) return myKeys.publicB64;
+    if (!serverKeyB64) {
+        throw new Error(`У участника ${peerId} нет публичного ключа`);
+    }
+    // Форма ключа проверяется здесь же: 32 байта curve25519. Кривой ключ — это
+    // не «другой пользователь», а испорченный ответ, и пинить его нельзя.
+    let raw;
+    try {
+        raw = base64UrlDecode(serverKeyB64);
+    } catch (e) {
+        throw new Error(`Ключ участника ${peerId} не разбирается как base64`);
+    }
+    if (raw.length !== 32) {
+        throw new Error(`Ключ участника ${peerId} не 32 байта — отказ`);
+    }
+
+    const pinned = accountKeyPins[peer];
+    if (!pinned) {
+        accountKeyPins[peer] = serverKeyB64;   // TOFU: первый контакт
+        saveRatchetState().catch(() => {});
+        return serverKeyB64;
+    }
+    if (pinned === serverKeyB64) return serverKeyB64;
+
+    if (!interactive) {
+        const e = new Error(
+            `Ключ аккаунта ${peerId} изменился — раздача нового группового ключа отменена. ` +
+            'Откройте «Цифры безопасности» и сверьте их, затем добавьте участника заново.');
+        e.keyTrust = true;
+        throw e;
+    }
+    const accept = window.confirm(
+        `Ключ аккаунта ${peerId} изменился с прошлого раза. Это переустановка приложения — ` +
+        'либо подмена ключа сервером, чтобы получить ключ группы. Сверьте цифры безопасности ' +
+        'по другому каналу. Принять новый ключ и выдать ему доступ к группе?');
+    if (!accept) {
+        const e = new Error(`Ключ аккаунта ${peerId} изменился — операция отменена`);
+        e.keyTrust = true;
+        throw e;
+    }
+    accountKeyPins[peer] = serverKeyB64;
+    saveRatchetState().catch(() => {});
+    return serverKeyB64;
+}
+
 // Разворачивает encrypted_key_b64 → сырые 32 байта ключа (или null).
 function unwrapGroupKey(encryptedKeyB64) {
     const env = JSON.parse(encryptedKeyB64);
@@ -657,6 +718,14 @@ const QUARANTINE_AFTER_MS = 24 * 3600 * 1000;
 // устройства сервером не проходит даже на «первом контакте» с device_id.
 let olmMasterPins = Object.create(null);
 let pendingMasterChanges = Object.create(null);   // peerId -> новый мастер
+// TOFU-пины КЛЮЧА АККАУНТА (curve25519): peerId -> public_key_b64 (NEW-7).
+// Этим ключом заворачивается ГРУППОВОЙ ключ при добавлении участника и при
+// ротации. Раньше он брался с сервера как есть и нигде не пинился: сервер,
+// подставив свой ключ в профиль или в состав группы, получал бы групповой ключ
+// в подарок — то есть обещание «сервер не знает групповых ключей» держалось на
+// его же честности. Android пинит этот ключ (KeyTrustStore), iOS тоже
+// (store.pinUpsert); веб был единственным, кто не пинил.
+let accountKeyPins = Object.create(null);
 // Multi-device: этот браузер — отдельное криптоустройство аккаунта.
 // 'primary' — только если аккаунт ещё нигде не имел Olm-ключей (легаси-совместимость).
 let myDeviceId = '';
@@ -916,7 +985,8 @@ async function saveRatchetState(updateServerBackup = false) {
         sessions: olmSessions,
         identity_pins: olmIdentityPins,
         identity_ed_pins: olmEdPins,
-        master_pins: olmMasterPins
+        master_pins: olmMasterPins,
+        account_key_pins: accountKeyPins
     }, myPin, getSalt(myId));
     localStorage.setItem(spaceKey('ratchet_'), encrypted);
 
@@ -982,6 +1052,8 @@ async function prepareRatchetState(password) {
         ? Object.assign(Object.create(null), localState.identity_ed_pins) : Object.create(null);
     olmMasterPins = sameAccount && localState.master_pins && typeof localState.master_pins === 'object'
         ? Object.assign(Object.create(null), localState.master_pins) : Object.create(null);
+    accountKeyPins = sameAccount && localState.account_key_pins && typeof localState.account_key_pins === 'object'
+        ? Object.assign(Object.create(null), localState.account_key_pins) : Object.create(null);
 
     await ensureRatchetKeys();
 }
@@ -6483,8 +6555,16 @@ async function fetchMyGroups() {
             // на каком клиенте админ окажется первым, тот её и сделает.
             for (let g of data.groups) {
                 if (g.rekey_required && g.role === 'admin') {
-                    rotateGroupKey(g.id).catch(e =>
-                        console.error("Автоматическая ротация ключа не удалась", g.id, e));
+                    rotateGroupKey(g.id).catch(e => {
+                        console.error("Автоматическая ротация ключа не удалась", g.id, e);
+                        // Смена ключа участника — не фоновая мелочь: до разбора
+                        // группа не пишет, и молчать об этом нельзя. Остальные
+                        // причины (гонка эпох, сеть) сами пройдут на следующем
+                        // круге, поэтому шумим только про доверие.
+                        if (e && e.keyTrust) {
+                            showStatus(`Группа «${g.name || g.id}»: ${e.message}`, 'error');
+                        }
+                    });
                 }
             }
         }
@@ -6549,15 +6629,16 @@ async function rotateGroupKey(groupId) {
     const newKey = nacl.randomBytes(32);
     const keys = [];
     for (const m of members) {
-        if (!m.public_key_b64) {
-            // Один участник без ключа обрушит всю ротацию, и это правильно:
-            // сервер всё равно отвергнет неполное покрытие, а раздать ключ
-            // части группы значит расколоть её молча.
-            throw new Error(`У участника ${m.user_id} нет публичного ключа`);
-        }
+        // NEW-7: ключ участника проходит через TOFU-пин, а не берётся из ответа
+        // сервера как есть. Иначе сервер, подставив свой ключ в состав группы,
+        // получил бы новый групповой ключ — ровно то, от чего ротация защищает.
+        // Один участник без доверенного ключа обрушивает всю ротацию, и это
+        // правильно: сервер всё равно отвергнет неполное покрытие, а раздать
+        // ключ части группы значит расколоть её молча.
+        const trusted = trustedAccountKey(m.user_id, m.public_key_b64, false);
         keys.push({
             user_id: m.user_id,
-            encrypted_key_b64: wrapGroupKey(newKey, base64UrlDecode(m.public_key_b64))
+            encrypted_key_b64: wrapGroupKey(newKey, base64UrlDecode(trusted))
         });
     }
 
@@ -6597,8 +6678,12 @@ async function addMemberToGroup(groupId, userId) {
     
     const prof = await fetchPeerProfile(userId);
     if (!prof || !prof.public_key_b64) throw new Error("Пользователь не найден (или не имеет ключа)");
-    
-    const peerPub = base64UrlDecode(prof.public_key_b64);
+
+    // NEW-7: ключ из профиля — слово сервера. Пиним его и требуем подтверждения
+    // при смене: иначе подставленный ключ получил бы ключ группы, и обещание
+    // «сервер не знает групповых ключей» держалось бы на честности сервера.
+    // Действие инициировал человек, поэтому спрашиваем его прямо.
+    const peerPub = base64UrlDecode(trustedAccountKey(userId, prof.public_key_b64, true));
     const encryptedKeyB64 = wrapGroupKey(symKey, peerPub);
 
     const res = await fetch(`${serverUrl}/groups/${pathSegment(groupId)}/members`, {

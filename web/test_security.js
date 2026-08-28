@@ -115,4 +115,79 @@ for (let i = 0; i < 8; i++) sessCtx.ratchetSessionPut(sessCtx.api, 'bob::web-1',
 assert.equal(sessCtx.ratchetSessionsFor(sessCtx.api, 'bob::web-1').length, sessCtx.MAX_SESSIONS_PER_PEER);
 assert.equal(sessCtx.olmSessions['carol::web-1'].D.s, 'sess:D:1', 'соседний пир не задет');
 
+// NEW-7: TOFU для КЛЮЧА АККАУНТА, которым заворачивается ГРУППОВОЙ ключ.
+// Раньше веб брал его из ответа сервера как есть и нигде не пинил: сервер,
+// подставив свой ключ в профиль или в состав группы, получал бы групповой ключ
+// в подарок. Android этот ключ пинит (KeyTrustStore), iOS тоже — веб был
+// единственным, кто не пинил. Проверяем на живом коде из app.js.
+const takStart = source.indexOf('function trustedAccountKey');
+const takEnd = source.indexOf('\n// Разворачивает encrypted_key_b64', takStart);
+assert(takStart >= 0 && takEnd > takStart, 'trustedAccountKey не найдена в app.js');
+
+const KEY_A = Buffer.alloc(32, 1).toString('base64url');
+const KEY_B = Buffer.alloc(32, 2).toString('base64url');
+const MY_KEY = Buffer.alloc(32, 9).toString('base64url');
+
+function takContext(confirmAnswer) {
+    const ctx = {
+        accountKeyPins: Object.create(null),
+        myId: 'me',
+        myKeys: { publicB64: MY_KEY },
+        base64UrlDecode: (s) => new Uint8Array(Buffer.from(s, 'base64url')),
+        saveRatchetState: () => Promise.resolve(),
+        prompted: 0,
+        window: {}
+    };
+    ctx.window.confirm = () => { ctx.prompted++; return confirmAnswer; };
+    vm.runInNewContext(
+        `${source.slice(takStart, takEnd)}; this.trustedAccountKey = trustedAccountKey;`, ctx);
+    return ctx;
+}
+
+// Первый контакт пинится молча — доверять иначе не с чего.
+let ctx = takContext(false);
+assert.equal(ctx.trustedAccountKey('bob', KEY_A, true), KEY_A);
+assert.equal(ctx.accountKeyPins['bob'], KEY_A, 'первый контакт запинен');
+assert.equal(ctx.prompted, 0, 'первый контакт не спрашивает пользователя');
+
+// Тот же ключ — молча пропускаем.
+assert.equal(ctx.trustedAccountKey('BOB', KEY_A, true), KEY_A, 'регистр id не важен');
+assert.equal(ctx.prompted, 0);
+
+// Смена ключа при АВТОМАТИЧЕСКОЙ ротации: отказ без модалки, пин не тронут.
+ctx = takContext(true);
+ctx.accountKeyPins['bob'] = KEY_A;
+assert.throws(() => ctx.trustedAccountKey('bob', KEY_B, false), /изменился/);
+assert.equal(ctx.prompted, 0, 'автоматическая ротация не имеет права спрашивать');
+assert.equal(ctx.accountKeyPins['bob'], KEY_A, 'пин не перезаписан при отказе');
+
+// Смена ключа, пользователь отказался — ключ группы не выдан, пин прежний.
+ctx = takContext(false);
+ctx.accountKeyPins['bob'] = KEY_A;
+let err = null;
+try { ctx.trustedAccountKey('bob', KEY_B, true); } catch (e) { err = e; }
+assert(err && err.keyTrust === true, 'отказ помечается как тревога доверия');
+assert.equal(ctx.prompted, 1);
+assert.equal(ctx.accountKeyPins['bob'], KEY_A, 'пин не перезаписан при отказе');
+
+// Смена ключа, пользователь сверил и принял — перепиниваем.
+ctx = takContext(true);
+ctx.accountKeyPins['bob'] = KEY_A;
+assert.equal(ctx.trustedAccountKey('bob', KEY_B, true), KEY_B);
+assert.equal(ctx.accountKeyPins['bob'], KEY_B, 'принятый ключ становится новым пином');
+
+// Себе — собственный ключ, сервер не спрашиваем и ничего не пиним.
+ctx = takContext(false);
+assert.equal(ctx.trustedAccountKey('me', KEY_B, false), MY_KEY, 'для себя берётся свой ключ');
+assert.equal(ctx.accountKeyPins['me'], undefined, 'свой ключ не пинится');
+
+// Кривая форма — это испорченный ответ, а не «другой пользователь».
+// Пинить его нельзя, иначе мусор закрепится как доверенный.
+ctx = takContext(true);
+assert.throws(() => ctx.trustedAccountKey('bob', Buffer.alloc(31, 3).toString('base64url'), true), /32 байта/);
+assert.equal(ctx.accountKeyPins['bob'], undefined, 'ключ неверной длины не пинится');
+assert.throws(() => ctx.trustedAccountKey('bob', '', true), /нет публичного ключа/);
+assert.equal(ctx.accountKeyPins['bob'], undefined);
+
+console.log('NEW-7 (TOFU ключа аккаунта): ok');
 console.log('security regression checks passed');
