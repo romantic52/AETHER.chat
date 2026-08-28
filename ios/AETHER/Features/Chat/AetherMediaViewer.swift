@@ -91,7 +91,12 @@ struct AetherMediaViewer: View {
 
     var body: some View {
         ZStack {
-            Color.black.opacity(1 - dismissProgress * 0.7).ignoresSafeArea()
+            // Double(...) не для красоты: opacity принимает Double, а
+            // dismissProgress — CGFloat, и Swift 26.1 объявляет «1 - x * 0.7»
+            // неоднозначным (какой из перегруженных «-» брать). На 26.6 вывод
+            // типов справляется сам, поэтому локально ошибки не видно, а сборка
+            // в CI падает. Приводим явно.
+            Color.black.opacity(Double(1 - dismissProgress * 0.7)).ignoresSafeArea()
 
             pages
                 .offset(y: dragY)
