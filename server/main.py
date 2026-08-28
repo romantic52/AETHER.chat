@@ -1897,10 +1897,24 @@ def update_profile(body: UpdateProfileRequest, current_user: str = Depends(get_c
             if exist:
                 raise HTTPException(400, "Username already taken")
         
+        # NEW-4: аватарка меняется — прежнюю надо убрать. Раньше файл и строка
+        # в uploads оставались навсегда; теперь, когда аватарки считаются в
+        # квоту, это медленно съедало бы её сменой картинки.
+        previous_avatar = None
+        if body.avatar_file_id is not None:
+            cur.execute("SELECT avatar_file_id FROM users WHERE LOWER(user_id) = LOWER(%s)",
+                        (current_user,))
+            row = cur.fetchone()
+            if row and row["avatar_file_id"] and row["avatar_file_id"] != body.avatar_file_id:
+                previous_avatar = row["avatar_file_id"]
+
         cur.execute(
             "UPDATE users SET username = COALESCE(%s, username), display_name = COALESCE(%s, display_name), avatar_file_id = COALESCE(%s, avatar_file_id), bio = COALESCE(%s, bio) WHERE LOWER(user_id) = LOWER(%s)",
             (body.username, body.display_name, body.avatar_file_id, body.bio, current_user)
         )
+        # Только ПОСЛЕ обновления: иначе проверка «на файл никто не ссылается»
+        # увидела бы ещё старую ссылку и ничего не удалила.
+        _drop_avatar_if_orphan(cur, previous_avatar)
         # Эмодзи-статус: пустая строка снимает статус (поэтому без COALESCE).
         if body.status_emoji is not None:
             cur.execute("UPDATE users SET status_emoji = %s WHERE LOWER(user_id) = LOWER(%s)",
@@ -3085,7 +3099,13 @@ def update_group(group_id: str, body: UpdateGroupRequest, current_user: str = De
         if body.description is not None:
             updates.append("description = %s")
             values.append(body.description)
+        previous_avatar = None
         if body.avatar_file_id is not None:
+            # NEW-4: та же уборка, что у профиля — каталог аватарок общий.
+            cur.execute("SELECT avatar_file_id FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
+            row = cur.fetchone()
+            if row and row["avatar_file_id"] and row["avatar_file_id"] != body.avatar_file_id:
+                previous_avatar = row["avatar_file_id"]
             updates.append("avatar_file_id = %s")
             values.append(body.avatar_file_id)
 
@@ -3097,6 +3117,7 @@ def update_group(group_id: str, body: UpdateGroupRequest, current_user: str = De
             f"UPDATE groups SET {', '.join(updates)} WHERE LOWER(id) = LOWER(%s)",
             values
         )
+        _drop_avatar_if_orphan(cur, previous_avatar)
     return {"ok": True}
 
 
@@ -3294,6 +3315,49 @@ def _used_bytes(user_id: str) -> int:
         return int(cur.fetchone()["n"])
 
 
+def _quota_remaining(user_id: str) -> int:
+    """Сколько байт аккаунт ещё может занять. Может быть отрицательным, если
+    квоту опустили после того, как файлы уже легли."""
+    return UPLOAD_QUOTA_BYTES - _used_bytes(user_id)
+
+
+def _enforce_quota(user_id: str, size: int, directory, file_id: str) -> None:
+    """Проверка квоты ПОСЛЕ сохранения — иначе потолок неточен (NEW-4).
+
+    Раньше проверялось только «уже занято >= квоты», то есть аккаунт на границе
+    успевал положить сверху целый файл, и реальный потолок был
+    UPLOAD_QUOTA_BYTES + MAX_UPLOAD_BYTES (плюс 50 МБ). Точный размер известен
+    лишь после записи, поэтому здесь файл при перерасходе удаляется.
+    """
+    if size <= _quota_remaining(user_id):
+        return
+    (directory / file_id).unlink(missing_ok=True)
+    raise HTTPException(413, "Storage quota exceeded")
+
+
+def _drop_avatar_if_orphan(cur, file_id: Optional[str]) -> None:
+    """Убрать аватарку, на которую больше никто не ссылается (NEW-4).
+
+    Смена аватарки раньше только переписывала users.avatar_file_id: файл и
+    строка в uploads оставались навсегда. Пока квота аватарок не касалась, это
+    просто копило мусор; теперь, когда касается, аккаунт медленно выел бы себе
+    всю квоту сменой картинки.
+
+    Ссылку проверяем и у пользователей, и у групп: каталог аватарок общий, и
+    удалить файл, на который смотрит группа, значило бы сломать ей аватар.
+    """
+    if not file_id:
+        return
+    cur.execute("SELECT 1 FROM users WHERE avatar_file_id = %s LIMIT 1", (file_id,))
+    if cur.fetchone():
+        return
+    cur.execute("SELECT 1 FROM groups WHERE avatar_file_id = %s LIMIT 1", (file_id,))
+    if cur.fetchone():
+        return
+    cur.execute("DELETE FROM uploads WHERE file_id = %s AND kind = 'avatar'", (file_id,))
+    (AVATAR_DIR / file_id).unlink(missing_ok=True)
+
+
 def _delete_upload_files(rows) -> int:
     """Снести файлы с диска по списку строк uploads."""
     removed = 0
@@ -3340,9 +3404,11 @@ async def start_media_gc() -> None:
 async def upload_file(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)) -> dict:
     # Квота на аккаунт: 20 запросов в минуту по 50 МБ — это гигабайт в минуту
     # с одной сессии, и раньше ничто не мешало забить диск сервера насмерть.
-    if _used_bytes(current_user) >= UPLOAD_QUOTA_BYTES:
+    # Дешёвый отказ до записи на диск: смысла принимать файл нет.
+    if _quota_remaining(current_user) <= 0:
         raise HTTPException(413, "Storage quota exceeded")
     file_id, size = await _save_upload(file, UPLOAD_DIR, MAX_UPLOAD_BYTES)
+    _enforce_quota(current_user, size, UPLOAD_DIR, file_id)
     _record_upload(file_id, current_user, "media", size)
     return {"ok": True, "file_id": file_id}
 
@@ -3363,7 +3429,13 @@ def download_file(request: Request, file_id: str, current_user: str = Depends(ge
 @app.post("/avatars")
 @limiter.limit("10/minute")
 async def upload_avatar(request: Request, file: UploadFile = File(...), current_user: str = Depends(get_current_user)) -> dict:
+    # NEW-4: квота проверялась только в /upload, хотя аватарки пишутся в ту же
+    # таблицу и попадают в ту же сумму (_used_bytes не фильтрует по kind).
+    # Аккаунт, упёршийся в квоту, продолжал грузить по 5 МБ десять раз в минуту.
+    if _quota_remaining(current_user) <= 0:
+        raise HTTPException(413, "Storage quota exceeded")
     file_id, size = await _save_upload(file, AVATAR_DIR, MAX_AVATAR_BYTES)
+    _enforce_quota(current_user, size, AVATAR_DIR, file_id)
     _record_upload(file_id, current_user, "avatar", size)
     return {"ok": True, "file_id": file_id}
 
