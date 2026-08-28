@@ -18,12 +18,23 @@
   `users.avatar_file_id` или `groups.avatar_file_id`;
 * **медиа привязать не к кому.** `file_id` лежит ВНУТРИ зашифрованного конверта
   сообщения, сервер его не читает и прочитать не может. Поэтому такие файлы
-  усыновляются на служебный аккаунт (`--orphan-owner`, по умолчанию `_orphan`):
+  усыновляются на служебный аккаунт (`--orphan-owner`, по умолчанию `-orphan-`):
   в чью-то квоту они не попадут — честно списать их не на кого, — но станут
   видимы TTL-сборщику и перестанут лежать вечно.
 
-`created_at` берётся из mtime файла, а не из «сейчас»: иначе TTL отсчитывал бы
-срок заново и старые файлы прожили бы ещё один полный период.
+  Имя нарочно НЕрегистрируемое: `user_id` при регистрации обязан подходить под
+  `^[A-Za-z0-9_]+$`, а дефис в него не входит. Иначе служебное имя мог бы занять
+  живой человек и унаследовать чужие файлы вместе с их объёмом в своей квоте.
+
+`created_at` по умолчанию — момент усыновления, а НЕ mtime файла. Это выбор в
+пользу безопасности: с mtime включение TTL снесло бы всё старьё в первый же
+прогон сборщика, включая файлы, на которые ссылаются живые сообщения (проверить
+ссылку невозможно — file_id внутри шифротекста). С датой усыновления у
+владельца остаётся полный период TTL, чтобы заметить и передумать.
+
+`--use-file-mtime` возвращает прежнее поведение: срок считается от реального
+возраста файла. Брать его стоит, только если вы осознанно хотите вычистить
+старьё быстро и готовы потерять то, на что ещё ссылаются.
 
 Медиа скрипт НЕ удаляет: на них могут ссылаться живые сообщения, а проверить
 это невозможно по той же причине. Удаление отдано TTL-сборщику, который
@@ -82,8 +93,12 @@ def main() -> int:
                     help="завести строки в uploads (по умолчанию только отчёт)")
     ap.add_argument("--delete-unreferenced-avatars", action="store_true",
                     help="удалить аватарки, на которые никто не ссылается")
-    ap.add_argument("--orphan-owner", default="_orphan",
-                    help="служебный владелец для медиа без владельца (по умолчанию _orphan)")
+    ap.add_argument("--orphan-owner", default="-orphan-",
+                    help="служебный владелец для медиа без владельца (по умолчанию -orphan-; "
+                         "дефис делает имя нерегистрируемым)")
+    ap.add_argument("--use-file-mtime", action="store_true",
+                    help="считать TTL от возраста файла, а не от момента усыновления. "
+                         "Опасно: включение TTL снесёт старьё сразу")
     args = ap.parse_args()
 
     media = scan(UPLOAD_DIR)
@@ -133,20 +148,26 @@ def main() -> int:
         return 0
 
     inserted = deleted = 0
+    adopted_at = datetime.now(timezone.utc).isoformat()
+
+    def created_for(mtime: str) -> str:
+        """Дата, от которой TTL отсчитает срок жизни файла."""
+        return mtime if args.use_file_mtime else adopted_at
+
     if args.adopt:
         for file_id, (size, mtime) in referenced.items():
             cur.execute(
                 """INSERT INTO uploads (file_id, user_id, kind, size_bytes, created_at)
                    VALUES (%s, LOWER(%s), 'avatar', %s, %s)
                    ON CONFLICT (file_id) DO NOTHING""",
-                (file_id, avatar_owner[file_id], size, mtime))
+                (file_id, avatar_owner[file_id], size, created_for(mtime)))
             inserted += cur.rowcount
         for file_id, (size, mtime) in orphan_media.items():
             cur.execute(
                 """INSERT INTO uploads (file_id, user_id, kind, size_bytes, created_at)
                    VALUES (%s, LOWER(%s), 'media', %s, %s)
                    ON CONFLICT (file_id) DO NOTHING""",
-                (file_id, args.orphan_owner, size, mtime))
+                (file_id, args.orphan_owner, size, created_for(mtime)))
             inserted += cur.rowcount
 
     if args.delete_unreferenced_avatars:
@@ -160,6 +181,12 @@ def main() -> int:
     if args.adopt and orphan_media:
         print("Медиа теперь видны TTL-сборщику. Он выключен по умолчанию — "
               "включается переменной AETHER_MEDIA_TTL_DAYS.")
+        if args.use_file_mtime:
+            print("ВНИМАНИЕ: срок считается от возраста файлов. Включение TTL "
+                  "удалит старьё в первый же прогон сборщика.")
+        else:
+            print("Срок отсчитывается от СЕЙЧАС: после включения TTL у вас есть "
+                  "полный период, чтобы передумать.")
     return 0
 
 
