@@ -20,6 +20,7 @@
   GROUP-REKEY-001..009  удаление/уход участника меняет групповой ключ (RB-1):
                      отправка на старой эпохе заперта, ротация атомарна и
                      обязана покрыть весь состав.
+  GROUP-PUBLIC-001   публичной может быть только канал, не группа (RB-2).
   KEYSHAPE-001       публичный ключ аккаунта обязан быть 32 байта.
   WS-TICKET-001      билет на WebSocket одноразовый.
 """
@@ -431,6 +432,51 @@ def test_group_key_rotation():
     print("GROUP-REKEY-001..009: ok")
 
 
+def test_public_requires_channel():
+    """GROUP-PUBLIC-001: публичной может быть только канал (RB-2).
+
+    set_group_public читал is_channel и нигде его не использовал, поэтому
+    публичной становилась любая обычная группа — и её 32-байтный ключ ложился
+    к серверу открытым текстом, вопреки README.
+    """
+    owner, pw, _, _ = register("regpub")
+    token = login(owner, pw)
+    suffix = secrets.token_hex(4)
+
+    # Обычная группа публичной стать не может.
+    gid = "g" + secrets.token_hex(8)
+    status, data = call("POST", "/groups", token, {
+        "id": gid, "name": "public-test", "is_channel": False,
+        "encrypted_key_b64": b64(secrets.token_bytes(48))})
+    assert status == 200, f"create group: {status} {data}"
+    status, data = call("PUT", f"/groups/{gid}/public", token, {
+        "public": True, "username": "grp" + suffix,
+        "join_key_b64": b64(secrets.token_bytes(32))})
+    assert status == 400, f"обычная группа стала публичной: {status} {data}"
+
+    # Ключ у сервера так и не появился.
+    status, data = call("GET", "/groups/me", token)
+    mine = [g for g in data.get("groups", []) if g["id"] == gid]
+    assert mine and not mine[0].get("public_join"), f"группа помечена публичной: {mine}"
+
+    # Канал — можно, это осознанный размен.
+    cid = "c" + secrets.token_hex(8)
+    status, data = call("POST", "/groups", token, {
+        "id": cid, "name": "public-channel", "is_channel": True,
+        "encrypted_key_b64": b64(secrets.token_bytes(48))})
+    assert status == 200, f"create channel: {status} {data}"
+    status, data = call("PUT", f"/groups/{cid}/public", token, {
+        "public": True, "username": "chn" + suffix,
+        "join_key_b64": b64(secrets.token_bytes(32))})
+    assert status == 200, f"канал не стал публичным: {status} {data}"
+
+    # Снятие публичности не ограничено — иначе уже созданные публичные группы
+    # оказались бы заперты в нарушающем состоянии навсегда.
+    status, data = call("PUT", f"/groups/{gid}/public", token, {"public": False})
+    assert status == 200, f"разпубличить группу нельзя: {status} {data}"
+    print("GROUP-PUBLIC-001: ok")
+
+
 def test_public_key_shape():
     """KEYSHAPE-001: ключ аккаунта — ровно 32 байта Curve25519."""
     # Пустая строка отсекается ещё pydantic-ом (min_length=16) — это 422,
@@ -484,6 +530,7 @@ def main():
     test_idempotency()
     test_group_member_must_exist()
     test_group_key_rotation()
+    test_public_requires_channel()
     test_public_key_shape()
     test_ws_ticket_single_use()
     print("\nВсе регрессии пройдены.")

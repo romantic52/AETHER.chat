@@ -2093,9 +2093,19 @@ class ChannelPublicRequest(BaseModel):
 @app.put("/groups/{group_id}/public")
 def set_group_public(group_id: str, body: ChannelPublicRequest,
                      current_user: str = Depends(get_current_user)) -> dict:
-    """Владелец включает/выключает публичность группы/канала (Telegram-модель):
+    """Владелец включает/выключает публичность КАНАЛА (Telegram-модель):
     публичность = @username (общее пространство имён с пользователями) + ключ
-    у сервера для самостоятельной подписки. Лимит на владельца — 25 публичных."""
+    у сервера для самостоятельной подписки. Лимит на владельца — 25 публичных.
+
+    Публичной можно сделать только канал (RB-2). Раньше is_channel читался и
+    нигде не использовался, поэтому публичной становилась любая обычная группа —
+    и её ключ ложился к серверу открытым текстом, вопреки README, который
+    обещает, что сервер знает ключ только у публичных КАНАЛОВ. Для канала это
+    осознанный размен: писать может только админ, содержимое и так публичное.
+    Для группы это означало бы, что сервер читает всю переписку участников.
+
+    Снятие публичности не ограничено: разпубличить можно что угодно, в том
+    числе группу, ставшую публичной до этой правки."""
     with db_conn() as cur:
         cur.execute("SELECT owner_id, is_channel FROM groups WHERE LOWER(id) = LOWER(%s)", (group_id,))
         g = cur.fetchone()
@@ -2104,6 +2114,13 @@ def set_group_public(group_id: str, body: ChannelPublicRequest,
         if g["owner_id"].lower() != current_user.lower():
             raise HTTPException(403, "Only the owner can change visibility")
         if body.public:
+            # RB-2: ключ у сервера допустим только для канала.
+            if not g["is_channel"]:
+                raise HTTPException(
+                    400,
+                    "Публичной может быть только канал: у публичной группы ключ "
+                    "оказался бы у сервера. Сделайте канал или оставьте группу приватной.",
+                )
             username = (body.username or "").lower().lstrip("@")
             if not GROUP_USERNAME_RE.match(username):
                 raise HTTPException(400, "Username: 4–32 символа, латиница/цифры/_, начинается с буквы")

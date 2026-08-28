@@ -63,7 +63,7 @@ struct GroupCreateView: View {
             Spacer()
             typeCard(icon: "person.3.fill", title: "Группа",
                      subtitle: "Общий чат с участниками, все могут писать") {
-                isChannel = false; step = .details
+                isChannel = false; isPublic = false; step = .details
             }
             typeCard(icon: "megaphone.fill", title: "Канал",
                      subtitle: "Лента постов, писать могут только админы") {
@@ -128,15 +128,22 @@ struct GroupCreateView: View {
             
             // Публичность (Telegram-модель): публичный = @username, виден в поиске,
             // вступить может любой. Лимит — 25 публичных групп и каналов на владельца.
-            Picker("Тип", selection: $isPublic) {
-                Text("Частный").tag(false)
-                Text("Публичный").tag(true)
+            //
+            // Только для КАНАЛА (RB-2): у публичной группы ключ оказался бы у
+            // сервера, а README обещает, что сервер знает ключ лишь у публичных
+            // каналов. Сервер такую попытку отвергает, поэтому не предлагаем её
+            // и в интерфейсе — иначе пользователь заполнит @имя и получит отказ.
+            if isChannel {
+                Picker("Тип", selection: $isPublic) {
+                    Text("Частный").tag(false)
+                    Text("Публичный").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .padding(.horizontal, 16)
+                .padding(.bottom, 8)
             }
-            .pickerStyle(.segmented)
-            .padding(.horizontal, 16)
-            .padding(.bottom, 8)
 
-            if isPublic {
+            if isPublic && isChannel {
                 HStack {
                     Text("@").foregroundStyle(palette.textSecondary)
                     TextField("username", text: $publicUsername)
@@ -149,11 +156,10 @@ struct GroupCreateView: View {
                 .padding(.horizontal, 16)
                 .padding(.bottom, 4)
             }
-            Text(isPublic
-                 ? (isChannel ? "Канал будет виден в поиске по @имени, подписаться может любой."
-                              : "Группа будет видна в поиске по @имени, вступить может любой.")
+            Text(isPublic && isChannel
+                 ? "Канал будет виден в поиске по @имени, подписаться может любой."
                  : (isChannel ? "Подписчиков добавляют владелец и админы."
-                              : "Участников добавляют владелец и админы."))
+                              : "Участников добавляют владелец и админы. Группа всегда частная: публичной может быть только канал, иначе её ключ пришлось бы отдать серверу."))
                 .font(.caption)
                 .foregroundStyle(palette.textSecondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -305,7 +311,7 @@ struct GroupCreateView: View {
         let channel = isChannel
         let uname = publicUsername.trimmingCharacters(in: .whitespaces)
             .lowercased().replacingOccurrences(of: "@", with: "")
-        if isPublic, uname.range(of: "^[a-z][a-z0-9_]{3,31}$", options: .regularExpression) == nil {
+        if isPublic, isChannel, uname.range(of: "^[a-z][a-z0-9_]{3,31}$", options: .regularExpression) == nil {
             error = "@имя: 4–32 символа, латиница/цифры/_, начинается с буквы"
             creating = false
             return
@@ -318,7 +324,10 @@ struct GroupCreateView: View {
                    let jpeg = MediaStore.downsample(data: avatarData, maxPixel: 512)?.jpegData(compressionQuality: 0.85) {
                     await messaging.groups.setGroupAvatar(groupId: id, data: jpeg, mime: "image/jpeg")
                 }
-                if isPublic {
+                // isChannel в условии — страховка: интерфейс публичность для
+                // группы уже не предлагает, но состояние могло остаться от
+                // переключения типа, а сервер такую попытку отвергнет (RB-2).
+                if isPublic && channel {
                     if let err = await messaging.groups.setGroupPublic(groupId: id, isPublic: true, username: uname) {
                         // Создано, но публичность не включилась (имя занято/лимит) —
                         // показываем причину, публичность можно включить позже в профиле.

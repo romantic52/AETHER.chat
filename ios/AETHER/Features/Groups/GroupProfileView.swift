@@ -241,14 +241,27 @@ struct GroupProfileView: View {
 
     // MARK: - Публичность (владелец): @username как в Telegram, лимит 25.
 
+    /// Публичной может быть только КАНАЛ (RB-2): у публичной группы ключ
+    /// оказался бы у сервера, а README обещает обратное. Переключатель для
+    /// группы прячем — но лишь тогда, когда она ещё не публичная: группу,
+    /// ставшую публичной до этой правки, владелец обязан иметь возможность
+    /// разпубличить, иначе она заперта в нарушающем состоянии навсегда.
+    private var canTogglePublic: Bool { isChannel || (info?.publicJoin ?? false) }
+
     private var visibilitySection: some View {
         Section {
-            Toggle(isOn: $publicDraft.animation()) {
-                Label(isChannel ? "Публичный канал" : "Публичная группа", systemImage: "globe")
-                    .foregroundStyle(palette.textPrimary)
+            if canTogglePublic {
+                Toggle(isOn: $publicDraft.animation()) {
+                    Label(isChannel ? "Публичный канал" : "Публичная группа", systemImage: "globe")
+                        .foregroundStyle(palette.textPrimary)
+                }
+                .listRowBackground(palette.surface)
+            } else {
+                Label("Группу нельзя сделать публичной", systemImage: "lock.shield")
+                    .foregroundStyle(palette.textSecondary)
+                    .listRowBackground(palette.surface)
             }
-            .listRowBackground(palette.surface)
-            if publicDraft {
+            if publicDraft && canTogglePublic {
                 HStack {
                     Text("@").foregroundStyle(palette.textSecondary)
                     TextField("username", text: $usernameDraft)
@@ -258,7 +271,7 @@ struct GroupProfileView: View {
                 }
                 .listRowBackground(palette.surface)
             }
-            if visibilityDirty {
+            if visibilityDirty && canTogglePublic {
                 Button {
                     Task {
                         visibilityError = await messaging.groups.setGroupPublic(
@@ -276,7 +289,11 @@ struct GroupProfileView: View {
                     .listRowBackground(Color.clear)
             }
         } footer: {
-            Text("Публичные видны в поиске по @имени, вступить может любой (лимит — 25 публичных на владельца). Частные — только по приглашению.")
+            if canTogglePublic {
+                Text("Публичные видны в поиске по @имени, вступить может любой (лимит — 25 публичных на владельца). Частные — только по приглашению.")
+            } else {
+                Text("Публичной может быть только канал: его ключ известен серверу, и содержимое публично по замыслу. У группы это означало бы, что сервер читает всю переписку участников. Нужна открытая подписка — создайте канал.")
+            }
         }
         .onAppear {
             publicDraft = info?.publicJoin ?? false
