@@ -982,11 +982,41 @@ final class Messaging: ObservableObject {
             // этого различия режим и существует.
             if case .noRouteAvailable = failure, !policy.allowsServer {
                 await core.updateStatus(localId, MessageStatus.waitingForNearby)
+            } else if isGroup, Self.isStaleGroupKey(failure) {
+                // RB-1: групповой ключ сменили, пока сообщение ждало отправки.
+                // Наш экземпляр устарел, и сервер прав, что отказал. Это не
+                // «сообщение не доставить», а «мы шифровали старым ключом»:
+                // перечитываем группу и пробуем ещё раз тем же client_id, так
+                // что повтор для сервера остаётся ретраем, а не вторым
+                // сообщением. Без этого iOS вёл себя как старый Android —
+                // помечал сообщение неотправленным навсегда.
+                await groups.load()
+                switch await router.deliver(outgoing, mode: policy.deliveryMode,
+                                            preferredOrder: policy.transportOrder) {
+                case .success:
+                    await core.updateStatus(localId, 1)
+                case .failure:
+                    // Ротацию ещё не провели (rekey_required) — сообщение ждёт,
+                    // а не хоронится: группа запрется лишь до смены ключа.
+                    await core.updateStatus(localId, -1)
+                }
             } else {
                 await core.updateStatus(localId, -1)
             }
         }
         inboxTick.fire()
+    }
+
+    /// Отказ сервера из-за устаревшей эпохи группового ключа (RB-1).
+    ///
+    /// Разбираем по тексту, а не по типу: ошибка приезжает из Rust-ядра как
+    /// CoreError.Api и по дороге сворачивается в строку, поэтому кода ответа
+    /// здесь уже нет. Маркеры задаёт сервер (`stale_key_epoch`,
+    /// `rekey_required`) — они же проверяются в GROUP-REKEY-тестах.
+    private static func isStaleGroupKey(_ failure: TransportRouter.RoutingFailure) -> Bool {
+        guard case .allRoutesFailed(let last) = failure else { return false }
+        let text = String(describing: last)
+        return text.contains("stale_key_epoch") || text.contains("rekey_required")
     }
 
     func retryMessage(_ message: ChatMessage, isGroup: Bool) {
