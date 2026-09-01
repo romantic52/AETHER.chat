@@ -9,7 +9,11 @@ options:
 settings:
   base:
     MARKETING_VERSION: "1.0"
-    CURRENT_PROJECT_VERSION: "1"
+    # Номер сборки. Поднят с 1: эта сборка первая, которая понимает эпоху
+    # группового ключа (RB-1) — без неё клиент не сможет писать в группу после
+    # смены ключа. Различать сборки по номеру нужно именно из-за этого:
+    # «1» и «2» здесь не косметика, а разный протокол.
+    CURRENT_PROJECT_VERSION: "2"
     SWIFT_VERSION: "5.10"
     DEVELOPMENT_TEAM: 2353RU43PS
     CODE_SIGN_STYLE: Automatic
@@ -51,6 +55,10 @@ targets:
       properties:
         CFBundleDisplayName: Æther
         CFBundleShortVersionString: "1.0"
+        # Без явной привязки XcodeGen подставляет CFBundleVersion = 1 и
+        # игнорирует CURRENT_PROJECT_VERSION — номер сборки не менялся бы
+        # никогда, а различать сборки по нему обязательно (см. RB-1).
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         UILaunchScreen: {}
         UIRequiresFullScreen: true
         UISupportedInterfaceOrientations:
@@ -99,5 +107,9 @@ targets:
       properties:
         CFBundleDisplayName: Æther
         CFBundleShortVersionString: "1.0"
+        # Без явной привязки XcodeGen подставляет CFBundleVersion = 1 и
+        # игнорирует CURRENT_PROJECT_VERSION — номер сборки не менялся бы
+        # никогда, а различать сборки по нему обязательно (см. RB-1).
+        CFBundleVersion: "$(CURRENT_PROJECT_VERSION)"
         NSExtension:
           NSExtensionPointIdentifier: com.apple.widgetkit-extension
